@@ -79,4 +79,38 @@
 
 ## Traceability
 
-(Filled by roadmap)
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| CHAT-01 | Phase 2 | Pending |
+| CHAT-02 | Phase 2 | Pending |
+| CHAT-03 | Phase 2 | Pending |
+| CHAT-04 | Phase 2 | Pending |
+| CHAT-05 | Phase 2 | Pending |
+| COMP-01 | Phase 1 | Pending |
+| COMP-02 | Phase 3 | Pending |
+| COMP-03 | Phase 2 | Pending |
+| COMP-04 | Phase 1 | Pending |
+| COMP-05 | Phase 1 | Pending |
+| SAND-01 | Phase 3 | Pending |
+| SAND-02 | Phase 3 | Pending |
+| SAND-03 | Phase 3 | Pending |
+| SAND-04 | Phase 3 | Pending |
+| PAID-01 | Phase 4 | Pending |
+| PAID-02 | Phase 4 | Pending |
+| PAID-03 | Phase 4 | Pending |
+| PAID-04 | Phase 4 | Pending |
+| CHAOS-01 | Phase 4 | Pending |
+| CHAOS-02 | Phase 4 | Pending |
+| BUILD-01 | Phase 3 | Pending |
+| BUILD-02 | Phase 3 | Pending |
+| BUILD-03 | Phase 3 | Pending |
+| BUILD-04 | Phase 3 | Pending |
+| PRES-01 | Phase 2 | Pending |
+| PRES-02 | Phase 3 | Pending |
+| PRES-03 | Phase 3 | Pending |
+| PRES-04 | Phase 3 | Pending |
+| HIST-01 | Phase 5 | Pending |
+| INFRA-01 | Phase 2 | Pending |
+| INFRA-02 | Phase 2 | Pending |
+
+**Coverage:** 31/31 v1 requirements mapped to phases. No orphans.
