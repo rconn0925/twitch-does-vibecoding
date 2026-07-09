@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import type Database from "better-sqlite3";
 import { type Logger, pino } from "pino";
 import { openDb } from "./audit/db.js";
+import { AbortRegistry, abortActiveWork } from "./kill-switch/abort.js";
 import {
   type HotkeyHandle,
   type KeyEventSource,
@@ -27,6 +28,8 @@ export interface AppHandle {
   machine: StreamModeMachine;
   db: Database.Database;
   logger: Logger;
+  /** Phase 3's orchestrator registers agent-session PIDs/controllers here. */
+  registry: AbortRegistry;
   close: () => Promise<void>;
 }
 
@@ -44,6 +47,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   }
   const db = openDb(opts.dbPath);
   const machine = new StreamModeMachine();
+  const registry = new AbortRegistry();
 
   machine.on(HALT_TRIGGERED, (...args) => {
     const ctx = args[0] as HaltContext;
@@ -66,6 +70,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     machine,
     db,
     logger,
+    registry,
     close: async () => {
       await console_.close();
       db.close();
@@ -147,7 +152,11 @@ if (isMain) {
       // uiohook module. Test runs (vitest) never reach this branch.
       armPanicHotkey({
         machine: app.machine,
-        haltDeps: { db: app.db },
+        haltDeps: {
+          db: app.db,
+          logger: app.logger,
+          abortActiveWork: (frozen) => abortActiveWork(app.registry, frozen, app.logger),
+        },
         logger: app.logger,
       }),
     )
