@@ -66,6 +66,25 @@ describe("halt walking skeleton (e2e)", () => {
     expect(haltRecords.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("WR-02: a console halt aborts registered in-flight work — symmetric with the hotkey kill path", async () => {
+    const handle = await startApp();
+    // Phase 3's orchestrator will register real agent sessions here; today a
+    // controller stands in so the wiring is proven before real PIDs exist.
+    const controller = new AbortController();
+    handle.registry.registerController("active-build-task", controller);
+
+    const haltRes = await fetch(`${baseUrl(handle)}/api/halt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(haltRes.status).toBe(200);
+
+    // abortActiveWork aborts controllers synchronously inside triggerHalt,
+    // so by the time the response resolves the abort must have fired.
+    expect(controller.signal.aborted).toBe(true);
+  });
+
   it("CR-01: refuses a cross-origin simple request (text/plain, no preflight) — mode stays IDLE", async () => {
     const handle = await startApp();
     // A malicious page's fetch(url, { method: "POST", body: "x" }) arrives

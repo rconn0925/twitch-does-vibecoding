@@ -36,6 +36,13 @@ export interface ConsoleServerDeps {
   taskQueue: TaskQueue;
   /** The compliance gate, pre-bound with its own deps (COMP-01 single funnel). */
   classify: (candidate: SuggestionCandidate) => Promise<GateResult>;
+  /**
+   * Best-effort abort of in-flight work, invoked by triggerHalt AFTER the
+   * HALTED transition has taken effect (WR-02): the console Halt button must
+   * be a full kill path symmetric with the hotkey — both force-kill
+   * registered agent process trees, not just flip state.
+   */
+  abortActiveWork?: (frozen: StateSnapshot) => Promise<void>;
   logger?: Logger;
 }
 
@@ -223,9 +230,15 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       return;
     }
 
+    // WR-02: identical HaltDeps to the hotkey path — the console halt must
+    // also abort registered in-flight work, not only flip the state machine.
     const frozen = triggerHalt(
       machine,
-      { db, ...(logger ? { logger } : {}) },
+      {
+        db,
+        ...(logger ? { logger } : {}),
+        ...(deps.abortActiveWork ? { abortActiveWork: deps.abortActiveWork } : {}),
+      },
       "console",
       reasonTag,
     );

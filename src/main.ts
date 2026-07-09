@@ -120,6 +120,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     pool,
     taskQueue,
     classify: (candidate) => classify(gateDeps, candidate),
+    // WR-02: the console Halt button gets the SAME abort hook as the panic
+    // hotkey — both kill paths must be genuinely equivalent (D-01), so a
+    // console-initiated halt also force-kills registered agent process trees.
+    abortActiveWork: (frozen) => abortActiveWork(registry, frozen, logger),
     logger,
   });
   logger.info(
