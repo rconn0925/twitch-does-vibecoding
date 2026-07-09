@@ -530,7 +530,14 @@ export const adversarialFixtures: GateFixture[] = [
 
 **If this table is empty:** N/A — see entries above.
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All three questions were resolved during planning — the plans adopt the stated recommendations:
+
+1. Taxonomy extension → RESOLVED: single-enum 15-value taxonomy (13 ToS + prompt-injection-attempt + feasibility) adopted by plan 01-02 Task 1 (src/compliance/categories.ts).
+2. Retry budget → RESOLVED: 2 retries with 500ms/1500ms backoff, fail-closed after 3 attempts, adopted by plan 01-02 Task 2 (src/compliance/classifier.ts).
+3. Synthetic hung task → RESOLVED: signal-trapping child-process fixture + hung-Promise decoupling test adopted by plan 01-03 Task 2 (tests/fixtures/hung-process.cjs, tests/e2e/kill-switch.e2e.test.ts).
+
 
 1. **Exact category taxonomy extension naming and structure (prompt-injection-attempt / feasibility)**
    - What we know: COMPLIANCE.md's 13 categories don't cover these two cases; Success Criterion 2 and D-13/D-14 require the gate to handle them correctly.

@@ -30,13 +30,14 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. The gate correctly classifies a fixture suite spanning all 13 taxonomy categories, including adversarial cases (paraphrase, obfuscation, encoding tricks, prompt-injection strings), with uncertain cases escalated rather than auto-approved
   3. Streamer can veto or kill any queued or in-progress task from the operator console page (and/or hotkey) from any system state, and the halt resolves within seconds even against a synthetic hung task
   4. Every filter decision and every veto is logged with the triggering input and is reviewable after the fact
-**Plans**: 4 plans
+**Plans**: 5 plans
 
 Plans:
 - [ ] 01-01-PLAN.md — Walking Skeleton: scaffold, shared types, state machine + audit ledger, console with Halt Everything (wave 1)
-- [ ] 01-02-PLAN.md — Compliance gate: prefilter + Sonnet classifier (fail-closed), branded QueuedTask funnel, adversarial fixture suite + live eval (wave 2)
+- [ ] 01-02-PLAN.md — Gate classification engine: 15-category taxonomy, adversarial fixture suite, prefilter, fail-closed Sonnet classifier (wave 2)
 - [ ] 01-03-PLAN.md — Kill switch: global double-tap hotkey, tree-kill abort, synthetic hung-task proof (wave 2)
-- [ ] 01-04-PLAN.md — Operator console completion: review queue, HALTED triage, veto + reason tags, audit page, 90-day purge, single-funnel invariant test (wave 3)
+- [ ] 01-05-PLAN.md — Gate chokepoint: classify() + branded QueuedTask funnel, review workflow, HALTED-gated submission pipeline (D-02), live Sonnet eval (wave 3)
+- [ ] 01-04-PLAN.md — Operator console completion: review queue, HALTED triage, veto + reason tags, audit page, 90-day purge, single-funnel invariant test (wave 4)
 **UI hint**: yes
 
 Research-adjacent: the adversarial test suite design (jailbreak/paraphrase/obfuscation cases) and two-pass prompt design need dedicated design work during planning (per research SUMMARY flags for this phase).
