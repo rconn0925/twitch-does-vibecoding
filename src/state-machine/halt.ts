@@ -5,13 +5,15 @@ import type { StreamModeMachine } from "./stream-mode.js";
 
 export interface HaltDeps {
   db: Database.Database;
+  /** Operational logger for abort-failure visibility. pino's Logger satisfies this. */
+  logger?: { error(obj: unknown, msg?: string, ...args: unknown[]): void };
   /**
-   * Named extension point for plan 01-03: best-effort abort of in-progress
-   * work (tree-kill on the active task's process tree), invoked with
-   * void-and-catch semantics AFTER the HALTED transition has already taken
+   * Best-effort abort of in-progress work (src/kill-switch/abort.ts:
+   * synchronous AbortController aborts + tree-kill SIGKILL per process tree),
+   * invoked fire-and-forget AFTER the HALTED transition has already taken
    * effect. A hung task can never delay the halt (Pattern 2).
    */
-  abortActiveWork?: (frozen: StateSnapshot) => void;
+  abortActiveWork?: (frozen: StateSnapshot) => Promise<void>;
 }
 
 /**
@@ -31,11 +33,14 @@ export function triggerHalt(
   recordHalt(deps.db, { source, priorMode: frozen.mode, reasonTag });
 
   if (deps.abortActiveWork) {
+    // Fire-and-forget (Pattern 2): the state is already HALTED regardless of
+    // whether the target dies gracefully. Nothing here may ever be waited on.
     try {
-      deps.abortActiveWork(frozen);
-    } catch {
-      // Best-effort only: the halt already took effect. Failures here are the
-      // abort hook's problem to log (plan 01-03); they never propagate.
+      void deps.abortActiveWork(frozen).catch((err: unknown) => {
+        deps.logger?.error({ err }, "abort attempt failed after HALT — task may still be running");
+      });
+    } catch (err) {
+      deps.logger?.error({ err }, "abort attempt failed after HALT — task may still be running");
     }
   }
   return frozen;
