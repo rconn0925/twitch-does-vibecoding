@@ -26,9 +26,7 @@ const VoteCommand = z.object({
 });
 
 /** Discriminated result of parsing a chat message as a command. */
-export type ParsedCommand =
-  | { kind: "suggest"; text: string }
-  | { kind: "vote"; option: number };
+export type ParsedCommand = { kind: "suggest"; text: string } | { kind: "vote"; option: number };
 
 /**
  * Parse a raw chat message into a typed command, or null when the message
