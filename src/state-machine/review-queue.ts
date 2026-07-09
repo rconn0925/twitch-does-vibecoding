@@ -21,6 +21,7 @@ import type {
   CandidateKind,
   CandidateSource,
   GateResult,
+  ReasonTag,
   StreamMode,
   SuggestionCandidate,
 } from "../shared/types.js";
@@ -139,11 +140,12 @@ export function approve(db: Database.Database, deps: ReviewResolveDeps, reviewId
   });
 }
 
-/** Streamer rejects a held item: resolve the row + one audit row. */
+/** Streamer rejects a held item: resolve the row + one audit row (optional D-18 tag). */
 export function reject(
   db: Database.Database,
   reviewId: number,
   streamMode: StreamMode = "IDLE",
+  reasonTag: ReasonTag | null = null,
 ): void {
   const row = resolvePendingRow(db, reviewId, "rejected");
   recordReviewResolution(db, {
@@ -152,7 +154,30 @@ export function reject(
     suggestionText: row.suggestion_text,
     twitchUsername: row.twitch_username,
     streamMode,
+    reasonTag,
   });
+}
+
+/** Snapshot of one review row (any status) — used by the console's D-18 tag follow-up. */
+export interface ReviewRowSnapshot {
+  id: number;
+  status: "pending" | "approved" | "rejected" | "expired-unreviewed";
+  text: string;
+  twitchUsername: string | null;
+}
+
+/** Look up a review row by id regardless of status. Returns undefined when absent. */
+export function getReview(db: Database.Database, reviewId: number): ReviewRowSnapshot | undefined {
+  const row = db.prepare("SELECT * FROM review_queue WHERE id = ?").get(reviewId) as
+    | ReviewRow
+    | undefined;
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    status: row.status as ReviewRowSnapshot["status"],
+    text: row.suggestion_text,
+    twitchUsername: row.twitch_username,
+  };
 }
 
 /**
