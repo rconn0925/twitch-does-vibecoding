@@ -39,7 +39,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 **Wave 1**
 
-- [ ] 01-01-PLAN.md — Walking Skeleton: scaffold, shared types, state machine + audit ledger, console with Halt Everything (wave 1)
+- [x] 01-01-PLAN.md — Walking Skeleton: scaffold, shared types, state machine + audit ledger, console with Halt Everything (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -135,7 +135,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Compliance Gate & Kill Switch | 0/5 | Not started | - |
+| 1. Compliance Gate & Kill Switch | 1/5 | In Progress|  |
 | 2. Chat Vote Loop | 0/TBD | Not started | - |
 | 3. Sandboxed Build Engine & Live Show | 0/TBD | Not started | - |
 | 4. Paid Influence & Chaos Mode | 0/TBD | Not started | - |
