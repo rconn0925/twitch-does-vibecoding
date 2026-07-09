@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
 import { openDb } from "../../src/audit/db.js";
 import { toQueuedTask } from "../../src/compliance/gate.js";
 import { createApp } from "../../src/main.js";
@@ -329,6 +330,55 @@ describe("halt triage + recovery (e2e, D-04)", () => {
     const handle = await startApp();
     const res = await postJson(`${baseUrl(handle)}/api/recover`, { action: "resume" });
     expect(res.status).toBe(409);
+  });
+});
+
+describe("ws state channel origin check (WR-01)", () => {
+  it("drops a handshake carrying a foreign Origin at upgrade time", async () => {
+    const handle = await startApp();
+    await new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${handle.port}`, {
+        headers: { origin: "http://evil.example" },
+      });
+      socket.on("open", () => {
+        socket.terminate();
+        reject(new Error("cross-origin ws handshake was accepted"));
+      });
+      socket.on("unexpected-response", (_req, res) => {
+        expect(res.statusCode).toBe(401);
+        socket.terminate();
+        resolve();
+      });
+      socket.on("error", () => resolve());
+    });
+  });
+
+  it("accepts the console page's own same-origin handshake and pushes full state", async () => {
+    const handle = await startApp();
+    const state = await new Promise<{ mode: string }>((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${handle.port}`, {
+        headers: { origin: `http://127.0.0.1:${handle.port}` },
+      });
+      socket.on("message", (data) => {
+        socket.terminate();
+        resolve(JSON.parse(String(data)) as { mode: string });
+      });
+      socket.on("error", reject);
+    });
+    expect(state.mode).toBe("IDLE");
+  });
+
+  it("accepts a non-browser client (no Origin header)", async () => {
+    const handle = await startApp();
+    const state = await new Promise<{ mode: string }>((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${handle.port}`);
+      socket.on("message", (data) => {
+        socket.terminate();
+        resolve(JSON.parse(String(data)) as { mode: string });
+      });
+      socket.on("error", reject);
+    });
+    expect(state.mode).toBe("IDLE");
   });
 });
 

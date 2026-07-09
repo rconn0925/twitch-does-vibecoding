@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createServer, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import type Database from "better-sqlite3";
@@ -156,7 +156,20 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
   const server = createServer(app);
 
   // Full-state-on-connect, then push on every change (OBS overlay pattern from CLAUDE.md).
-  const wss = new WebSocketServer({ server });
+  //
+  // WR-01: cross-origin WebSocket handshakes are NOT subject to CORS and need
+  // no preflight, so without this check any page in the streamer's browser
+  // could read the full console state — including attacker-authored
+  // suggestion text, usernames, and review rationales. Browsers always send
+  // Origin on a ws handshake: a present-but-foreign Origin is dropped at
+  // upgrade time (401). Non-browser clients (no Origin header) are allowed —
+  // they sit outside the in-browser exfiltration threat model that loopback
+  // binding cannot stop.
+  const wss = new WebSocketServer({
+    server,
+    verifyClient: (info: { origin?: string; req: IncomingMessage }) =>
+      info.origin === undefined || info.origin === `http://${info.req.headers.host}`,
+  });
 
   function pushState(): void {
     const payload = JSON.stringify(buildState());
