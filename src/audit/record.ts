@@ -177,6 +177,80 @@ export function recordReviewResolution(
   });
 }
 
+/**
+ * One row per voting-round open (D2-01/COMP-05). Round lifecycle narration is
+ * audit-ledger data; the vote ledger itself lives in the round_votes table.
+ */
+export function recordRoundOpened(
+  db: Database.Database,
+  args: { roundId: number; candidateCount: number; durationMs: number; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "round_opened",
+    source: "operator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: `Round opened with ${args.candidateCount} candidates, ${args.durationMs}ms duration`,
+    streamMode: args.streamMode,
+    taskId: String(args.roundId),
+  });
+}
+
+/**
+ * One row per round close/discard, with the votes-summary JSON in the
+ * rationale column (COMP-05: the ledger shows how each winner was chosen).
+ */
+export function recordRoundClosed(
+  db: Database.Database,
+  args: {
+    roundId: number;
+    winnerText: string | null;
+    winnerOption: number | null;
+    /** JSON string of the per-option tally, stored verbatim in rationale. */
+    tallySummary: string;
+    tiebreak: boolean;
+    streamMode: StreamMode;
+  },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "round_closed",
+    source: "operator",
+    twitchUsername: null,
+    suggestionText: args.winnerText,
+    decision: args.winnerOption === null ? "no-winner" : `winner-option-${args.winnerOption}`,
+    category: args.tiebreak ? "tiebreak" : null,
+    rationale: args.tallySummary,
+    streamMode: args.streamMode,
+    taskId: String(args.roundId),
+  });
+}
+
+/**
+ * One row per bounded-pool oldest-drop (D2-13) — a dropped suggestion is a
+ * compliance-relevant disappearance and must be visible in the ledger.
+ */
+export function recordPoolDropped(
+  db: Database.Database,
+  args: { candidate: SuggestionCandidate; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "pool_dropped",
+    source: "chat",
+    twitchUsername: args.candidate.twitchUsername,
+    suggestionText: args.candidate.text,
+    decision: null,
+    category: null,
+    rationale: "Pool at capacity — oldest candidate dropped (D2-13)",
+    streamMode: args.streamMode,
+    taskId: null,
+  });
+}
+
 /** Read the ledger newest-first with optional filters. */
 export function listAuditRecords(
   db: Database.Database,

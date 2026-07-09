@@ -40,3 +40,52 @@ CREATE TABLE IF NOT EXISTS review_queue (
   resolved_at_ms  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_review_queue_status ON review_queue(status);
+
+-- Phase 2 voting-round persistence (D2-14: vote LEDGER data gets its own tables;
+-- round lifecycle NARRATION events are audit_log rows — no parallel logging path).
+--   rounds           = one row per voting round; frozen_remaining_ms persists a
+--                      halt-frozen timer (D2-16) so resume continues honestly.
+--   round_candidates = FULL candidate identity inline (mirrors review_queue's
+--                      no-lossy-defaults discipline) so crash restore rebuilds the
+--                      exact SuggestionCandidate + GateResult — no joins. pooled_at_ms
+--                      is the pool-entry time handed to the D2-05 staleness check at close.
+--   round_votes      = write-through vote ledger keyed by Twitch numeric user id
+--                      (chatterId, never display name — D2-15). The composite primary
+--                      key makes one-vote-per-account structural; a revote upserts.
+
+CREATE TABLE IF NOT EXISTS rounds (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  status              TEXT NOT NULL DEFAULT 'open', -- 'open' | 'closed' | 'discarded'
+  opened_at_ms        INTEGER NOT NULL,
+  duration_ms         INTEGER NOT NULL,
+  ends_at_ms          INTEGER NOT NULL,
+  frozen_remaining_ms INTEGER,                      -- null unless a halt froze the round (D2-16)
+  closed_at_ms        INTEGER,
+  winner_option       INTEGER,                      -- null: still open, discarded, or zero-vote close
+  tiebreak            INTEGER NOT NULL DEFAULT 0    -- 1 when the winner came from a random tiebreak (D2-03)
+);
+CREATE INDEX IF NOT EXISTS idx_rounds_status ON rounds(status);
+
+CREATE TABLE IF NOT EXISTS round_candidates (
+  round_id        INTEGER NOT NULL,
+  option_index    INTEGER NOT NULL,                 -- 1-based, matches !vote N
+  candidate_id    TEXT NOT NULL,
+  source          TEXT NOT NULL,
+  kind            TEXT NOT NULL,
+  twitch_username TEXT,
+  text            TEXT NOT NULL,
+  submitted_at_ms INTEGER NOT NULL,
+  gate_category   TEXT,
+  gate_rationale  TEXT NOT NULL,
+  pooled_at_ms    INTEGER NOT NULL,                 -- ApprovedCandidate.addedAtMs at draw time (D2-05 staleness input)
+  PRIMARY KEY (round_id, option_index)
+);
+
+CREATE TABLE IF NOT EXISTS round_votes (
+  round_id       INTEGER NOT NULL,
+  twitch_user_id TEXT NOT NULL,                     -- EventSub chatterId — numeric id, never display name (D2-15)
+  option_index   INTEGER NOT NULL,
+  voted_at_ms    INTEGER NOT NULL,
+  PRIMARY KEY (round_id, twitch_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_round_votes_round ON round_votes(round_id);

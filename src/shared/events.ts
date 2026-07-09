@@ -21,9 +21,21 @@ export const REVIEW_RESOLVED = "review:resolved" as const;
  */
 export const PROJECT_SWITCH_REQUESTED = "project-switch:requested" as const;
 
+/** Emitted by RoundManager when a voting round opens, with its RoundSnapshot (plan 02-01). */
+export const ROUND_OPENED = "round:opened" as const;
+
+/** Emitted by RoundManager when a round closes or is discarded, with the final RoundSnapshot. */
+export const ROUND_CLOSED = "round:closed" as const;
+
+/** Emitted per durable vote write — AFTER the SQLite upsert commits (D2-14). */
+export const VOTE_RECORDED = "round:vote-recorded" as const;
+
 export type AppEvent =
   | typeof STATE_CHANGED
   | typeof HALT_TRIGGERED
   | typeof GATE_DECISION
   | typeof REVIEW_RESOLVED
-  | typeof PROJECT_SWITCH_REQUESTED;
+  | typeof PROJECT_SWITCH_REQUESTED
+  | typeof ROUND_OPENED
+  | typeof ROUND_CLOSED
+  | typeof VOTE_RECORDED;
