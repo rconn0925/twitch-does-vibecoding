@@ -48,7 +48,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 01-05-PLAN.md — Gate chokepoint: classify() + branded QueuedTask funnel, review workflow, HALTED-gated submission pipeline (D-02), live Sonnet eval (wave 3)
+- [x] 01-05-PLAN.md — Gate chokepoint: classify() + branded QueuedTask funnel, review workflow, HALTED-gated submission pipeline (D-02), live Sonnet eval (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
@@ -135,7 +135,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Compliance Gate & Kill Switch | 3/5 | In Progress|  |
+| 1. Compliance Gate & Kill Switch | 4/5 | In Progress|  |
 | 2. Chat Vote Loop | 0/TBD | Not started | - |
 | 3. Sandboxed Build Engine & Live Show | 0/TBD | Not started | - |
 | 4. Paid Influence & Chaos Mode | 0/TBD | Not started | - |
