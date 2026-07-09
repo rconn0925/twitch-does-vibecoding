@@ -17,7 +17,7 @@ describe("normalize", () => {
     expect(normalize("phish‌‍ing")).toBe("phishing");
   });
 
-  it("strips homoglyph confusables (U+0261 Latin small L with tail)", () => {
+  it("strips homoglyph confusables (U+0261 Latin small letter script g)", () => {
     expect(normalize("keyɡlogger")).toBe("keylogger");
   });
 
@@ -102,6 +102,11 @@ describe("prefilterCheck", () => {
 
   it("catches 'keylogger' with zero-width character injection", () => {
     const result = prefilterCheck("build a key​logger");
+    expect(result).toMatchObject({ rejected: true, category: "spam-malware" });
+  });
+
+  it("catches 'keyɡlogger' (U+0261 homoglyph insertion stripped by normalize)", () => {
+    const result = prefilterCheck("build a keyɡlogger that captures passwords");
     expect(result).toMatchObject({ rejected: true, category: "spam-malware" });
   });
 
