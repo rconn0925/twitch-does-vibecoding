@@ -15,8 +15,8 @@
 - [ ] **COMP-01**: Every candidate instruction — from suggestions, votes, channel points, donation windows, or chaos mode — passes through a single AI compliance filter screening against Twitch ToS/Community Guidelines categories (hateful conduct, harassment, sexual content, violence/threats, self-harm, illegal activity, gambling, privacy/doxxing, impersonation, malware/scraping, IP infringement) before it can enter the build queue; no code path can enqueue a task any other way
 - [ ] **COMP-02**: The build plan/output is re-screened in a second compliance pass before and during execution (an approved-but-vague suggestion must not produce non-compliant output)
 - [ ] **COMP-03**: A rejected suggestion gets category-level feedback in chat (viewer knows why, without a lecture)
-- [ ] **COMP-04**: Streamer has an always-reachable veto/kill switch (operator console and/or hotkey) that halts or discards any queued or in-progress task, identically across all control modes
-- [ ] **COMP-05**: All filter decisions and vetoes are logged with the triggering input (audit trail)
+- [x] **COMP-04**: Streamer has an always-reachable veto/kill switch (operator console and/or hotkey) that halts or discards any queued or in-progress task, identically across all control modes
+- [x] **COMP-05**: All filter decisions and vetoes are logged with the triggering input (audit trail)
 
 ### Sandbox & Privacy (hard requirement)
 
@@ -89,8 +89,8 @@
 | COMP-01 | Phase 1 | Pending |
 | COMP-02 | Phase 3 | Pending |
 | COMP-03 | Phase 2 | Pending |
-| COMP-04 | Phase 1 | Pending |
-| COMP-05 | Phase 1 | Pending |
+| COMP-04 | Phase 1 | Complete |
+| COMP-05 | Phase 1 | Complete |
 | SAND-01 | Phase 3 | Pending |
 | SAND-02 | Phase 3 | Pending |
 | SAND-03 | Phase 3 | Pending |
