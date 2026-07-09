@@ -5,10 +5,10 @@ import type { AccessToken, RefreshingAuthProvider } from "@twurple/auth";
 import type { Logger } from "pino";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  TWITCH_SCOPES,
   buildAuthorizeUrl,
   completeAuthorization,
   createAuthProvider,
+  TWITCH_SCOPES,
 } from "./twitch-auth.js";
 
 const SECRET_ACCESS = "secret-access-token-value-abc123";
