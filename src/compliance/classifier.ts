@@ -2,17 +2,17 @@
  * Compliance classifier — Sonnet Structured Outputs call with retry budget
  * and fail-closed error path (D-11, RESEARCH.md Pitfall 3).
  *
- * Uses zod v4's z.toJSONSchema() — NOT the SDK's zodOutputFormat() helper
- * (known incompatibility, RESEARCH.md Pitfall 1 / Assumption A1).
+ * Uses zod v4's z.toJSONSchema() — NOT the SDK's zod output-format helper
+ * (known zod-v4 incompatibility, RESEARCH.md Pitfall 1 / Assumption A1).
  */
 
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
-import { pino } from "pino";
+import type { Logger } from "pino";
 import type { SuggestionCandidate } from "../shared/types.js";
-import type { GateCategory } from "./categories.js";
+import { ESCALATE_ELIGIBLE } from "./categories.js";
 import type { ClassifierDecision } from "./schema.js";
-import { getGateDecisionJsonSchema, GateDecisionSchema } from "./schema.js";
+import { GateDecisionSchema, GateDecisionShapeSchema } from "./schema.js";
 
 /** Dependency injection shape — keeps tests offline and deterministic. */
 export interface ClassifierDeps {
@@ -21,7 +21,7 @@ export interface ClassifierDeps {
   model?: string;
   /** Override max retries from GATE_MAX_RETRIES env; defaults to 2. */
   maxRetries?: number;
-  logger?: pino.Logger;
+  logger?: Logger;
 }
 
 /** Fail-closed sentinel decision. */
@@ -73,51 +73,60 @@ export async function classifyWithSonnet(
   deps: ClassifierDeps,
   candidate: SuggestionCandidate,
 ): Promise<ClassifierDecision> {
-  const { anthropic, model = "claude-sonnet-5", maxRetries = 2, logger } = deps;
+  const {
+    anthropic,
+    model = process.env.GATE_MODEL ?? "claude-sonnet-5",
+    maxRetries = envInt("GATE_MAX_RETRIES", 2),
+    logger,
+  } = deps;
   const maxAttempts = 1 + maxRetries;
-
-  const jsonSchema = getGateDecisionJsonSchema();
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const response = await anthropic.messages.parse({
-        model,
-        max_tokens: 512,
-        system: SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: candidate.text,
+      const response = await anthropic.messages.parse(
+        {
+          model,
+          max_tokens: 512,
+          system: SYSTEM_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: candidate.text,
+            },
+          ],
+          output_config: {
+            format: {
+              type: "json_schema",
+              schema: z.toJSONSchema(GateDecisionSchema) as {
+                [key: string]: unknown;
+              },
+            },
           },
-        ],
-        output_config: {
-          type: "json_schema",
-          json_schema: z.toJSONSchema(GateDecisionSchema) as NonNullable<
-            Parameters<typeof anthropic.messages.parse>[0]["output_config"]
-          >["json_schema"],
         },
-      });
+        { timeout: 8000 },
+      );
 
-      // Belt-and-suspenders: re-parse the parsed output through GateDecisionSchema
-      const parsed = response.parsed_output;
-      const validation = GateDecisionSchema.safeParse(parsed);
-
-      if (!validation.success) {
-        // Model returned a structurally invalid response — treat as unavailable
-        logger?.error(
-          { attempt, schemaErrors: validation.error.issues },
-          "classifier schema validation failed on model output",
+      // Belt-and-suspenders re-parse, in two steps:
+      // 1. Shape parse (enums/types only, no cross-field refines) so a model
+      //    response pairing held-for-review with a non-escalate category is
+      //    seen as structurally valid and can be coerced, not retried.
+      const shape = GateDecisionShapeSchema.safeParse(response.parsed_output);
+      if (!shape.success) {
+        throw new Error(
+          `model output failed schema validation: ${shape.error.issues
+            .map((i) => i.message)
+            .join("; ")}`,
         );
-        await backoff(attempt - 1);
-        continue;
       }
 
-      // D-12: coerce held-for-review with non-escalate category → rejected
-      let result: ClassifierDecision = validation.data;
+      // 2. D-12 coercion: never trust the model's escalation choice. Any
+      //    held-for-review outside the escalate-eligible set → rejected with
+      //    the same category.
+      let result = shape.data;
       if (
         result.decision === "held-for-review" &&
         result.category !== null &&
-        !(["gambling", "ip-infringement", "misinformation"] as readonly string[]).includes(result.category)
+        !(ESCALATE_ELIGIBLE as readonly string[]).includes(result.category)
       ) {
         result = {
           decision: "rejected",
@@ -126,7 +135,17 @@ export async function classifyWithSonnet(
         };
       }
 
-      return result;
+      // 3. Full refined-schema validation of the (possibly coerced) result.
+      const validation = GateDecisionSchema.safeParse(result);
+      if (!validation.success) {
+        throw new Error(
+          `decision failed refined schema validation: ${validation.error.issues
+            .map((i) => i.message)
+            .join("; ")}`,
+        );
+      }
+
+      return validation.data;
     } catch (err) {
       const isLastAttempt = attempt >= maxAttempts;
       logger?.error(
@@ -135,7 +154,8 @@ export async function classifyWithSonnet(
       );
 
       if (isLastAttempt) {
-        // Fail-closed: RESOLVE, never throw (D-11, Pitfall 3)
+        // Fail-closed: RESOLVE, never throw (D-11, Pitfall 3). No backoff on
+        // the final attempt — return immediately.
         return CLASSIFIER_UNAVAILABLE_DECISION;
       }
 
@@ -149,12 +169,23 @@ export async function classifyWithSonnet(
   return CLASSIFIER_UNAVAILABLE_DECISION;
 }
 
+/** Read a non-negative integer from env with a default. */
+function envInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 /**
- * Sleep with exponential backoff: 500ms * 2^attempt, capped.
- * Uses fake-timer-friendly setTimeout.
+ * Backoff schedule: 500ms after the first failed attempt, 1500ms after each
+ * subsequent one (RESEARCH.md Open Questions (RESOLVED) 2 — total waiting
+ * stays under the 8s budget). Fake-timer-friendly setTimeout.
  */
+const BACKOFF_MS = [500, 1500] as const;
+
 function backoff(attempt: number): Promise<void> {
-  const delay = Math.min(500 * 2 ** attempt, 3000);
+  const delay = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
   return new Promise((resolve) => {
     setTimeout(resolve, delay);
   });

@@ -5,7 +5,7 @@
  * Uses fake timers for retry/backoff testing.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SuggestionCandidate } from "../shared/types.js";
 import type { ClassifierDeps } from "./classifier.js";
 import { classifyWithSonnet } from "./classifier.js";
@@ -14,28 +14,36 @@ import { classifyWithSonnet } from "./classifier.js";
 /**
  * Creates a mock Anthropic client that returns structured-parse responses.
  *
- * Each call to `messages.parse` returns one of the provided responses,
- * cycling in order. A string response is auto-wrapped in a parse result.
+ * Each call to `messages.parse` consumes one of the provided responses,
+ * cycling in order. A string response is auto-wrapped in a parse result;
+ * an Error response makes the call REJECT with that error (simulating a
+ * network/API failure).
  */
-function makeMockClient(
-  responses: Array<string | { parsed_output: unknown }>,
-): { anthropic: NonNullable<ClassifierDeps["anthropic"]>; callCount: number } {
+function makeMockClient(responses: Array<string | Error | { parsed_output: unknown }>): {
+  anthropic: NonNullable<ClassifierDeps["anthropic"]>;
+  parseMock: ReturnType<typeof vi.fn>;
+  callCount: number;
+} {
   let callCount = 0;
+  const parseMock = vi.fn(async (..._args: unknown[]) => {
+    const idx = callCount % responses.length;
+    const resp = responses[idx];
+    callCount += 1;
+    if (resp instanceof Error) {
+      throw resp;
+    }
+    if (typeof resp === "string") {
+      return { parsed_output: JSON.parse(resp) };
+    }
+    return resp as { parsed_output: unknown };
+  });
   const anthropic = {
     messages: {
-      parse: vi.fn(async (...args: unknown[]) => {
-        const idx = callCount % responses.length;
-        const resp = responses[idx];
-        callCount += 1;
-        if (typeof resp === "string") {
-          return { parsed_output: JSON.parse(resp) };
-        }
-        return resp as { parsed_output: unknown };
-      }),
+      parse: parseMock,
     },
   } as unknown as NonNullable<ClassifierDeps["anthropic"]>;
 
-  return { anthropic, get callCount() { return callCount; } };
+  return { anthropic, parseMock, get callCount() { return callCount; } };
 }
 
 function deps(
@@ -120,7 +128,7 @@ describe("classifyWithSonnet — retry budget", () => {
   });
 
   it("succeeds on the third attempt after two failures", async () => {
-    const { anthropic } = makeMockClient([
+    const { anthropic, parseMock } = makeMockClient([
       { parsed_output: { error: true } }, // attempt 1 — returns invalid structure
       { parsed_output: { error: true } }, // attempt 2 — returns invalid structure
       { parsed_output: { decision: "approved", category: null, rationale: "ok" } }, // attempt 3 — success
@@ -133,6 +141,7 @@ describe("classifyWithSonnet — retry budget", () => {
     await vi.advanceTimersByTimeAsync(3000);
     const result = await promise;
     expect(result.decision).toBe("approved");
+    expect(parseMock).toHaveBeenCalledTimes(3);
   });
 
   it("exhausted retries resolves (never throws) to classifier-unavailable", async () => {
@@ -215,23 +224,35 @@ describe("classifyWithSonnet — fail-closed", () => {
 
 describe("classifyWithSonnet — boundary", () => {
   it("sends candidate text ONLY in the user role message", async () => {
-    const { anthropic } = makeMockClient([{ parsed_output: { decision: "approved", category: null, rationale: "ok" } }]);
+    const { anthropic, parseMock } = makeMockClient([{ parsed_output: { decision: "approved", category: null, rationale: "ok" } }]);
     await classifyWithSonnet(deps(anthropic), candidate({ text: "build a todo app" }));
-    const calls = anthropic.messages.parse.mock.calls;
+    const calls = parseMock.mock.calls;
     expect(calls).toHaveLength(1);
-    const [msg] = calls[0] as [{ messages?: Array<{ role: string; content: unknown }> }];
+    const [msg] = calls[0]! as [{ messages?: Array<{ role: string; content: unknown }> }];
     expect(msg.messages).toHaveLength(1);
-    expect(msg.messages![0].role).toBe("user");
-    expect(msg.messages![0].content).toBe("build a todo app");
+    expect(msg.messages![0]!.role).toBe("user");
+    expect(msg.messages![0]!.content).toBe("build a todo app");
   });
 
   it("the system prompt is a fixed constant — no candidate interpolation", async () => {
-    const { anthropic } = makeMockClient([{ parsed_output: { decision: "approved", category: null, rationale: "ok" } }]);
-    await classifyWithSonnet(deps(anthropic), candidate({ text: "build a keylogger" }));
-    const calls = anthropic.messages.parse.mock.calls;
-    expect(calls).toHaveLength(1);
-    const [msg] = calls[0] as [{ system?: string }];
-    // System prompt should be a fixed string — it must not contain "keylogger"
-    expect(msg.system).not.toContain("keylogger");
+    const OK = { parsed_output: { decision: "approved", category: null, rationale: "ok" } };
+    const { anthropic, parseMock } = makeMockClient([OK, OK]);
+    // Distinctive sentinel strings that cannot legitimately appear in a
+    // fixed system prompt (unlike e.g. "keylogger", which the prompt's
+    // category descriptions mention by design).
+    const sentinelA = "zq-sentinel-7391 flurbish gadget";
+    const sentinelB = "xv-sentinel-4482 crontlin widget";
+    await classifyWithSonnet(deps(anthropic), candidate({ text: sentinelA }));
+    await classifyWithSonnet(deps(anthropic), candidate({ text: sentinelB }));
+    const calls = parseMock.mock.calls;
+    expect(calls).toHaveLength(2);
+    const [first] = calls[0]! as [{ system?: string }];
+    const [second] = calls[1]! as [{ system?: string }];
+    // No interpolation of candidate fields into the system prompt...
+    expect(first.system).not.toContain("zq-sentinel-7391");
+    expect(first.system).not.toContain("flurbish");
+    expect(second.system).not.toContain("xv-sentinel-4482");
+    // ...and the system prompt is byte-identical across different candidates.
+    expect(first.system).toBe(second.system);
   });
 });
