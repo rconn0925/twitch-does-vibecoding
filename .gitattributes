@@ -1,0 +1,6 @@
+# Force LF line endings in the working tree regardless of core.autocrlf.
+# Biome's formatter expects LF (its default); with autocrlf=true on Windows,
+# every checkout produced CRLF files and `npm run lint` failed on all of
+# them with format-only errors. eol=lf makes checkout deterministic on the
+# Windows 11 streaming machine and everywhere else.
+* text=auto eol=lf
