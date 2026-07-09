@@ -101,8 +101,9 @@ describe("audit record helpers (append-only ledger)", () => {
     const all = listAuditRecords(db, { limit: 10 });
     expect(all).toHaveLength(3);
     // newest-first: autoincrement ids strictly descending
-    expect(all[0]!.id).toBeGreaterThan(all[1]!.id);
-    expect(all[1]!.id).toBeGreaterThan(all[2]!.id);
+    const ids = all.map((r) => r.id);
+    expect(ids).toEqual([...ids].sort((a, b) => b - a));
+    expect(new Set(ids).size).toBe(3);
     expect(all[0]?.source).toBe("hotkey");
 
     const halts = listAuditRecords(db, { limit: 10, eventType: "halt" });

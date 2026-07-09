@@ -173,9 +173,7 @@ export function listAuditRecords(
   }
   const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
   const rows = db
-    .prepare(
-      `SELECT * FROM audit_log ${where} ORDER BY created_at_ms DESC, id DESC LIMIT @limit`,
-    )
+    .prepare(`SELECT * FROM audit_log ${where} ORDER BY created_at_ms DESC, id DESC LIMIT @limit`)
     .all(params);
   return rows as AuditRecord[];
 }

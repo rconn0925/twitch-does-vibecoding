@@ -1,11 +1,6 @@
 import type Database from "better-sqlite3";
 import { recordHalt, recordVeto } from "../audit/record.js";
-import type {
-  HaltContext,
-  ReasonTag,
-  RecoveryAction,
-  StateSnapshot,
-} from "../shared/types.js";
+import type { HaltContext, ReasonTag, RecoveryAction, StateSnapshot } from "../shared/types.js";
 import type { StreamModeMachine } from "./stream-mode.js";
 
 export interface HaltDeps {

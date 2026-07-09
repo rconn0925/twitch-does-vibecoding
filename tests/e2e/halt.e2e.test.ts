@@ -62,9 +62,7 @@ describe("halt walking skeleton (e2e)", () => {
       event_type: string;
       source: string;
     }>;
-    const haltRecords = records.filter(
-      (r) => r.event_type === "halt" && r.source === "console",
-    );
+    const haltRecords = records.filter((r) => r.event_type === "halt" && r.source === "console");
     expect(haltRecords.length).toBeGreaterThanOrEqual(1);
   });
 
