@@ -43,14 +43,24 @@ function makeMockClient(responses: Array<string | Error | { parsed_output: unkno
     },
   } as unknown as NonNullable<ClassifierDeps["anthropic"]>;
 
-  return { anthropic, parseMock, get callCount() { return callCount; } };
+  return {
+    anthropic,
+    parseMock,
+    get callCount() {
+      return callCount;
+    },
+  };
 }
 
 function deps(
   anthropic: NonNullable<ClassifierDeps["anthropic"]>,
   overrides?: Partial<Omit<ClassifierDeps, "anthropic">>,
 ): ClassifierDeps {
-  return { anthropic, logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } as any, ...overrides };
+  return {
+    anthropic,
+    logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } as unknown as ClassifierDeps["logger"],
+    ...overrides,
+  };
 }
 
 function candidate(overrides: Partial<SuggestionCandidate> = {}): SuggestionCandidate {
@@ -66,8 +76,16 @@ function candidate(overrides: Partial<SuggestionCandidate> = {}): SuggestionCand
 }
 
 // ─── Schema-conformant valid responses ─────────────────────────────────
-const APPROVED = { parsed_output: { decision: "approved", category: null, rationale: "safe build — no policy concerns" } };
-const REJECTED_SPAM = { parsed_output: { decision: "rejected", category: "spam-malware", rationale: "requests malware" } };
+const APPROVED = {
+  parsed_output: {
+    decision: "approved",
+    category: null,
+    rationale: "safe build — no policy concerns",
+  },
+};
+const REJECTED_SPAM = {
+  parsed_output: { decision: "rejected", category: "spam-malware", rationale: "requests malware" },
+};
 
 describe("classifyWithSonnet — happy path", () => {
   it("returns an approved decision when the classifier approves", async () => {
@@ -133,10 +151,7 @@ describe("classifyWithSonnet — retry budget", () => {
       { parsed_output: { error: true } }, // attempt 2 — returns invalid structure
       { parsed_output: { decision: "approved", category: null, rationale: "ok" } }, // attempt 3 — success
     ]);
-    const promise = classifyWithSonnet(
-      deps(anthropic, { maxRetries: 2 }),
-      candidate(),
-    );
+    const promise = classifyWithSonnet(deps(anthropic, { maxRetries: 2 }), candidate());
     // Advance past both backoff delays (500ms + 1500ms = 2000ms total)
     await vi.advanceTimersByTimeAsync(3000);
     const result = await promise;
@@ -149,10 +164,7 @@ describe("classifyWithSonnet — retry budget", () => {
       new Error("network timeout"),
       new Error("network timeout"),
     ]);
-    const promise = classifyWithSonnet(
-      deps(anthropic, { maxRetries: 2 }),
-      candidate(),
-    );
+    const promise = classifyWithSonnet(deps(anthropic, { maxRetries: 2 }), candidate());
     // Advance past both backoff delays
     await vi.advanceTimersByTimeAsync(3000);
     const result = await promise;
@@ -166,10 +178,7 @@ describe("classifyWithSonnet — retry budget", () => {
       new Error("fail"),
       { parsed_output: { decision: "approved", category: null, rationale: "ok" } },
     ]);
-    const promise = classifyWithSonnet(
-      deps(anthropic, { maxRetries: 2 }),
-      candidate(),
-    );
+    const promise = classifyWithSonnet(deps(anthropic, { maxRetries: 2 }), candidate());
     // First backoff: 500ms
     await vi.advanceTimersByTimeAsync(500);
     // After first failure, still pending
@@ -190,20 +199,14 @@ describe("classifyWithSonnet — retry budget", () => {
 describe("classifyWithSonnet — fail-closed", () => {
   it("any error on the first attempt resolves to classifier-unavailable", async () => {
     const { anthropic } = makeMockClient([new Error("instant failure")]);
-    const result = await classifyWithSonnet(
-      deps(anthropic, { maxRetries: 0 }),
-      candidate(),
-    );
+    const result = await classifyWithSonnet(deps(anthropic, { maxRetries: 0 }), candidate());
     expect(result.decision).toBe("rejected");
     expect(result.category).toBe("classifier-unavailable");
   });
 
   it("the function never rejects the promise", async () => {
     const { anthropic } = makeMockClient([new Error("always fails")]);
-    const result = await classifyWithSonnet(
-      deps(anthropic, { maxRetries: 0 }),
-      candidate(),
-    );
+    const result = await classifyWithSonnet(deps(anthropic, { maxRetries: 0 }), candidate());
     expect(result).toBeDefined();
     expect(result.decision).toBe("rejected");
   });
@@ -213,10 +216,7 @@ describe("classifyWithSonnet — fail-closed", () => {
       // Return something that fails GateDecisionSchema validation
       { parsed_output: { bad_field: true } },
     ]);
-    const result = await classifyWithSonnet(
-      deps(anthropic, { maxRetries: 0 }),
-      candidate(),
-    );
+    const result = await classifyWithSonnet(deps(anthropic, { maxRetries: 0 }), candidate());
     expect(result.decision).toBe("rejected");
     expect(result.category).toBe("classifier-unavailable");
   });
@@ -224,14 +224,16 @@ describe("classifyWithSonnet — fail-closed", () => {
 
 describe("classifyWithSonnet — boundary", () => {
   it("sends candidate text ONLY in the user role message", async () => {
-    const { anthropic, parseMock } = makeMockClient([{ parsed_output: { decision: "approved", category: null, rationale: "ok" } }]);
+    const { anthropic, parseMock } = makeMockClient([
+      { parsed_output: { decision: "approved", category: null, rationale: "ok" } },
+    ]);
     await classifyWithSonnet(deps(anthropic), candidate({ text: "build a todo app" }));
     const calls = parseMock.mock.calls;
     expect(calls).toHaveLength(1);
-    const [msg] = calls[0]! as [{ messages?: Array<{ role: string; content: unknown }> }];
+    const [msg] = calls[0] as [{ messages?: Array<{ role: string; content: unknown }> }];
     expect(msg.messages).toHaveLength(1);
-    expect(msg.messages![0]!.role).toBe("user");
-    expect(msg.messages![0]!.content).toBe("build a todo app");
+    expect(msg.messages?.[0]?.role).toBe("user");
+    expect(msg.messages?.[0]?.content).toBe("build a todo app");
   });
 
   it("the system prompt is a fixed constant — no candidate interpolation", async () => {
@@ -246,8 +248,8 @@ describe("classifyWithSonnet — boundary", () => {
     await classifyWithSonnet(deps(anthropic), candidate({ text: sentinelB }));
     const calls = parseMock.mock.calls;
     expect(calls).toHaveLength(2);
-    const [first] = calls[0]! as [{ system?: string }];
-    const [second] = calls[1]! as [{ system?: string }];
+    const [first] = calls[0] as [{ system?: string }];
+    const [second] = calls[1] as [{ system?: string }];
     // No interpolation of candidate fields into the system prompt...
     expect(first.system).not.toContain("zq-sentinel-7391");
     expect(first.system).not.toContain("flurbish");

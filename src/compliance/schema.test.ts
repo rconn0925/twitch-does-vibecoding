@@ -10,12 +10,11 @@ import {
   CATEGORY_META,
   CLASSIFIER_UNAVAILABLE,
   ESCALATE_ELIGIBLE,
-  TAXONOMY_CATEGORIES,
   isEscalateCategory,
   isLegalCategory,
+  TAXONOMY_CATEGORIES,
 } from "./categories.js";
 import { GateDecisionSchema, getGateDecisionJsonSchema } from "./schema.js";
-
 
 describe("TAXONOMY_CATEGORIES", () => {
   it("has exactly 15 entries", () => {

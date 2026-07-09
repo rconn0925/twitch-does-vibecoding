@@ -47,18 +47,17 @@ export const GateDecisionShapeSchema = z.object({
     ),
 });
 
-export const GateDecisionSchema = GateDecisionShapeSchema
-  .refine(
-    (data) => {
-      if (data.decision === "approved" && data.category !== null) return false;
-      if (data.decision !== "approved" && data.category === null) return false;
-      return true;
-    },
-    {
-      message: "approved must have null category; rejected/held-for-review must have a category",
-      path: ["category"],
-    },
-  )
+export const GateDecisionSchema = GateDecisionShapeSchema.refine(
+  (data) => {
+    if (data.decision === "approved" && data.category !== null) return false;
+    if (data.decision !== "approved" && data.category === null) return false;
+    return true;
+  },
+  {
+    message: "approved must have null category; rejected/held-for-review must have a category",
+    path: ["category"],
+  },
+)
   .refine(
     (data) => {
       if (data.decision === "held-for-review" && data.category !== null) {

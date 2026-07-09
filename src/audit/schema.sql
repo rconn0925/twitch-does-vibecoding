@@ -8,7 +8,7 @@
 CREATE TABLE IF NOT EXISTS audit_log (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at_ms   INTEGER NOT NULL,          -- Date.now(); indexed for the purge job
-  event_type      TEXT NOT NULL,             -- 'gate_decision' | 'veto' | 'halt' | 'review_resolved' | 'review_expired'
+  event_type      TEXT NOT NULL,             -- 'gate_decision' | 'veto' | 'halt' | 'review_resolved' | 'review_expired' | 'submission_refused'
   source          TEXT NOT NULL,             -- 'chat' | 'channel_points' | 'donation' | 'chaos' | 'operator' | 'console' | 'hotkey'
   twitch_username TEXT,                      -- nullable: absent for operator-console-originated events
   suggestion_text TEXT,                      -- nullable: absent for pure veto/halt events with no candidate
