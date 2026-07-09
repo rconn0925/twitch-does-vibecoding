@@ -1,7 +1,8 @@
 ---
 phase: 1
 slug: compliance-gate-kill-switch
-status: draft
+status: approved
+reviewed_at: 2026-07-08
 shadcn_initialized: false
 preset: none
 created: 2026-07-08
