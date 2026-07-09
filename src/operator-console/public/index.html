@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Operator Console — Twitch Does Vibecoding</title>
+    <link rel="stylesheet" href="/console.css" />
+  </head>
+  <body>
+    <div id="halted-banner" class="halted-banner" hidden>
+      <span class="halted-banner-title">HALTED</span>
+      <span class="halted-banner-body">Everything is frozen. Nothing was deleted — triage below.</span>
+    </div>
+
+    <header class="status-bar">
+      <nav class="mode-pills" aria-label="Stream mode">
+        <span class="pill" data-mode="IDLE">IDLE</span>
+        <span class="pill" data-mode="VOTING_ROUND">VOTING_ROUND</span>
+        <span class="pill" data-mode="BUILD_IN_PROGRESS">BUILD_IN_PROGRESS</span>
+        <span class="pill" data-mode="FREE_REIGN_WINDOW">FREE_REIGN_WINDOW</span>
+        <span class="pill" data-mode="CHAOS_MODE">CHAOS_MODE</span>
+        <span class="pill pill-halted" data-mode="HALTED">HALTED</span>
+      </nav>
+      <button id="halt-button" class="halt-button" type="button">Halt Everything</button>
+    </header>
+
+    <div id="reason-row" class="reason-row" hidden>
+      <span class="reason-label">Reason? (optional — the halt already took effect)</span>
+      <button class="reason-tag" type="button" data-tag="tos-risk">ToS risk</button>
+      <button class="reason-tag" type="button" data-tag="boring">boring</button>
+      <button class="reason-tag" type="button" data-tag="too-big">too big</button>
+      <button class="reason-tag" type="button" data-tag="gut-feeling">gut feeling</button>
+      <button class="reason-tag" type="button" data-tag="other">other</button>
+      <button class="reason-tag" type="button" data-tag="">skip</button>
+    </div>
+
+    <div id="disconnected" class="error-state" hidden>
+      <h2 class="error-heading">Console disconnected from orchestrator</h2>
+      <p class="error-body">
+        Reconnecting… If this persists, restart the orchestrator process. The hotkey still works
+        independently of this page.
+      </p>
+    </div>
+
+    <main class="panel">
+      <h1 class="panel-title">Operator Console</h1>
+      <p class="panel-body">
+        Walking skeleton: live mode state and the kill switch. Review queue, active queue, triage,
+        and the audit page land in the next plans.
+      </p>
+    </main>
+
+    <script src="/console.js"></script>
+  </body>
+</html>

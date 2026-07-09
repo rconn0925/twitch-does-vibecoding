@@ -1,0 +1,181 @@
+/* Operator console — dark utility theme per 01-UI-SPEC.md.
+   Spacing tokens: 4 / 8 / 16 / 24 / 32 / 48px. Type scale: 14 / 16 / 20 / 28 at 400 / 600. */
+
+:root {
+  --bg: #0f172a; /* slate-950 — dominant 60% */
+  --panel: #1e293b; /* slate-800 — secondary 30% */
+  --accent: #3b82f6; /* blue-500 — interactive accent 10% */
+  --destructive: #dc2626; /* red-600 — Halt / HALTED banner only */
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+/* HALTED banner — Display 28/600, readable across the room (UI-SPEC typography) */
+.halted-banner {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  background: var(--destructive);
+  color: #fff;
+  padding: var(--space-md) var(--space-lg);
+}
+
+.halted-banner-title {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.halted-banner-body {
+  font-size: 16px;
+  font-weight: 400;
+}
+
+/* Status bar — persistent across all screens */
+.status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  background: var(--panel);
+  padding: var(--space-md) var(--space-lg);
+}
+
+.mode-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.pill {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: var(--space-xs) var(--space-sm);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--bg);
+}
+
+.pill.active {
+  border-color: var(--accent); /* blue-500 border marks the active mode pill */
+  color: var(--text);
+}
+
+.pill-halted.active {
+  background: var(--destructive);
+  border-color: var(--destructive);
+  color: #fff;
+}
+
+/* Halt Everything — destructive, 44px min click target, single click, no modal */
+.halt-button {
+  min-height: 44px;
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--destructive);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.halt-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Optional one-tap reason tags (D-18) — never blocking */
+.reason-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-lg);
+  background: var(--panel);
+}
+
+.reason-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.reason-tag {
+  min-height: 44px;
+  padding: var(--space-xs) var(--space-md);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--text-muted);
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.reason-tag:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Error state — console disconnected */
+.error-state {
+  background: var(--panel);
+  border-left: 4px solid var(--destructive);
+  margin: var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
+}
+
+.error-heading {
+  margin: 0 0 var(--space-sm);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.error-body {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* Content panel */
+.panel {
+  background: var(--panel);
+  margin: var(--space-2xl) var(--space-lg) var(--space-lg);
+  padding: var(--space-lg);
+  border-radius: 8px;
+}
+
+.panel-title {
+  margin: 0 0 var(--space-md);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.panel-body {
+  margin: 0;
+  color: var(--text-muted);
+}
