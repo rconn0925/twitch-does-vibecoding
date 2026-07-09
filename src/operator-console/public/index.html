@@ -25,7 +25,7 @@
     </header>
 
     <div id="reason-row" class="reason-row" hidden>
-      <span class="reason-label">Reason? (optional — the halt already took effect)</span>
+      <span class="reason-label">Reason? (optional — the action already took effect)</span>
       <button class="reason-tag" type="button" data-tag="tos-risk">ToS risk</button>
       <button class="reason-tag" type="button" data-tag="boring">boring</button>
       <button class="reason-tag" type="button" data-tag="too-big">too big</button>
@@ -42,12 +42,68 @@
       </p>
     </div>
 
-    <main class="panel">
-      <h1 class="panel-title">Operator Console</h1>
-      <p class="panel-body">
-        Walking skeleton: live mode state and the kill switch. Review queue, active queue, triage,
-        and the audit page land in the next plans.
-      </p>
+    <nav id="tabs" class="tabs" aria-label="Console views">
+      <button class="tab active" type="button" data-view="review">Needs Review</button>
+      <button class="tab" type="button" data-view="queue">Active Queue</button>
+      <button class="tab" type="button" data-view="audit">Audit Log</button>
+    </nav>
+
+    <main>
+      <section id="view-review" class="panel view"></section>
+
+      <section id="view-queue" class="panel view" hidden>
+        <div id="queue-content"></div>
+        <form id="dev-form" class="dev-form">
+          <h3 class="group-title">Dev: simulate suggestion</h3>
+          <div class="dev-fields">
+            <label class="field-label" for="dev-username">Username</label>
+            <input id="dev-username" class="dev-input" type="text" value="dev" />
+            <label class="field-label" for="dev-text">Suggestion text</label>
+            <input
+              id="dev-text"
+              class="dev-input dev-input-wide"
+              type="text"
+              placeholder="add a dark-mode toggle"
+            />
+            <button id="dev-submit" class="button-accent" type="submit">Submit</button>
+          </div>
+          <p id="dev-feedback" class="dev-feedback" hidden></p>
+        </form>
+      </section>
+
+      <section id="view-audit" class="panel view" hidden>
+        <h2 class="section-title">Audit Log</h2>
+        <div class="audit-filters">
+          <label class="field-label" for="filter-event">Event type</label>
+          <select id="filter-event" class="dev-input">
+            <option value="">all</option>
+            <option value="gate_decision">gate_decision</option>
+            <option value="veto">veto</option>
+            <option value="halt">halt</option>
+            <option value="review_resolved">review_resolved</option>
+            <option value="review_expired">review_expired</option>
+            <option value="submission_refused">submission_refused</option>
+          </select>
+          <label class="field-label" for="filter-decision">Decision</label>
+          <select id="filter-decision" class="dev-input">
+            <option value="">all</option>
+            <option value="approved">approved</option>
+            <option value="rejected">rejected</option>
+            <option value="held-for-review">held-for-review</option>
+            <option value="expired-unreviewed">expired-unreviewed</option>
+          </select>
+          <label class="field-label" for="filter-limit">Limit</label>
+          <select id="filter-limit" class="dev-input">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </div>
+        <div id="audit-content"></div>
+      </section>
+
+      <section id="view-triage" class="panel view" hidden></section>
     </main>
 
     <script src="/console.js"></script>
