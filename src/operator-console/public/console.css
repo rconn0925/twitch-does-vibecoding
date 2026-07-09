@@ -1,11 +1,17 @@
 /* Operator console — dark utility theme per 01-UI-SPEC.md.
-   Spacing tokens: 4 / 8 / 16 / 24 / 32 / 48px. Type scale: 14 / 16 / 20 / 28 at 400 / 600. */
+   Spacing tokens: 4 / 8 / 16 / 24 / 32 / 48px. Type scale: 14 / 16 / 20 / 28 at 400 / 600.
+   Accent (#3B82F6) ONLY on: Approve, Resume, Discard-&-Resume, Reset-to-Idle,
+   focus rings, active-mode pill border. Destructive (#DC2626) ONLY on: Halt,
+   Veto Task, Reject, HALTED banner stripe. Status pills (green/amber/red) are
+   informational, non-interactive. */
 
 :root {
   --bg: #0f172a; /* slate-950 — dominant 60% */
   --panel: #1e293b; /* slate-800 — secondary 30% */
   --accent: #3b82f6; /* blue-500 — interactive accent 10% */
-  --destructive: #dc2626; /* red-600 — Halt / HALTED banner only */
+  --destructive: #dc2626; /* red-600 — Halt / Veto / Reject / HALTED banner only */
+  --status-approved: #22c55e; /* green-500 — read-only approved pill */
+  --status-held: #f59e0b; /* amber-500 — read-only held-for-review pill */
   --text: #e2e8f0;
   --text-muted: #94a3b8;
   --space-xs: 4px;
@@ -140,7 +146,7 @@ body {
   outline-offset: 2px;
 }
 
-/* Error state — console disconnected */
+/* Error state — console disconnected / triage transition errors */
 .error-state {
   background: var(--panel);
   border-left: 4px solid var(--destructive);
@@ -160,22 +166,305 @@ body {
   color: var(--text-muted);
 }
 
-/* Content panel */
+/* View tabs */
+.tabs {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-lg) 0;
+}
+
+.tab {
+  min-height: 44px;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--panel);
+  color: var(--text-muted);
+  border: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Content panels */
 .panel {
   background: var(--panel);
-  margin: var(--space-2xl) var(--space-lg) var(--space-lg);
+  margin: var(--space-md) var(--space-lg) var(--space-lg);
   padding: var(--space-lg);
   border-radius: 8px;
 }
 
-.panel-title {
+.panel-body {
+  margin: 0 0 var(--space-md);
+  color: var(--text-muted);
+}
+
+.section-title {
   margin: 0 0 var(--space-md);
   font-size: 20px;
   font-weight: 600;
   line-height: 1.2;
 }
 
-.panel-body {
+.group-title {
+  margin: var(--space-md) 0 var(--space-sm);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+/* Primary action buttons — 44px min targets (incident-response exception) */
+.button-accent {
+  min-height: 44px;
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button-destructive {
+  min-height: 44px;
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--destructive);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button-accent:focus-visible,
+.button-destructive:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Read-only status pills (informational — outside the accent budget) */
+.status-pill {
+  display: inline-block;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #0f172a;
+}
+
+.status-approved {
+  background: var(--status-approved);
+}
+
+.status-held {
+  background: var(--status-held);
+}
+
+.status-rejected {
+  background: var(--destructive);
+  color: #fff;
+}
+
+/* Needs Review cards */
+.card {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.card-user {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.card-text {
+  margin: 0 0 var(--space-sm);
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.card-rationale {
+  margin: 0 0 var(--space-md);
+  font-size: 16px;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.card-actions {
+  display: flex;
+  gap: var(--space-md);
+}
+
+/* Active Queue rows */
+.task-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  background: var(--bg);
+  border-radius: 8px;
+  padding: var(--space-md);
+  margin-bottom: var(--space-sm);
+}
+
+.task-info {
+  min-width: 0;
+}
+
+.task-info .card-text {
+  margin-bottom: var(--space-xs);
+}
+
+/* Empty states */
+.empty-state {
+  padding: var(--space-lg) 0;
+}
+
+.empty-heading {
+  margin: 0 0 var(--space-sm);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.empty-body {
   margin: 0;
   color: var(--text-muted);
+}
+
+/* Dev-submit form (the pattern Phase 2 chat ingestion replaces) */
+.dev-form {
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--bg);
+}
+
+.dev-fields {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.field-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.dev-input {
+  min-height: 44px;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--text-muted);
+  border-radius: 6px;
+  font-size: 16px;
+  font-family: inherit;
+}
+
+.dev-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dev-input-wide {
+  flex: 1;
+  min-width: 240px;
+}
+
+.dev-feedback {
+  margin: var(--space-sm) 0 0;
+  color: var(--status-held);
+}
+
+/* Audit Log */
+.audit-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.audit-th {
+  text-align: left;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-muted);
+  padding: var(--space-sm);
+  border-bottom: 1px solid var(--bg);
+}
+
+.audit-td {
+  font-size: 16px;
+  font-weight: 400;
+  vertical-align: top;
+  padding: var(--space-sm);
+  border-bottom: 1px solid var(--bg);
+}
+
+.audit-text {
+  overflow-wrap: anywhere;
+  max-width: 320px;
+}
+
+/* HALTED triage takeover (D-04) */
+.triage-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xl);
+  margin-bottom: var(--space-lg);
+}
+
+.triage-group {
+  min-width: 200px;
+}
+
+.triage-error {
+  background: var(--bg);
+  border-left: 4px solid var(--destructive);
+  padding: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.triage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+}
+
+/* Three equally-weighted recovery buttons — identical styling, no default */
+.triage-button {
+  flex: 1;
+  min-width: 180px;
 }

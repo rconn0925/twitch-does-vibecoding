@@ -4,6 +4,9 @@ import { pathToFileURL } from "node:url";
 import type Database from "better-sqlite3";
 import { type Logger, pino } from "pino";
 import { openDb } from "./audit/db.js";
+import { purgeOldAuditRecords } from "./audit/purge.js";
+import { classifierDepsFromEnv } from "./compliance/classifier.js";
+import { classify, type FakeClassifier, type GateDeps } from "./compliance/gate.js";
 import { AbortRegistry, abortActiveWork } from "./kill-switch/abort.js";
 import {
   type HotkeyHandle,
@@ -12,14 +15,23 @@ import {
   startHotkeyListener,
 } from "./kill-switch/hotkey.js";
 import { type ConsoleServerHandle, startConsoleServer } from "./operator-console/server.js";
+import { CandidatePool } from "./queue/pool.js";
+import { TaskQueue } from "./queue/task-queue.js";
 import { HALT_TRIGGERED } from "./shared/events.js";
 import type { HaltContext } from "./shared/types.js";
 import { type HaltDeps, triggerHalt } from "./state-machine/halt.js";
+import { expireAllPending, expireStale, reviewTtlMs } from "./state-machine/review-queue.js";
 import { StreamModeMachine } from "./state-machine/stream-mode.js";
 
 export interface CreateAppOptions {
   dbPath: string;
   port: number;
+  /**
+   * Test-injected classifier (vitest never talks to the network). When absent,
+   * the live Sonnet classifier is wired from ANTHROPIC_API_KEY; with neither,
+   * every submission fails closed (D-11).
+   */
+  fakeClassifier?: FakeClassifier;
 }
 
 export interface AppHandle {
@@ -28,10 +40,17 @@ export interface AppHandle {
   machine: StreamModeMachine;
   db: Database.Database;
   logger: Logger;
+  pool: CandidatePool;
+  taskQueue: TaskQueue;
   /** Phase 3's orchestrator registers agent-session PIDs/controllers here. */
   registry: AbortRegistry;
   close: () => Promise<void>;
 }
+
+/** Review-expiry sweep cadence while the process is up (D-07). */
+const REVIEW_SWEEP_INTERVAL_MS = 15 * 60_000;
+/** Audit-purge cadence while the process is up (D-17). */
+const PURGE_INTERVAL_MS = 24 * 3_600_000;
 
 /**
  * Wires the Walking Skeleton: audit db -> state machine -> operator console.
@@ -48,6 +67,27 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   const db = openDb(opts.dbPath);
   const machine = new StreamModeMachine();
   const registry = new AbortRegistry();
+  const pool = new CandidatePool();
+  const taskQueue = new TaskQueue();
+
+  // Session-start hygiene, BEFORE the console accepts a single request:
+  // D-07 clean slate (every leftover pending review expires as
+  // expired-unreviewed, one audit row each) + D-17 rolling audit purge.
+  const expired = expireAllPending(db, machine.mode);
+  const purged = purgeOldAuditRecords(db);
+  logger.info({ expired, purged }, "session-start hygiene: review expiry + audit purge");
+
+  // While the process is up: sweep review TTL expiries and re-purge daily.
+  // unref'd so neither timer keeps the event loop alive on shutdown.
+  const reviewSweepTimer = setInterval(() => {
+    const swept = expireStale(db, reviewTtlMs(), machine.mode);
+    if (swept > 0) logger.info({ swept }, "review TTL sweep expired pending items (D-07)");
+  }, REVIEW_SWEEP_INTERVAL_MS);
+  reviewSweepTimer.unref();
+  const purgeTimer = setInterval(() => {
+    purgeOldAuditRecords(db);
+  }, PURGE_INTERVAL_MS);
+  purgeTimer.unref();
 
   machine.on(HALT_TRIGGERED, (...args) => {
     const ctx = args[0] as HaltContext;
@@ -57,7 +97,31 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     );
   });
 
-  const console_ = await startConsoleServer({ machine, db, port: opts.port, logger });
+  // Compliance-gate deps: injected fake in tests; live Sonnet from
+  // ANTHROPIC_API_KEY otherwise; neither -> classify() fails closed (D-11).
+  const classifierDeps = opts.fakeClassifier ? null : classifierDepsFromEnv(logger);
+  if (!opts.fakeClassifier && !classifierDeps) {
+    logger.warn(
+      "ANTHROPIC_API_KEY not set — the compliance gate will fail closed on every submission",
+    );
+  }
+  const gateDeps: GateDeps = {
+    db,
+    logger,
+    streamModeProvider: () => machine.mode,
+    ...(opts.fakeClassifier ? { fakeClassifier: opts.fakeClassifier } : {}),
+    ...(classifierDeps ? { classifier: classifierDeps } : {}),
+  };
+
+  const console_ = await startConsoleServer({
+    machine,
+    db,
+    port: opts.port,
+    pool,
+    taskQueue,
+    classify: (candidate) => classify(gateDeps, candidate),
+    logger,
+  });
   logger.info(
     { port: console_.port, dbPath: opts.dbPath },
     "operator console listening at http://127.0.0.1:%d",
@@ -70,8 +134,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     machine,
     db,
     logger,
+    pool,
+    taskQueue,
     registry,
     close: async () => {
+      clearInterval(reviewSweepTimer);
+      clearInterval(purgeTimer);
       await console_.close();
       db.close();
     },

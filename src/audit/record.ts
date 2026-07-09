@@ -159,6 +159,8 @@ export function recordReviewResolution(
     suggestionText: string | null;
     twitchUsername: string | null;
     streamMode: StreamMode;
+    /** Optional one-tap reason tag on destructive resolutions (D-18). */
+    reasonTag?: ReasonTag | null;
   },
 ): void {
   insert(db, {
@@ -168,7 +170,7 @@ export function recordReviewResolution(
     twitchUsername: args.twitchUsername,
     suggestionText: args.suggestionText,
     decision: args.resolution,
-    category: null,
+    category: args.reasonTag ?? null,
     rationale: null,
     streamMode: args.streamMode,
     taskId: String(args.reviewId),

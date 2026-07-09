@@ -6,7 +6,7 @@
  * (known zod-v4 incompatibility, RESEARCH.md Pitfall 1 / Assumption A1).
  */
 
-import type Anthropic from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
 import type { Logger } from "pino";
 import { z } from "zod";
 import type { SuggestionCandidate } from "../shared/types.js";
@@ -22,6 +22,21 @@ export interface ClassifierDeps {
   /** Override max retries from GATE_MAX_RETRIES env; defaults to 2. */
   maxRetries?: number;
   logger?: Logger;
+}
+
+/**
+ * Build live ClassifierDeps from ANTHROPIC_API_KEY, or null when the key is
+ * absent (the gate then fails closed on every call — D-11, never fail-open).
+ *
+ * Lives here so the "@anthropic-ai/sdk" import never leaves src/compliance/
+ * (classifier-boundary invariant, tests/invariants/single-funnel.test.ts).
+ */
+export function classifierDepsFromEnv(logger?: Logger): ClassifierDeps | null {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+  const deps: ClassifierDeps = { anthropic: new Anthropic({ apiKey }) };
+  if (logger) deps.logger = logger;
+  return deps;
 }
 
 /** Fail-closed sentinel decision. */

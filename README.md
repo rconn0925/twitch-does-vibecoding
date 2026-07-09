@@ -38,14 +38,56 @@ Copy `.env.example` to `.env` (gitignored). All values have working defaults exc
 | `REVIEW_TTL_HOURS`     | `4`                | Held-for-review expiry                           |
 | `AUDIT_RETENTION_DAYS` | `90`               | Rolling audit retention (auto-purge)             |
 
-## What exists right now (Walking Skeleton)
+## Operator console tour
 
-- Six-state stream-mode machine (`IDLE / VOTING_ROUND / BUILD_IN_PROGRESS /
-  FREE_REIGN_WINDOW / CHAOS_MODE / HALTED`) — HALTED is reachable synchronously
-  from every state.
-- Operator console with a live mode pill and a one-click **Halt Everything** button.
-- Every halt writes an append-only `audit_log` row (source, prior mode, timestamp),
-  readable back via `GET /api/audit`.
+`npm run dev`, then open **http://127.0.0.1:4900**. The console is the streamer's
+incident-response surface: a persistent status bar (live mode pill + one-click
+**Halt Everything**, no confirmation modal) over three tabbed views, plus a
+takeover view that appears only while halted.
 
-The compliance gate, global hotkey, review queue, and audit page land in plans
-01-02 through 01-05.
+### Needs Review
+
+Escalated suggestions (`held-for-review` — gray-zone categories only: gambling,
+IP, misinformation) wait here between rounds. No sound, no toast, no
+interruption. Each card shows the suggestion text, username, category pill, and
+the classifier's rationale, with per-item **Approve** / **Reject**:
+
+- **Approve** re-enters the original candidate into the pre-screened pool.
+- **Reject** resolves it — single click, no modal.
+
+Both write a new `review_resolved` audit row; the original gate decision row is
+never touched. Anything still pending at process startup (or past the
+`REVIEW_TTL_HOURS` TTL) expires as `expired-unreviewed`, audited.
+
+### Active Queue
+
+Queued build tasks, each with a **Veto Task** button (single click, no modal;
+the veto row records the task's triggering suggestion text). Below them, the
+pre-screened candidate pool is listed read-only with green `approved` pills.
+
+This view also hosts the **Dev: simulate suggestion** form — the demo driver
+for the whole slice before Twitch chat ingestion exists: type text, submit, and
+watch it flow through the Sonnet gate into the pool (approved), Needs Review
+(held), or the audit log only (rejected). While halted, the same form surfaces
+the intake refusal inline.
+
+### Audit Log
+
+Every gate decision, veto, halt, review resolution, and refused submission —
+each with the triggering input — filterable by event type and decision, with a
+row-limit selector. Records older than `AUDIT_RETENTION_DAYS` (default 90) are
+purged automatically at startup and daily.
+
+### HALTED triage takeover
+
+When a halt fires (console button or panic hotkey double-tap), the normal view
+is replaced by the triage panel: the frozen in-flight task, queued tasks, and
+prior mode, plus exactly three equally-weighted recovery buttons — **Resume** /
+**Discard Task & Resume** / **Reset to Idle**. Nothing auto-resumes and nothing
+is pre-selected. Intake is refused (and audited) for as long as the halt lasts.
+
+### Reason tags
+
+After any destructive action (halt, veto, reject, discard) an optional one-tap
+reason row appears — `ToS risk / boring / too big / gut feeling / other / skip`.
+Tagging is never required and never blocks: the action has already taken effect.
