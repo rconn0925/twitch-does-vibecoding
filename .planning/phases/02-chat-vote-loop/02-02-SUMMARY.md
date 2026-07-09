@@ -121,3 +121,9 @@ None — all new surface (chat-text parse boundary, outbound rate limit, token-a
 ## User Setup Required (carried forward)
 
 Before plan 02-06's live checkpoint the streamer must register a Twitch app (dev.twitch.tv/console, OAuth redirect `http://localhost:4900/auth/callback`, category Chat Bot) and set `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `TWITCH_BROADCASTER_USER_ID`. No code in this plan blocks on it (all tests injected).
+
+## Self-Check: PASSED
+
+- All 9 created files verified on disk
+- All 10 commits verified in git log
+- Working tree clean; `npm test` 250/250 green on final run
