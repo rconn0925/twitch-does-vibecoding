@@ -77,8 +77,8 @@ Research-adjacent: the adversarial test suite design (jailbreak/paraphrase/obfus
 Plans:
 **Wave 1**
 
-- [ ] 02-01-PLAN.md — Round & vote ledger engine: RoundManager, write-through SQLite votes, halt-freeze, crash restore (wave 1)
-- [ ] 02-02-PLAN.md — Twitch client foundation: twurple install, command parser, rate-limited chat sender + invariant, persisted auth (wave 1)
+- [x] 02-01-PLAN.md — Round & vote ledger engine: RoundManager, write-through SQLite votes, halt-freeze, crash restore (wave 1)
+- [x] 02-02-PLAN.md — Twitch client foundation: twurple install, command parser, rate-limited chat sender + invariant, persisted auth (wave 1)
 
 **Wave 2** *(blocked on 02-01)*
 
@@ -159,7 +159,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Compliance Gate & Kill Switch | 5/5 | Complete   | 2026-07-09 |
-| 2. Chat Vote Loop | 0/6 | Planned | - |
+| 2. Chat Vote Loop | 2/6 | In Progress|  |
 | 3. Sandboxed Build Engine & Live Show | 0/TBD | Not started | - |
 | 4. Paid Influence & Chaos Mode | 0/TBD | Not started | - |
 | 5. Build History & Stream Night Dry Run | 0/TBD | Not started | - |
