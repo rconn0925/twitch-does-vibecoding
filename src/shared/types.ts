@@ -82,3 +82,37 @@ export interface StateSnapshot {
   queuedTaskIds: string[];
   haltContext: HaltContext | null;
 }
+
+/** Lifecycle status of a voting round row (Phase 2). 'discarded' = halted then dropped (D2-16). */
+export type RoundStatus = "open" | "closed" | "discarded";
+
+/** One numbered voting option in a round: the pooled candidate plus its live vote count. */
+export interface RoundCandidate {
+  /** 1-based option number, matching chat's `!vote N`. */
+  option: number;
+  candidate: SuggestionCandidate;
+  result: GateResult;
+  votes: number;
+}
+
+/**
+ * Point-in-time view of a voting round — pushed to console/overlay surfaces.
+ *
+ * Votes are keyed by Twitch numeric user id (EventSub chatterId), NEVER by
+ * display name — display names are mutable/spoofable (D2-15, RESEARCH.md
+ * Pitfall 2). One vote per viewer per round; a revote overwrites.
+ */
+export interface RoundSnapshot {
+  roundId: number;
+  status: RoundStatus;
+  /** True while a halt has frozen the round timer (D2-16). */
+  frozen: boolean;
+  candidates: RoundCandidate[];
+  openedAtMs: number;
+  endsAtMs: number;
+  /** Persisted remaining time while frozen; null when the timer is live. */
+  remainingMs: number | null;
+  winnerOption: number | null;
+  tiebreak: boolean;
+  totalVotes: number;
+}
