@@ -13,7 +13,7 @@ Build the safety spine first — a single compliance chokepoint and an always-re
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Compliance Gate & Kill Switch** - Single-funnel ToS filter, state machine, and operator veto — the safety spine, adversarially tested before any chat input exists
+- [x] **Phase 1: Compliance Gate & Kill Switch** - Single-funnel ToS filter, state machine, and operator veto — the safety spine, adversarially tested before any chat input exists (completed 2026-07-09)
 - [ ] **Phase 2: Chat Vote Loop** - Twitch EventSub ingestion, !suggest/!vote rounds, chat narration, and live vote overlay — the first end-to-end demoable slice
 - [ ] **Phase 3: Sandboxed Build Engine & Live Show** - Agent orchestrator (Sonnet research, Fable build) in a WSL2/Docker sandbox, second-pass output screening, build overlay, and live app preview
 - [ ] **Phase 4: Paid Influence & Chaos Mode** - Donation free-reign windows (external platform), channel points micro-control, and chaos mode — all through the identical gate
@@ -52,7 +52,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 01-04-PLAN.md — Operator console completion: review queue, HALTED triage, veto + reason tags, audit page, 90-day purge, single-funnel invariant test (wave 4)
+- [x] 01-04-PLAN.md — Operator console completion: review queue, HALTED triage, veto + reason tags, audit page, 90-day purge, single-funnel invariant test (wave 4)
 
 **UI hint**: yes
 
@@ -135,7 +135,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Compliance Gate & Kill Switch | 4/5 | In Progress|  |
+| 1. Compliance Gate & Kill Switch | 5/5 | Complete   | 2026-07-09 |
 | 2. Chat Vote Loop | 0/TBD | Not started | - |
 | 3. Sandboxed Build Engine & Live Show | 0/TBD | Not started | - |
 | 4. Paid Influence & Chaos Mode | 0/TBD | Not started | - |
