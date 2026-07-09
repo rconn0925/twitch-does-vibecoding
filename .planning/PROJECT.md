@@ -30,9 +30,9 @@ Chat genuinely controls what gets built — safely. The suggest → filter → v
 - [ ] A mode where the AI picks pending suggestions at random instead of running votes
 
 **ToS compliance (hard requirement)**
-- [ ] AI filter screens every suggestion/instruction against Twitch ToS and Community Guidelines categories (hateful conduct, harassment, sexual content, illegal activity, malware/harmful code, privacy violations, etc.) before it can enter the queue
+- [x] AI filter screens every suggestion/instruction against Twitch ToS and Community Guidelines categories (hateful conduct, harassment, sexual content, illegal activity, malware/harmful code, privacy violations, etc.) before it can enter the queue — *Built in Phase 1: single-funnel gate (prefilter + fail-closed Sonnet classifier, 15-category taxonomy, machine-enforced invariant). Live-Sonnet eval + physical hotkey test pending human verification (01-HUMAN-UAT.md); chat feedback lands with Phase 2 chat integration.*
 - [ ] Rejected suggestions get feedback in chat
-- [ ] Streamer veto / kill switch on anything queued or in progress
+- [x] Streamer veto / kill switch on anything queued or in progress — *Built in Phase 1: double-tap panic hotkey, tree-kill abort, operator console with per-task veto + HALTED triage.*
 
 **Build engine**
 - [ ] Agent orchestrator drives Claude Code sessions to build what chat picked
@@ -93,4 +93,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-08 after initialization*
+*Last updated: 2026-07-09 after Phase 1 (compliance gate & kill switch) completion*
