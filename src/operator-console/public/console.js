@@ -244,7 +244,7 @@
 
   // --- HALTED triage takeover (D-04: triage-then-choose, nothing auto-resumes) ---
 
-  async function recoverWith(action, frozen, errorBox) {
+  async function recoverWith(action, errorBox) {
     const { res, data } = await postJson("/api/recover", { action });
     if (!res.ok) {
       // UI-SPEC invalid force-transition error state; the server's message is
@@ -255,11 +255,12 @@
         el("p", "error-body", "Choose one of the valid recovery actions below."),
       );
       errorBox.hidden = false;
-      return;
     }
-    if (action === "discard-and-resume" && frozen && frozen.activeTaskId) {
-      showReasonRow({ kind: "veto", targetId: frozen.activeTaskId });
-    }
+    // WR-05: no reason-tag follow-up after discard-and-resume. The server's
+    // recover() already wrote the veto audit row for the discarded active
+    // task; surfacing the veto reason row here would POST
+    // /api/tasks/:id/veto for a task that was never queued, appending a
+    // SECOND bare veto row — one discard would double-count in the ledger.
   }
 
   function triageGroup(title) {
@@ -310,17 +311,17 @@
     const actions = el("div", "triage-actions");
     actions.appendChild(
       button("Resume", "button-accent triage-button", () => {
-        void recoverWith("resume", frozen, errorBox);
+        void recoverWith("resume", errorBox);
       }),
     );
     actions.appendChild(
       button("Discard Task & Resume", "button-accent triage-button", () => {
-        void recoverWith("discard-and-resume", frozen, errorBox);
+        void recoverWith("discard-and-resume", errorBox);
       }),
     );
     actions.appendChild(
       button("Reset to Idle", "button-accent triage-button", () => {
-        void recoverWith("reset-to-idle", frozen, errorBox);
+        void recoverWith("reset-to-idle", errorBox);
       }),
     );
     triageView.appendChild(actions);
