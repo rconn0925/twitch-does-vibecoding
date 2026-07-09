@@ -250,9 +250,7 @@
       // UI-SPEC invalid force-transition error state; the server's message is
       // the verbatim "Can't transition to {state} from {state}" copy.
       errorBox.replaceChildren();
-      errorBox.appendChild(
-        el("h3", "error-heading", data?.error ? data.error : "Recovery failed"),
-      );
+      errorBox.appendChild(el("h3", "error-heading", data?.error ? data.error : "Recovery failed"));
       errorBox.appendChild(
         el("p", "error-body", "Choose one of the valid recovery actions below."),
       );
@@ -281,9 +279,7 @@
 
     const groups = el("div", "triage-groups");
     const inflight = triageGroup("In-flight task");
-    inflight.appendChild(
-      el("p", "card-text", frozen?.activeTaskId ? frozen.activeTaskId : "None"),
-    );
+    inflight.appendChild(el("p", "card-text", frozen?.activeTaskId ? frozen.activeTaskId : "None"));
     groups.appendChild(inflight);
 
     const queued = triageGroup("Queued tasks");
