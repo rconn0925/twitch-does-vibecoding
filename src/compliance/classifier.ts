@@ -98,28 +98,31 @@ export async function classifyWithSonnet(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const response = await anthropic.messages.parse(
-        {
-          model,
-          max_tokens: 512,
-          system: SYSTEM_PROMPT,
-          messages: [
-            {
-              role: "user",
-              content: candidate.text,
-            },
-          ],
-          output_config: {
-            format: {
-              type: "json_schema",
-              schema: z.toJSONSchema(GateDecisionSchema) as {
-                [key: string]: unknown;
-              },
+      // WR-03: `satisfies` pins this request to the SDK's OWN param type
+      // (structure and field names included), so an SDK upgrade that changes
+      // the structured-outputs shape fails `tsc --noEmit` instead of silently
+      // failing closed on stream. classifier.contract.test.ts pins the same
+      // shape plus the runtime method surface, network-free.
+      const request = {
+        model,
+        max_tokens: 512,
+        system: SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: candidate.text,
+          },
+        ],
+        output_config: {
+          format: {
+            type: "json_schema",
+            schema: z.toJSONSchema(GateDecisionSchema) as {
+              [key: string]: unknown;
             },
           },
         },
-        { timeout: 8000 },
-      );
+      } satisfies Anthropic.MessageCreateParamsNonStreaming;
+      const response = await anthropic.messages.parse(request, { timeout: 8000 });
 
       // Belt-and-suspenders re-parse, in two steps:
       // 1. Shape parse (enums/types only, no cross-field refines) so a model
