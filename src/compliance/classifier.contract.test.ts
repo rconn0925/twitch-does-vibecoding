@@ -14,8 +14,8 @@
  * which should be run as a pre-stream gate.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
 import type { ParsedMessage } from "@anthropic-ai/sdk";
+import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { GateDecisionSchema } from "./schema.js";
