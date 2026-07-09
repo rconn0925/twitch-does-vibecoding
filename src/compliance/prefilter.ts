@@ -132,8 +132,7 @@ const COMPACT_PATTERNS: readonly PrefilterPattern[] = [
     rationale: "Requests phishing tooling — prohibited under spam/malware policy",
   },
   {
-    pattern:
-      /credential(stealer|harvester)|password(stealer|grabber|harvester)|tokengrabber/,
+    pattern: /credential(stealer|harvester)|password(stealer|grabber|harvester)|tokengrabber/,
     category: "spam-malware",
     rationale: "Requests credential-harvesting tooling — prohibited under spam/malware policy",
   },

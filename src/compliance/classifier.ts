@@ -7,8 +7,8 @@
  */
 
 import type Anthropic from "@anthropic-ai/sdk";
-import { z } from "zod";
 import type { Logger } from "pino";
+import { z } from "zod";
 import type { SuggestionCandidate } from "../shared/types.js";
 import { ESCALATE_ELIGIBLE } from "./categories.js";
 import type { ClassifierDecision } from "./schema.js";
