@@ -482,22 +482,25 @@ const upsertVote = db.prepare(`
 
 **If this table is empty:** N/A — see above; all three assumptions are low-risk/easily-tunable, not load-bearing architectural claims.
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Does `SuggestionCandidate` need a `twitchUserId` field added, or does per-user suggestion cooldown (D2-11) stay keyed on `twitchUsername`?**
    - What we know: votes (a separate data path, D2-15) MUST use `chatterId` (Twitch numeric user ID). Suggestions currently only carry `twitchUsername` on the existing Phase 1 type.
    - What's unclear: whether the planner wants one consistent identity scheme (extend `SuggestionCandidate` with a nullable `twitchUserId`, a type change touching Phase 1 code) or accepts the lower-stakes asymmetry (usernames for cooldown, IDs for votes).
    - Recommendation: default to NOT touching the Phase 1 type (lower blast radius — `SuggestionCandidate` is used across all Phase 1 plans per its own doc comment warning); keep cooldown keyed on `twitchUsername` for now, revisit only if display-name spoofing to dodge cooldowns becomes an observed problem.
+   - **Resolution (planner):** votes AND intake state keyed by `chatterId`; `SuggestionCandidate` untouched — the stronger identity option within the granted discretion (plans 02-01/02-04, T-02-01/T-02-13).
 
 2. **Where exactly should the OAuth `/auth/callback` Express route live — a new route on `operator-console/server.ts`, or a small standalone bootstrap script run once outside the main app?**
    - What we know: D2-10 says "Express route on the existing localhost surface." CLAUDE.md's Stack Patterns section describes this as one-time.
    - What's unclear: whether it should be a permanently-mounted route (simpler mental model, always available for re-auth) or a separate one-shot `scripts/twitch-auth-bootstrap.ts` (keeps the always-on console server's route surface smaller).
    - Recommendation: mount it as a permanent low-traffic route on the console server (`GET /auth/callback`, `GET /auth/start` to build the authorize URL) — matches the existing `scripts/gate-eval.ts` vs. main-app-route precedent inconsistently, but a permanent route means re-auth after a revoked refresh token doesn't require redeploying a script, which better serves "graceful degradation... matters more than feature count" (CLAUDE.md).
+   - **Resolution (planner):** permanent `GET /auth/start` + `GET /auth/callback` routes on the console server, with single-use expiring state nonce (plan 02-04 Task 3).
 
 3. **Exact per-user suggestion cooldown window and pool bound enforcement mechanics (D2-11/D2-13 numbers) — "default ~60s" and "~50 candidates" are approximate in CONTEXT.md.**
    - What we know: CONTEXT.md explicitly marks these as defaults/examples ("default ~60s", "e.g., ~50 candidates"), not locked numbers.
    - What's unclear: final numbers.
    - Recommendation: implement as env-configurable (matching the existing `REVIEW_TTL_HOURS`/`GATE_MAX_RETRIES` pattern in `.env.example`), defaulting to the CONTEXT.md examples — this defers the exact-number decision to runtime tuning rather than a code change, consistent with how Phase 1 handled its own TTL/retry knobs.
+   - **Resolution (planner):** env-configurable knobs `INTAKE_COOLDOWN_SECONDS=60` / `POOL_MAX_SIZE=50` added to `.env.example` (plan 02-01 Task 1), consumed in plan 02-04.
 
 ## Environment Availability
 
