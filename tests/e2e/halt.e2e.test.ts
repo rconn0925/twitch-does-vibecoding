@@ -66,6 +66,62 @@ describe("halt walking skeleton (e2e)", () => {
     expect(haltRecords.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("CR-01: refuses a cross-origin simple request (text/plain, no preflight) — mode stays IDLE", async () => {
+    const handle = await startApp();
+    // A malicious page's fetch(url, { method: "POST", body: "x" }) arrives
+    // exactly like this: text/plain content-type, foreign Origin, no preflight.
+    const res = await fetch(`${baseUrl(handle)}/api/halt`, {
+      method: "POST",
+      headers: { "content-type": "text/plain", origin: "http://evil.example" },
+      body: "x",
+    });
+    expect(res.status).toBe(403);
+
+    const stateRes = await fetch(`${baseUrl(handle)}/api/state`);
+    const body = (await stateRes.json()) as { mode: string };
+    expect(body.mode).toBe("IDLE");
+  });
+
+  it("CR-01: refuses a cross-origin JSON request by Origin mismatch — mode stays IDLE", async () => {
+    const handle = await startApp();
+    const res = await fetch(`${baseUrl(handle)}/api/halt`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://evil.example" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(403);
+
+    const stateRes = await fetch(`${baseUrl(handle)}/api/state`);
+    const body = (await stateRes.json()) as { mode: string };
+    expect(body.mode).toBe("IDLE");
+  });
+
+  it("CR-01: accepts a same-origin JSON request (the console UI's own fetch shape)", async () => {
+    const handle = await startApp();
+    const res = await fetch(`${baseUrl(handle)}/api/halt`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: `http://127.0.0.1:${handle.port}`,
+      },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+
+    const stateRes = await fetch(`${baseUrl(handle)}/api/state`);
+    const body = (await stateRes.json()) as { mode: string };
+    expect(body.mode).toBe("HALTED");
+  });
+
+  it("CR-01: refuses a POST with no Content-Type at all (empty-body loophole closed)", async () => {
+    const handle = await startApp();
+    const res = await fetch(`${baseUrl(handle)}/api/halt`, { method: "POST" });
+    expect(res.status).toBe(403);
+    const stateRes = await fetch(`${baseUrl(handle)}/api/state`);
+    const body = (await stateRes.json()) as { mode: string };
+    expect(body.mode).toBe("IDLE");
+  });
+
   it("binds to 127.0.0.1, never 0.0.0.0", async () => {
     const handle = await startApp();
     const address = handle.server.address();

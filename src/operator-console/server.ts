@@ -95,6 +95,47 @@ const AuditQuerySchema = z.object({
 export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServerHandle> {
   const { machine, db, pool, taskQueue, logger } = deps;
   const app = express();
+
+  // ── CSRF defense (CR-01) ────────────────────────────────────────────
+  // Binding to 127.0.0.1 does NOT stop a malicious page in the streamer's
+  // browser: it runs on the same host, and cross-origin "simple" requests
+  // (auto-submitting HTML forms, text/plain fetch bodies) are sent WITHOUT
+  // a CORS preflight. Two independent checks guard every state-changing
+  // request, uniformly across ALL routes — never rely on a body "happening
+  // to be required" as CSRF protection:
+  //
+  //  1. Origin/Host agreement: browsers attach Origin to every cross-origin
+  //     request and to all non-GET requests. A present Origin must exactly
+  //     match this server's own origin (derived from the Host header).
+  //     Same-origin console fetches always pass; any other page is refused
+  //     before a handler runs.
+  //  2. Content-Type must be application/json: a JSON-typed POST is never a
+  //     "simple" request, so a cross-origin attempt is preflighted — and
+  //     this server never answers CORS preflights, so the browser refuses
+  //     to send it. This also closes the empty-body loophole: a text/plain
+  //     body that express.json() ignored used to reach HaltBodySchema as
+  //     `{}` and validate.
+  //
+  // Non-browser clients (curl, Node fetch, the e2e suite) send no Origin
+  // and already set Content-Type: application/json — both checks pass.
+  app.use((req, res, next) => {
+    if (req.method === "GET" || req.method === "HEAD") {
+      next();
+      return;
+    }
+    const origin = req.get("origin");
+    const host = req.get("host");
+    if (origin !== undefined && (host === undefined || origin !== `http://${host}`)) {
+      res.status(403).json({ error: "cross-origin request refused" });
+      return;
+    }
+    if (!req.is("application/json")) {
+      res.status(403).json({ error: "state-changing requests must be application/json" });
+      return;
+    }
+    next();
+  });
+
   app.use(express.json());
 
   const publicDir = fileURLToPath(new URL("./public", import.meta.url));
