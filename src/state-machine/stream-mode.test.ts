@@ -119,6 +119,24 @@ describe("triggerHalt", () => {
     expect(abort).toHaveBeenCalledWith(frozen);
     db.close();
   });
+
+  it("WR-04: a recordHalt ledger-write failure never unwinds the halt — state stays HALTED, failure logged", () => {
+    const m = machineAt("VOTING_ROUND");
+    const logger = { error: vi.fn() };
+    // Every ledger write starts with db.prepare(); throwing here simulates a
+    // SQLite failure (disk I/O, locked file) on the halt audit row.
+    const explodingDb = {
+      prepare() {
+        throw new Error("SQLITE_IOERR: disk I/O error");
+      },
+    } as unknown as Parameters<typeof triggerHalt>[1]["db"];
+
+    const frozen = triggerHalt(m, { db: explodingDb, logger }, "console");
+
+    expect(m.mode).toBe("HALTED");
+    expect(frozen.mode).toBe("VOTING_ROUND");
+    expect(logger.error).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("recover", () => {

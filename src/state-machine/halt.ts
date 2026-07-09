@@ -30,7 +30,19 @@ export function triggerHalt(
   const frozen = machine.snapshot();
   const ctx: HaltContext = { source, reasonTag, frozen };
   machine.forceTransition("HALTED", ctx);
-  recordHalt(deps.db, { source, priorMode: frozen.mode, reasonTag });
+  // WR-04: the machine is already HALTED — an audit-ledger write failure must
+  // NEVER unwind or block the kill switch. The state change is the safety
+  // action; the missing halt row degrades to a loudly-logged incident
+  // (COMP-05 gap made visible) instead of an uncaught exception surfacing as
+  // a 500 on the single most safety-critical endpoint.
+  try {
+    recordHalt(deps.db, { source, priorMode: frozen.mode, reasonTag });
+  } catch (err) {
+    deps.logger?.error(
+      { err },
+      "HALT audit write FAILED — halt still in effect, ledger is missing this halt row",
+    );
+  }
 
   if (deps.abortActiveWork) {
     // Fire-and-forget (Pattern 2): the state is already HALTED regardless of
