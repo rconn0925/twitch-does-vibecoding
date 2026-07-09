@@ -125,8 +125,31 @@ export function recordGateDecision(
 }
 
 /**
+ * One row per D-02 intake refusal while HALTED — refusals are compliance
+ * events too (COMP-05): the ledger shows what was turned away and when.
+ */
+export function recordSubmissionRefused(
+  db: Database.Database,
+  args: { candidate: SuggestionCandidate; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "submission_refused",
+    source: args.candidate.source,
+    twitchUsername: args.candidate.twitchUsername,
+    suggestionText: args.candidate.text,
+    decision: null,
+    category: null,
+    rationale: "Intake refused while stream is halted (D-02)",
+    streamMode: args.streamMode,
+    taskId: null,
+  });
+}
+
+/**
  * One NEW row per review-queue resolution — the original held-for-review
  * decision row stays exactly as written (two-table split, RESEARCH.md Pitfall 5).
+ * D-07 expiries land as 'review_expired'; streamer approve/reject as 'review_resolved'.
  */
 export function recordReviewResolution(
   db: Database.Database,
@@ -140,7 +163,7 @@ export function recordReviewResolution(
 ): void {
   insert(db, {
     createdAtMs: Date.now(),
-    eventType: "review_resolved",
+    eventType: args.resolution === "expired-unreviewed" ? "review_expired" : "review_resolved",
     source: "operator",
     twitchUsername: args.twitchUsername,
     suggestionText: args.suggestionText,
