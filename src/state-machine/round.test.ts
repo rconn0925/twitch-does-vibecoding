@@ -13,6 +13,19 @@ import type { EnqueueWinnerResult } from "./round.js";
 import { RoundManager, RoundStartError, roundDurationMs } from "./round.js";
 import { StreamModeMachine } from "./stream-mode.js";
 
+/** A typed enqueueWinner spy matching the injected three-argument contract. */
+function enqueueWinnerSpy() {
+  return vi.fn(
+    (
+      _candidate: SuggestionCandidate,
+      _result: GateResult,
+      _pooledAtMs: number,
+    ): EnqueueWinnerResult => ({
+      queued: true,
+    }),
+  );
+}
+
 function candidate(id: string, overrides: Partial<SuggestionCandidate> = {}): SuggestionCandidate {
   return {
     id,
@@ -55,7 +68,7 @@ function makeHarness(opts: { candidates?: number; rng?: () => number } = {}): Ha
   }
   let t = 1_000;
   const now = (): number => t;
-  const enqueueWinner = vi.fn((): EnqueueWinnerResult => ({ queued: true }));
+  const enqueueWinner = enqueueWinnerSpy();
   const manager = new RoundManager({
     db,
     machine,
@@ -310,7 +323,7 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
       .get(snap.roundId) as { pooled_at_ms: number };
 
     // second manager on the same db, much later wall clock
-    const enqueue2 = vi.fn((): EnqueueWinnerResult => ({ queued: true }));
+    const enqueue2 = enqueueWinnerSpy();
     const machine2 = new StreamModeMachine();
     machine2.transition("VOTING_ROUND");
     const manager2 = new RoundManager({
@@ -367,11 +380,12 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
     expect(row.status).toBe("closed");
     expect(row.winner_option).toBeNull();
     expect(h.enqueueWinner).not.toHaveBeenCalled();
-    expect(h.pool.list().map((a) => a.candidate.id).sort()).toEqual([
-      "cand-1",
-      "cand-2",
-      "cand-3",
-    ]);
+    expect(
+      h.pool
+        .list()
+        .map((a) => a.candidate.id)
+        .sort(),
+    ).toEqual(["cand-1", "cand-2", "cand-3"]);
     expect(h.machine.mode).toBe("IDLE");
     h.db.close();
   });
@@ -451,7 +465,7 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
       db: h.db,
       machine: machine2,
       pool: new CandidatePool(),
-      enqueueWinner: vi.fn((): EnqueueWinnerResult => ({ queued: true })),
+      enqueueWinner: enqueueWinnerSpy(),
       now: () => 30_000, // round still live (ends at 61000)
     });
     manager2.restore();
@@ -459,11 +473,7 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
     const restored = manager2.snapshot();
     expect(restored?.roundId).toBe(snap.roundId);
     expect(restored?.endsAtMs).toBe(snap.endsAtMs);
-    expect(restored?.candidates.map((c) => c.candidate.id)).toEqual([
-      "cand-1",
-      "cand-2",
-      "cand-3",
-    ]);
+    expect(restored?.candidates.map((c) => c.candidate.id)).toEqual(["cand-1", "cand-2", "cand-3"]);
     expect(restored?.candidates.find((c) => c.option === 1)?.votes).toBe(1);
     expect(restored?.candidates.find((c) => c.option === 2)?.votes).toBe(1);
     expect(restored?.totalVotes).toBe(2);
@@ -483,7 +493,7 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
     const snap = h.manager.startRound();
     h.manager.recordVote("111", 1);
 
-    const enqueue2 = vi.fn((): EnqueueWinnerResult => ({ queued: true }));
+    const enqueue2 = enqueueWinnerSpy();
     const machine2 = new StreamModeMachine();
     machine2.transition("VOTING_ROUND");
     const manager2 = new RoundManager({
@@ -518,7 +528,7 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
       db: h.db,
       machine: machine2,
       pool: new CandidatePool(),
-      enqueueWinner: vi.fn((): EnqueueWinnerResult => ({ queued: true })),
+      enqueueWinner: enqueueWinnerSpy(),
       now: () => 999_000,
     });
     manager2.restore();
