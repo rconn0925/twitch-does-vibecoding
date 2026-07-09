@@ -72,7 +72,30 @@ Research-adjacent: the adversarial test suite design (jailbreak/paraphrase/obfus
   4. The bot narrates round open/close/winner in chat while staying inside its rate-limit budget (high-frequency state goes to the overlay, not chat)
   5. Killing the connection mid-round recovers cleanly — EventSub resubscribes, state reconciles, and no votes or queued tasks are silently lost
 
-**Plans**: TBD
+**Plans**: 6 plans
+
+Plans:
+**Wave 1**
+
+- [ ] 02-01-PLAN.md — Round & vote ledger engine: RoundManager, write-through SQLite votes, halt-freeze, crash restore (wave 1)
+- [ ] 02-02-PLAN.md — Twitch client foundation: twurple install, command parser, rate-limited chat sender + invariant, persisted auth (wave 1)
+
+**Wave 2** *(blocked on 02-01)*
+
+- [ ] 02-03-PLAN.md — Winner funnel (pipeline/round.ts + single-funnel allowlist) and console Start Round control (wave 2)
+
+**Wave 3** *(blocked on 02-02 + 02-03)*
+
+- [ ] 02-04-PLAN.md — Live chat slice: EventSub listener, intake limits (closes T-01-11), COMP-03 feedback, narration, OAuth routes (wave 3)
+
+**Wave 4** *(blocked on 02-04)*
+
+- [ ] 02-05-PLAN.md — Public OBS overlay: separate read-only surface, live tally + countdown, DOM-safety scan (wave 4)
+
+**Wave 5** *(blocked on 02-05)*
+
+- [ ] 02-06-PLAN.md — Full-loop + recovery e2e, operator docs, live OAuth/chat smoke checkpoint (wave 5)
+
 **UI hint**: yes
 
 ### Phase 3: Sandboxed Build Engine & Live Show
@@ -136,7 +159,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Compliance Gate & Kill Switch | 5/5 | Complete   | 2026-07-09 |
-| 2. Chat Vote Loop | 0/TBD | Not started | - |
+| 2. Chat Vote Loop | 0/6 | Planned | - |
 | 3. Sandboxed Build Engine & Live Show | 0/TBD | Not started | - |
 | 4. Paid Influence & Chaos Mode | 0/TBD | Not started | - |
 | 5. Build History & Stream Night Dry Run | 0/TBD | Not started | - |
