@@ -30,6 +30,21 @@ export const ROUND_CLOSED = "round:closed" as const;
 /** Emitted per durable vote write — AFTER the SQLite upsert commits (D2-14). */
 export const VOTE_RECORDED = "round:vote-recorded" as const;
 
+/**
+ * Phase 4 paid-influence + chaos vocabulary (PAID-01/02/03/04, CHAOS-01).
+ * Window beats: a paid/redemption control window opened, closed (natural expiry),
+ * was revoked by the streamer, or a request was denied (already-active/cooldown —
+ * never silent, D-05). Chaos beats: the streamer toggled chaos mode, or a
+ * uniform-random pick was made. Emitted immediately (low-frequency show beats,
+ * never debounced — 04-UI-SPEC push cadence).
+ */
+export const WINDOW_OPENED = "window:opened" as const;
+export const WINDOW_CLOSED = "window:closed" as const;
+export const WINDOW_REVOKED = "window:revoked" as const;
+export const WINDOW_DENIED = "window:denied" as const;
+export const CHAOS_TOGGLED = "chaos:toggled" as const;
+export const CHAOS_PICK = "chaos:pick" as const;
+
 export type AppEvent =
   | typeof STATE_CHANGED
   | typeof HALT_TRIGGERED
@@ -38,4 +53,10 @@ export type AppEvent =
   | typeof PROJECT_SWITCH_REQUESTED
   | typeof ROUND_OPENED
   | typeof ROUND_CLOSED
-  | typeof VOTE_RECORDED;
+  | typeof VOTE_RECORDED
+  | typeof WINDOW_OPENED
+  | typeof WINDOW_CLOSED
+  | typeof WINDOW_REVOKED
+  | typeof WINDOW_DENIED
+  | typeof CHAOS_TOGGLED
+  | typeof CHAOS_PICK;
