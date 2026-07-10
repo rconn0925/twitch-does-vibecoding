@@ -1,0 +1,280 @@
+/*
+ * Audience-facing build-history changelog (HIST-01 / 05-02, APPROVED 05-UI-SPEC).
+ *
+ * Reuses the shipped design system with ZERO new tokens: the console type scale
+ * (14/16/20/28 @ 400/600), the console/preview dark slate palette, and the two
+ * Phase-4 semantic tokens (paid-control violet, success green). There is NO red
+ * token on this surface AT ALL — refused/failed render in calm amber, and the
+ * error state uses a non-red muted card (UI-checker flag b). Accent blue is
+ * reserved EXCLUSIVELY for the "Load older nights" button.
+ *
+ * Focal point (UI-checker flag a): the entry list (.history-root) is the page's
+ * focal point — the most-recent night group sits at the top, reinforced by the
+ * Display-size page title. Night headings are secondary scan anchors only.
+ */
+
+:root {
+  /* Dark slate palette — reused as-is from console/preview (no new colors). */
+  --dominant: #0f172a; /* page background (60%) */
+  --secondary: #1e293b; /* entry-row + chip bg, hairline divider (30%) */
+  --text: #f8fafc;
+  --text-muted: #94a3b8; /* timestamps, counts, empty/error body */
+  --accent: #3b82f6; /* Load older nights button ONLY (10%) */
+
+  /* Semantic tokens (Phase 4, reused exactly) — NO red exists on this surface. */
+  --built: #22c55e; /* result: built */
+  --amber: #f59e0b; /* result: refused AND failed (calm, never red) */
+  --paid-control: #8b5cf6; /* FREE REIGN chip text */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--dominant);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+  /* 2xl gutter + 3xl page-level top/bottom breathing room. */
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 64px 48px;
+}
+
+/* ── Page header ───────────────────────────────────────────────────── */
+
+.page-header {
+  margin-bottom: 32px; /* xl to the first night group */
+}
+
+.page-title {
+  margin: 0;
+  font-size: 28px; /* Display */
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.page-tagline {
+  margin: 8px 0 0;
+  font-size: 16px; /* Body */
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* ── Night groups (focal region) ───────────────────────────────────── */
+
+.history-root {
+  display: flex;
+  flex-direction: column;
+  gap: 24px; /* lg between night groups */
+}
+
+.night-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.night-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 8px;
+}
+
+.night-label {
+  margin: 0;
+  font-size: 20px; /* Heading */
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.night-count {
+  flex: none;
+  font-size: 14px; /* Label */
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* 1px hairline divider between the heading and the first entry row. */
+.night-divider {
+  height: 1px;
+  background: var(--secondary);
+  margin-bottom: 16px; /* md */
+}
+
+.night-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 8px; /* sm between rows within a group */
+}
+
+/* ── Entry row ─────────────────────────────────────────────────────── */
+
+.entry-row {
+  display: flex;
+  align-items: center;
+  gap: 16px; /* md */
+  background: var(--secondary);
+  border-radius: 12px;
+  padding: 16px 24px; /* md vertical / lg horizontal */
+}
+
+/* Provenance chip — reuses overlay's .provenance-chip pattern at Label scale. */
+.provenance-chip {
+  flex: none;
+  background: var(--dominant); /* sits on the Secondary row → use Dominant for contrast */
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-size: 14px; /* Label */
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+}
+
+.chip-vote {
+  color: var(--text); /* neutral — default case */
+}
+
+.chip-freereign {
+  color: var(--paid-control); /* violet — paid-control semantic */
+}
+
+.chip-chaos {
+  color: var(--text); /* neutral — chaos never uses the paid violet */
+}
+
+.entry-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 16px; /* Body */
+  font-weight: 400;
+  line-height: 1.5;
+  /* CSS backstop to the JS 100-char truncation — one long approved title can
+     never break the row. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px; /* Label */
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.result-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* built = success green; refused AND failed = calm amber (never red). */
+.result-built .result-dot,
+.result-built {
+  color: var(--built);
+}
+
+.result-refused,
+.result-failed {
+  color: var(--amber);
+}
+
+.result-built .result-dot {
+  background: var(--built);
+}
+
+.result-refused .result-dot,
+.result-failed .result-dot {
+  background: var(--amber);
+}
+
+.entry-time {
+  flex: none;
+  font-size: 14px; /* Label */
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums; /* column-aligned timestamps */
+}
+
+/* "+N more that night" overflow line (defensive 50-entry cap). */
+.night-overflow {
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* ── Load-older control ────────────────────────────────────────────── */
+
+.load-older-wrap {
+  display: flex;
+  justify-content: center;
+  padding-top: 24px;
+}
+
+.load-older {
+  min-height: 44px; /* hit-under-stream-pressure target (console rule) */
+  padding: 0 24px;
+  background: var(--accent);
+  color: var(--text);
+  border: 0;
+  border-radius: 12px;
+  font-size: 16px; /* Body */
+  font-weight: 600;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.load-older:hover {
+  filter: brightness(1.08);
+}
+
+/* ── Empty + error states (centered, muted, NON-red) ───────────────── */
+
+.state-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  padding: 64px 24px 0; /* 3xl top breathing room */
+}
+
+/* The error card gets an explicit calm, NON-red treatment: Secondary bg + muted
+   text (UI-checker flag b) — identical layout language to the empty state. */
+.state-card.is-error {
+  margin-top: 32px;
+  padding: 48px 32px;
+  background: var(--secondary);
+  border-radius: 12px;
+}
+
+.state-heading {
+  margin: 0;
+  font-size: 20px; /* Heading */
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.state-body {
+  margin: 0;
+  font-size: 16px; /* Body */
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
