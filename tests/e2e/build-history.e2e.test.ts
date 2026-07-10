@@ -351,10 +351,10 @@ describe("build-history e2e — completed build persists and renders on /api/his
     ]) {
       expect(raw, `wire must not leak "${forbidden}"`).not.toContain(forbidden);
     }
-    // Every entry carries EXACTLY the five coarse public fields.
+    // Every entry carries EXACTLY the four coarse public fields (no buildId — IN-01).
     for (const entry of entries) {
       expect(Object.keys(entry).sort()).toEqual(
-        ["buildId", "provenance", "result", "timeLabel", "title"].sort(),
+        ["provenance", "result", "timeLabel", "title"].sort(),
       );
       expect(["vote", "paid", "chaos"]).toContain(entry.provenance);
     }

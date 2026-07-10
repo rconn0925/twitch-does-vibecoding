@@ -8,7 +8,7 @@
 // backstop). tests/invariants/dom-safety.test.ts auto-scans this file.
 //
 // Read rule: the ONLY input is GET /api/history on THIS surface's own server,
-// which returns the coarse public projection (buildId/title/provenance/result/
+// which returns the coarse public projection (title/provenance/result/
 // timeLabel grouped into nights). No donor identity, amount, or trigger-type is
 // ever fetched or rendered here — the server dropped it at the wire boundary.
 //
@@ -45,19 +45,25 @@
     refused: { label: "Refused", className: "result-refused" },
     failed: { label: "Failed", className: "result-failed" },
   };
+  // Screen-share honesty (WR-03): an unrecognized provenance/result must NEVER
+  // fall back to the celebratory value (a green "Built" or a "VOTE" chip on a
+  // paid/chaos build). The server already whitelists both to a fixed vocabulary,
+  // so these are defense-in-depth for data drift — muted, never misleading.
+  const CHIP_UNKNOWN = { label: "BUILD", className: "chip-unknown" };
+  const RESULT_UNKNOWN = { label: "Unknown", className: "result-unknown" };
 
   // --- render ----------------------------------------------------------------
 
   function renderEntry(entry) {
     const row = el("div", "entry-row");
 
-    const chip = CHIP[entry.provenance] ?? CHIP.vote;
+    const chip = CHIP[entry.provenance] ?? CHIP_UNKNOWN;
     row.appendChild(el("span", `provenance-chip ${chip.className}`, chip.label));
 
     // The ONE chat-derived string on the row: textContent-only, 100-char cap.
     row.appendChild(el("span", "entry-title", truncate(entry.title, TITLE_MAX)));
 
-    const result = RESULT[entry.result] ?? RESULT.built;
+    const result = RESULT[entry.result] ?? RESULT_UNKNOWN;
     const badge = el("span", `result-badge ${result.className}`);
     badge.appendChild(el("span", "result-dot"));
     badge.appendChild(el("span", undefined, result.label));

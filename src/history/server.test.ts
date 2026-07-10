@@ -196,9 +196,10 @@ describe("history server (read-only, night-grouped, coarsened, paginated)", () =
     }
     const body = JSON.parse(raw) as HistoryPage;
     const entry = body.nights[0]?.entries[0];
-    // The wire object has EXACTLY the five coarse public fields — nothing else.
+    // The wire object has EXACTLY the four coarse public fields — nothing else
+    // (no buildId: the sequential row id is not exposed — IN-01).
     expect(Object.keys(entry ?? {}).sort()).toEqual(
-      ["buildId", "provenance", "result", "timeLabel", "title"].sort(),
+      ["provenance", "result", "timeLabel", "title"].sort(),
     );
   });
 
@@ -295,6 +296,16 @@ describe("history server (read-only, night-grouped, coarsened, paginated)", () =
   it("rejects a malformed before cursor with 400", async () => {
     const handle = await start();
     for (const q of ["?before=notadate", "?before=2026-7-8", "?before=07-08-2026"]) {
+      const res = await fetch(`http://127.0.0.1:${handle.port}/api/history${q}`);
+      expect(res.status, `${q} must 400`).toBe(400);
+    }
+  });
+
+  it("rejects a well-shaped but non-calendar before cursor with 400 (no silent rollover, WR-02)", async () => {
+    const handle = await start();
+    // These match the YYYY-MM-DD shape but name no real day; new Date() would
+    // silently roll them over into a valid-but-wrong night without this guard.
+    for (const q of ["?before=2026-13-45", "?before=2026-00-00", "?before=2026-02-30"]) {
       const res = await fetch(`http://127.0.0.1:${handle.port}/api/history${q}`);
       expect(res.status, `${q} must 400`).toBe(400);
     }

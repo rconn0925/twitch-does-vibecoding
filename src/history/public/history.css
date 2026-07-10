@@ -152,6 +152,10 @@ body {
   color: var(--text); /* neutral — chaos never uses the paid violet */
 }
 
+.chip-unknown {
+  color: var(--text-muted); /* defensive fallback — muted, never a misleading label */
+}
+
 .entry-title {
   flex: 1 1 auto;
   min-width: 0;
@@ -199,6 +203,16 @@ body {
 .result-refused .result-dot,
 .result-failed .result-dot {
   background: var(--amber);
+}
+
+/* Defensive fallback for an unrecognized result — muted, never the celebratory
+   green (WR-03: an unknown outcome must never read as a successful build). */
+.result-unknown {
+  color: var(--text-muted);
+}
+
+.result-unknown .result-dot {
+  background: var(--text-muted);
 }
 
 .entry-time {

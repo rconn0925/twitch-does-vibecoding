@@ -23,7 +23,7 @@ import type { BuildHistoryRow, BuildResult } from "../shared/types.js";
  * and NO WebSocketServer. The ONLY dynamic route is GET /api/history.
  *
  * Coarse public projection (D-03/D-04, T-05-05): the wire carries ONLY
- * { buildId, title, provenance(coarsened vote|paid|chaos), result, timeLabel }
+ * { title, provenance(coarsened vote|paid|chaos), result, timeLabel }
  * grouped into nights. The 4-value DB provenance collapses at THIS boundary
  * (donation|channel_points → paid), and donor identity, amount, trigger-type,
  * rationale, category, and every host internal are never selected into the
@@ -36,7 +36,6 @@ export type PublicProvenance = "vote" | "paid" | "chaos";
 
 /** One changelog entry on the public wire — the coarse projection, nothing more. */
 export interface HistoryEntry {
-  buildId: string;
   title: string;
   provenance: PublicProvenance;
   result: BuildResult;
@@ -80,6 +79,8 @@ export interface HistoryServerHandle {
 
 /** Nights per page (D-04 auto-selected page size). */
 const DEFAULT_NIGHTS_PER_PAGE = 10;
+/** Defensive upper bound on nights requested per page (distinct from the per-night entry cap). */
+const MAX_NIGHTS_PER_PAGE = 50;
 /** Defensive per-night entry cap (D-04): a night beyond this renders 50 + overflow. */
 const MAX_ENTRIES_PER_NIGHT = 50;
 /**
@@ -96,17 +97,39 @@ const ROW_CAP = 2000;
  * cursor. safeParse failure → 400, never a leaked stack (T-01-03 discipline).
  */
 const ChangelogQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(MAX_ENTRIES_PER_NIGHT).default(DEFAULT_NIGHTS_PER_PAGE),
+  limit: z.coerce.number().int().min(1).max(MAX_NIGHTS_PER_PAGE).default(DEFAULT_NIGHTS_PER_PAGE),
+  // Shape AND calendar validity: the regex gates the format, .refine rejects
+  // rolled-over dates (2026-13-45, 2026-00-00) that new Date() would silently
+  // coerce into a valid-but-wrong night — a 400, not a nonsensical page (WR-02).
   before: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .refine((key) => isValidNightKey(key), { message: "invalid calendar date" })
     .optional(),
 });
 
-/** Coarsen the 4-value DB provenance to the 3-value public projection (T-05-05). */
+/**
+ * True only if a YYYY-MM-DD key names a real calendar day. Guards against
+ * new Date(y, 12, 45)-style rollover: we re-derive the key from the parsed
+ * Date and require an exact round-trip.
+ */
+function isValidNightKey(key: string): boolean {
+  const [year, month, day] = key.split("-").map(Number);
+  if (year === undefined || month === undefined || day === undefined) return false;
+  const dt = new Date(year, month - 1, day);
+  return dt.getFullYear() === year && dt.getMonth() === month - 1 && dt.getDate() === day;
+}
+
+/**
+ * Coarsen the 4-value DB provenance to the 3-value public projection (T-05-05).
+ * Whitelist-only (IN-03 defense-in-depth): donation|channel_points → paid,
+ * vote/chaos pass through, and ANY unexpected DB value collapses to "paid"
+ * (never echoed raw to the audience-facing wire).
+ */
 function coarsenProvenance(provenance: BuildHistoryRow["provenance"]): PublicProvenance {
-  if (provenance === "donation" || provenance === "channel_points") return "paid";
-  return provenance;
+  if (provenance === "vote") return "vote";
+  if (provenance === "chaos") return "chaos";
+  return "paid";
 }
 
 /** Local-calendar-day key (YYYY-MM-DD) — the stream-night bucket, derived on read (D-02). */
@@ -171,7 +194,6 @@ function buildHistoryPage(rows: BuildHistoryRow[], limit: number, capHit: boolea
     const total = bucket.length;
     const shown = bucket.slice(0, MAX_ENTRIES_PER_NIGHT);
     const entries: HistoryEntry[] = shown.map((row) => ({
-      buildId: String(row.id),
       title: row.title,
       provenance: coarsenProvenance(row.provenance),
       result: row.result,
@@ -188,8 +210,11 @@ function buildHistoryPage(rows: BuildHistoryRow[], limit: number, capHit: boolea
   });
 
   // More nights than one page holds → definitely older nights remain. Otherwise,
-  // a saturated row cap means we may not have fetched far enough to be sure.
-  const hasOlder = nightOrder.length > limit || (capHit && nightOrder.length >= limit);
+  // a saturated row cap means there are rows we did NOT fetch, so older data may
+  // exist even when the fetched set spans fewer than `limit` nights — e.g. a
+  // single night larger than ROW_CAP (WR-04): without this, "Load older" would
+  // vanish and strand every earlier night behind an unreachable cursor.
+  const hasOlder = nightOrder.length > limit || capHit;
   return { nights, hasOlder };
 }
 
