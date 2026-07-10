@@ -45,8 +45,17 @@ const CLASSIFIER_DISALLOWED = [
   "Bash",
 ];
 
-/** Per-call classification budget — mirrors the retired messages.parse timeout. */
-const CLASSIFIER_TIMEOUT_MS = 8000;
+/**
+ * Per-call classification budget. The Agent SDK query() spawns a claude CLI
+ * subprocess, so its cold start is far heavier than the retired direct HTTP
+ * messages.parse call — an 8s bound (fine for raw HTTP) fired before a real
+ * cold-start classification could answer. Default 20s, GATE_TIMEOUT_MS-tunable;
+ * on timeout the call rejects and the compliance envelope fails CLOSED.
+ */
+const CLASSIFIER_TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(process.env.GATE_TIMEOUT_MS ?? "", 10);
+  return Number.isInteger(raw) && raw > 0 ? raw : 20_000;
+})();
 
 /**
  * The compliance↔orchestrator seam: candidate text in → the model's raw
@@ -95,6 +104,14 @@ export function createClassifierTransport(injected?: {
         disallowedTools: CLASSIFIER_DISALLOWED,
         // Single-turn: the gate never multi-turns.
         maxTurns: 1,
+        // Extended thinking OFF: classification is a single-shot judgment, not an
+        // agentic task. With adaptive thinking ON, the model spends its ONE turn
+        // reasoning and the run terminates as error_max_turns (never success),
+        // which fail-closes EVERY suggestion — and the ~13s it burns blows the
+        // latency budget. Disabled, the model still reasons inside its reply and
+        // returns a clean success in ~3s. The eval harness validates screening
+        // quality holds without extended thinking.
+        thinking: { type: "disabled" },
         abortController: controller,
       };
       const stream = queryFn({ prompt: candidateText, options });

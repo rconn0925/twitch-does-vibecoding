@@ -81,6 +81,12 @@ describe("createClassifierTransport — tool-authority + single-turn guards", ()
     expect(captured().options?.maxTurns).toBe(1);
   });
 
+  it("disables extended thinking (single-shot judgment, avoids error_max_turns)", async () => {
+    const { queryFn, captured } = makeFakeQuery([assistantMessage(JSON_BODY)]);
+    await createClassifierTransport({ queryFn })("anything");
+    expect(captured().options?.thinking).toEqual({ type: "disabled" });
+  });
+
   it("pins the model to Sonnet by default (claude-sonnet-5)", async () => {
     const { queryFn, captured } = makeFakeQuery([assistantMessage(JSON_BODY)]);
     await createClassifierTransport({ queryFn })("anything");
@@ -167,7 +173,8 @@ describe("createClassifierTransport — hard timeout bound (WR-02)", () => {
         })() as unknown as ReturnType<QueryFn>) as QueryFn;
       const promise = createClassifierTransport({ queryFn })("x");
       const assertion = expect(promise).rejects.toThrow(/timed out/);
-      await vi.advanceTimersByTimeAsync(8000);
+      // Advance past the default CLASSIFIER_TIMEOUT_MS (20s) budget.
+      await vi.advanceTimersByTimeAsync(20_000);
       await assertion;
     } finally {
       vi.useRealTimers();
