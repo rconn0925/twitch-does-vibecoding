@@ -113,3 +113,93 @@ Known-by-design (not bugs):
   Windows build, the process starts WITHOUT the hotkey (loud error log) and the
   console button is the only kill path. Documented fallback library:
   `node-global-key-listener` (do not install without a verification pass).
+
+## 6. Twitch Chat Integration
+
+Setup, re-auth, and failure behavior for the chat-vote loop (Phase 2). Without
+this setup the app still runs — console and overlay come up, chat stays off,
+and the console shows the red "unauthorized" Twitch pill.
+
+### 6.1 One-Time Setup: Register the App
+
+1. Go to <https://dev.twitch.tv/console/apps> **while logged into the
+   broadcaster account** and register a new application:
+   - **OAuth Redirect URL:** `http://localhost:4900/auth/callback`
+     (if you changed `CONSOLE_PORT`, use that port instead — the app derives
+     the redirect from `CONSOLE_PORT` unless `TWITCH_REDIRECT_URI` overrides it)
+   - **Category:** anything reasonable (e.g., "Broadcaster Suite")
+2. Copy the Client ID, generate a Client Secret, and fill `.env` at the repo
+   root:
+
+   ```ini
+   # .env
+   TWITCH_CLIENT_ID=your-client-id
+   TWITCH_CLIENT_SECRET=your-client-secret
+   TWITCH_BROADCASTER_USER_ID=your-numeric-twitch-user-id
+   ```
+
+   The broadcaster user id is the NUMERIC Twitch id (not the login name) —
+   look it up with any "Twitch username to user id" converter, or via
+   `twitch api get users -q login=<name>` if you have the Twitch CLI.
+
+### 6.2 Authorize (One Browser Visit)
+
+1. Start the app (`npm run dev`). The log will say Twitch is not yet
+   authorized and the console pill shows "unauthorized".
+2. **Log into the broadcaster account in your browser first** — the scopes
+   bind to whichever account approves the consent screen, and the wrong
+   account means the bot reads/writes chat as the wrong user.
+3. Visit <http://127.0.0.1:4900/auth/start> and approve. The app requests
+   exactly two scopes: `user:read:chat` and `user:write:chat` — nothing else
+   (channel-points scopes come later, in Phase 4).
+4. Expect the "Twitch authorized" page, then a console log line confirming the
+   EventSub listener started and the console pill turning green.
+
+The token persists at `TWITCH_TOKEN_PATH` (default `./data/twitch-token.json`)
+and auto-refreshes — restarts do NOT require re-authorizing. Treat that file
+like a password: it grants chat read/write as the broadcaster.
+
+### 6.3 Re-Auth After Revocation or Expiry
+
+If the console shows **"Twitch login expired"** (or the pill goes red after a
+password change / disconnection of the app in Twitch settings): visit
+<http://127.0.0.1:4900/auth/start> again while logged into the broadcaster
+account. Same flow, any time, while the app is running. No other state needs
+resetting.
+
+### 6.4 Chat Rate Budget
+
+The bot sends at most **~15 messages per 30 seconds** (`CHAT_SEND_INTERVAL_CAP`
+/ `CHAT_SEND_INTERVAL_MS`), well inside Twitch's broadcaster-tier limit of
+100/30s. This works because of the budget doctrine: **chat gets transitions,
+the overlay gets state.** Chat hears round open, round close/winner, and
+coalesced rejection/cooldown feedback — live tallies and countdowns render on
+the overlay only and NEVER go to chat. If chat narration ever seems throttled,
+that is the sender queue smoothing a burst, not an outage.
+
+### 6.5 Honest Limitation: Votes During a Connection Gap Are Lost
+
+If the EventSub connection drops mid-round (look for `EventSub socket
+disconnected` in the log), **votes typed while the socket is down are gone** —
+Twitch EventSub has no event replay, so no software could recover them. What
+IS guaranteed:
+
+- Every vote the app **acknowledged** (written to SQLite before the drop)
+  survives — reconnection re-syncs the tally from the ledger, and a crash
+  can't lose them either (see 6.6).
+- The reconnect is logged (`EventSub socket (re)connected and ready`) and the
+  console pill tracks the connection honestly.
+
+If a round overlapped a visible gap and the result feels compromised, treat it
+as a compromised round: let it close, veto the winner from the console if
+needed, and run the round again.
+
+### 6.6 Crash Recovery Mid-Round
+
+Restarting the app mid-round (crash or Ctrl+C) is safe: the round restores
+from SQLite automatically at startup — same round, same tally, same remaining
+time — before the console or chat listener accepts any input. A round whose
+timer expired while the process was down closes immediately on startup and its
+winner still enqueues through the normal funnel. A round frozen by a halt
+restores frozen and waits for triage. No acknowledged vote is ever lost to a
+restart.
