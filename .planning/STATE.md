@@ -74,6 +74,8 @@ Recent decisions affecting current work:
 - Human UAT (02-HUMAN-UAT.md): live Twitch smoke test (OAuth bootstrap + real-channel round, deferred 02-06 checkpoint; runbook docs/OPERATIONS.md §6), OBS overlay browser-source check
 - Stale `TODO(01-02)` at src/shared/types.ts:43 — GateCategory never narrowed to the categories.ts union (type-looseness only)
 - Review Info findings IN-02..IN-08 in 02-REVIEW.md remain open by scope decision (non-blocking)
+- [Phase 3] Overlay state JSON forwards full GateResult (classifier rationale) to local clients of the public surface — trim RoundSnapshot to display fields (02-SECURITY.md residual, non-blocking)
+- [Phase 3] Re-open T-02-18 (chat text as agent instructions) when builds start executing chat-derived tasks — accepted in Phase 2 explicitly as Phase 3 scope
 
 *Closed this phase: T-01-11 per-user intake rate limiting (src/ingestion/suggest-intake.ts, pre-classification); DNS-rebinding Host-allowlist hardening (src/shared/loopback.ts, CR-02 fix, both servers).*
 
