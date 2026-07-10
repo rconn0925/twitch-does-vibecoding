@@ -87,6 +87,66 @@ describe("AbortRegistry bookkeeping", () => {
   });
 });
 
+describe("sandbox teardown fan-out (BUILD-04)", () => {
+  it("invokes every registered sandboxTeardown during abortActiveWork", async () => {
+    const registry = new AbortRegistry();
+    const teardownA = vi.fn(async () => undefined);
+    const teardownB = vi.fn(async () => undefined);
+    registry.registerSandboxTeardown("task-a", teardownA);
+    registry.registerSandboxTeardown("task-b", teardownB);
+
+    await abortActiveWork(registry, frozenSnapshot(), fakeLogger());
+
+    expect(teardownA).toHaveBeenCalledTimes(1);
+    expect(teardownB).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires sandboxTeardown alongside controller.abort() + tree-kill on the same task", async () => {
+    const registry = new AbortRegistry();
+    const ac = new AbortController();
+    const teardown = vi.fn(async () => undefined);
+    registry.registerController("task-a", ac);
+    registry.registerProcess("task-a", 111);
+    registry.registerSandboxTeardown("task-a", teardown);
+
+    await abortActiveWork(registry, frozenSnapshot(), fakeLogger());
+
+    expect(ac.signal.aborted).toBe(true);
+    expect(treeKillMock).toHaveBeenCalledWith(111, "SIGKILL", expect.any(Function));
+    expect(teardown).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs a rejecting teardown and makes the aggregate reject (never swallowed)", async () => {
+    const registry = new AbortRegistry();
+    const logger = fakeLogger();
+    const teardown = vi.fn(async () => {
+      throw new Error("wsl --terminate exploded");
+    });
+    registry.registerSandboxTeardown("task-a", teardown);
+
+    await expect(abortActiveWork(registry, frozenSnapshot(), logger)).rejects.toThrow(
+      "wsl --terminate exploded",
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      expect.stringContaining("wsl.exe --terminate teardown failed"),
+    );
+  });
+
+  it("regression: existing controller.abort() + tree-kill behavior is unchanged with no teardowns", async () => {
+    const registry = new AbortRegistry();
+    const ac = new AbortController();
+    registry.registerController("task-a", ac);
+    registry.registerProcess("task-a", 111);
+
+    await abortActiveWork(registry, frozenSnapshot(), fakeLogger());
+
+    expect(ac.signal.aborted).toBe(true);
+    expect(treeKillMock).toHaveBeenCalledTimes(1);
+    expect(treeKillMock).toHaveBeenCalledWith(111, "SIGKILL", expect.any(Function));
+  });
+});
+
 describe("HALT decoupling (Pattern 2)", () => {
   it("triggerHalt returns synchronously with mode HALTED even when abort hangs forever", () => {
     const machine = new StreamModeMachine();
