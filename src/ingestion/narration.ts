@@ -65,8 +65,14 @@ export interface Narrator extends BuildNarrator {
   instructionRejected(donor: string, categoryLabel?: string): void;
   /** An in-window instruction was held for streamer review (window time unaffected). */
   instructionHeld(donor: string): void;
-  /** An in-window instruction cleared the gate and is queued for the build. */
+  /** An in-window instruction cleared the gate and its build STARTED immediately. */
   instructionAccepted(donor: string, title: string): void;
+  /**
+   * An in-window instruction cleared the gate and is QUEUED behind an in-flight
+   * build (CR-03 honesty): it will build when the current one wraps — narrated as
+   * "queued", never "building now" (which would be a lie until startBuild fires).
+   */
+  instructionQueued(donor: string, title: string): void;
   /** 30-seconds-remaining beat — emitted only for windows ≥ 60s. */
   window30sLeft(donor: string): void;
   /** The window reached its full duration and closed (D-12). */
@@ -325,6 +331,12 @@ export function createNarrator(deps: {
 
     instructionAccepted(donor: string, title: string): void {
       void deps.sender.send(`Locked in — building @${donor}'s pick: "${truncateTitle(title)}".`);
+    },
+
+    instructionQueued(donor: string, title: string): void {
+      void deps.sender.send(
+        `Queued up @${donor}'s pick: "${truncateTitle(title)}" — it builds as soon as the current one wraps.`,
+      );
     },
 
     window30sLeft(donor: string): void {

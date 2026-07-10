@@ -27,7 +27,11 @@ export class InvalidTransitionError extends Error {
 const TRANSITIONS: Record<StreamMode, StreamMode[]> = {
   IDLE: ["VOTING_ROUND", "FREE_REIGN_WINDOW", "CHAOS_MODE"],
   VOTING_ROUND: ["IDLE", "BUILD_IN_PROGRESS"],
-  BUILD_IN_PROGRESS: ["IDLE"],
+  // CR-03: a build triggered by a paid-window instruction or a chaos pick returns
+  // to its originating mode so the window can drain its NEXT queued instruction
+  // (D-12: one window, multiple sequential builds) and chaos can pick again while
+  // still enabled. A round-winner build still returns to IDLE (the vote loop).
+  BUILD_IN_PROGRESS: ["IDLE", "FREE_REIGN_WINDOW", "CHAOS_MODE"],
   FREE_REIGN_WINDOW: ["IDLE", "BUILD_IN_PROGRESS"],
   CHAOS_MODE: ["BUILD_IN_PROGRESS", "IDLE"],
   HALTED: [],

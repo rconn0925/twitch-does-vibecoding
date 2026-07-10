@@ -221,9 +221,11 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "windowOpenedChannelPoints",
         "windowDeniedActive",
         "windowDeniedCooldown",
+        "windowDeniedNotIdle",
         "instructionRejected",
         "instructionHeld",
         "instructionAccepted",
+        "instructionQueued",
         "window30sLeft",
         "windowExpired",
         "windowRevoked",
@@ -359,9 +361,11 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       n.windowOpenedChannelPoints("u", "Wheel", 60_000);
       n.windowDeniedActive("u");
       n.windowDeniedCooldown("u");
+      n.windowDeniedNotIdle("u");
       n.instructionRejected("u", CATEGORY_META.harassment.label);
       n.instructionHeld("u");
       n.instructionAccepted("u", "a build");
+      n.instructionQueued("u", "a build");
       n.window30sLeft("u");
       n.windowExpired("u");
       n.windowRevoked();

@@ -273,6 +273,16 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // The build-event narrator, assigned inside the chat-pipeline block below (only
   // when a chatSource/chatSink pair exists). Absent → build beats are silent-safe.
   let buildNarrator: BuildNarrator | undefined;
+  // CR-03/WR-01: late-bound build triggers for paid-window instructions and chaos
+  // picks — assigned in the orchestrator composition block below (only when a
+  // build engine is composed). They mirror onWinnerQueued: synchronously enter
+  // BUILD_IN_PROGRESS and hand the queued task to buildSession.startBuild, then on
+  // completion return to the originating mode to drain the next instruction/pick
+  // (D-12). Each returns true when a build actually STARTED (vs merely queued
+  // behind an in-flight build), so narration stays honest. Null until a build
+  // engine exists → the task sits queued (the pre-04 degraded behavior).
+  let driveWindowBuild: ((taskId: string) => boolean) | null = null;
+  let driveChaosBuild: ((taskId: string) => boolean) | null = null;
 
   machine.on(HALT_TRIGGERED, (...args) => {
     const ctx = args[0] as HaltContext;
@@ -546,24 +556,36 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         chaosOn = false;
       }
       recordChaosToggled(db, { enabled: chaosOn, streamMode: machine.mode });
-      if (chaosOn) windowNarrator?.chaosOn();
-      else windowNarrator?.chaosOff();
+      if (chaosOn) {
+        windowNarrator?.chaosOn();
+        // WR-01: chaos mode now has a REAL production trigger. On toggle-ON, if
+        // the filtered pool is non-empty, pick immediately to kick off the loop
+        // (an empty pool picks nothing — no spin). `chaos` is initialized by the
+        // time toggle is ever called, so the self-reference is safe.
+        chaos.pick();
+      } else windowNarrator?.chaosOff();
     },
     pick: (): ChaosPickResult | null => {
       if (machine.mode !== "CHAOS_MODE") return null;
       const picked = pickChaos(pool.list(), opts.chaosRng);
-      if (picked === null) return null;
+      if (picked === null) return null; // empty pool → no pick, never a busy-loop
       const result = submitChaosPick(
         { taskQueue, mode: () => machine.mode, resubmit, logger },
         picked,
       );
       if (result.queued) {
+        // Consume the pick from the pool so the loop drains and never re-picks
+        // the same candidate forever (progress guarantee for the D-12-style loop).
+        pool.remove(picked.candidate.id);
         recordChaosPick(db, {
           taskId: picked.candidate.id,
           title: picked.candidate.text,
           streamMode: machine.mode,
         });
         windowNarrator?.chaosPick(picked.candidate.text);
+        // CR-03/WR-01: actually BUILD the pick (mirrors the winner path). A no-op
+        // until a build engine is composed.
+        driveChaosBuild?.(picked.candidate.id);
       }
       return result;
     },
@@ -725,7 +747,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       };
       const result = await controlWindow.submitInstruction(candidate);
       if (result.queued) {
-        narrator.instructionAccepted(displayName, text);
+        // CR-03: only claim "building" when a build ACTUALLY starts. If a build is
+        // already in progress (this instruction queues behind it, D-12) or no
+        // build engine is composed, narrate the honest "queued" beat instead.
+        const started = driveWindowBuild?.(candidate.id) ?? false;
+        if (started) narrator.instructionAccepted(displayName, text);
+        else narrator.instructionQueued(displayName, text);
       } else if (result.reason === "rejected") {
         // The paid funnel returns only a typed reason (no category) — narrate the
         // never-silent rejection with the generic viewer-safe label. Window time
@@ -893,6 +920,75 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         logger.error({ err, taskId }, "failed to enter BUILD_IN_PROGRESS for the round winner");
       }
       void buildSession.startBuild(task);
+    };
+
+    // CR-03: the paid-window build trigger. A queued paid instruction enters
+    // BUILD_IN_PROGRESS and runs in the sandbox exactly like a round winner. On
+    // completion, if the window is STILL live it returns to FREE_REIGN_WINDOW and
+    // drains the NEXT queued instruction (D-12: one window, multiple sequential
+    // builds); otherwise it stays IDLE. A build already running → the instruction
+    // waits in the queue (returns false = "not started", narrated as "queued").
+    driveWindowBuild = (taskId) => {
+      if (machine.mode === "BUILD_IN_PROGRESS") return false;
+      const task = taskQueue.list().find((t) => t.id === taskId);
+      if (!task) return false;
+      try {
+        if (machine.mode === "FREE_REIGN_WINDOW") machine.transition("BUILD_IN_PROGRESS");
+      } catch (err) {
+        logger.error(
+          { err, taskId },
+          "failed to enter BUILD_IN_PROGRESS for a paid-window instruction",
+        );
+        return false;
+      }
+      void (async () => {
+        await buildSession.startBuild(task);
+        // IDLE = terminal; still BUILD_IN_PROGRESS = decision-pending (streamer
+        // owns the next step); HALTED = kill switch owns it.
+        if (machine.mode !== "IDLE") return;
+        const snap = controlWindow.snapshot();
+        if (snap !== null && snap.endsAtMs > Date.now()) {
+          try {
+            machine.transition("FREE_REIGN_WINDOW");
+          } catch (err) {
+            logger.error({ err }, "failed to return to FREE_REIGN_WINDOW after a paid build");
+            return;
+          }
+          const next = taskQueue.list()[0];
+          if (next) driveWindowBuild?.(next.id);
+        }
+        // else: the window expired/revoked during the build → stay IDLE.
+      })();
+      return true;
+    };
+
+    // WR-01/CR-03: the chaos build trigger. A queued chaos pick builds like a
+    // winner; on completion, if chaos is STILL enabled it returns to CHAOS_MODE
+    // and picks the next pool entry (draining the pool one at a time). An empty
+    // pool picks nothing — never a busy-loop.
+    driveChaosBuild = (taskId) => {
+      if (machine.mode === "BUILD_IN_PROGRESS") return false;
+      const task = taskQueue.list().find((t) => t.id === taskId);
+      if (!task) return false;
+      try {
+        if (machine.mode === "CHAOS_MODE") machine.transition("BUILD_IN_PROGRESS");
+      } catch (err) {
+        logger.error({ err, taskId }, "failed to enter BUILD_IN_PROGRESS for a chaos pick");
+        return false;
+      }
+      void (async () => {
+        await buildSession.startBuild(task);
+        if (machine.mode !== "IDLE") return;
+        if (!chaosOn) return; // chaos turned off during the build → stay IDLE
+        try {
+          machine.transition("CHAOS_MODE");
+        } catch (err) {
+          logger.error({ err }, "failed to return to CHAOS_MODE after a chaos build");
+          return;
+        }
+        chaos.pick(); // next pick; null (no build) when the pool is now empty
+      })();
+      return true;
     };
 
     // App-under-construction preview surface (PRES-03) — a THIRD isolated
