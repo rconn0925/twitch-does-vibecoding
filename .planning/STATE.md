@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: verifying
-stopped_at: Phase 4 context gathered — research pass required next (donation platform + AUP)
-last_updated: "2026-07-10T08:51:53.442Z"
-last_activity: 2026-07-10 -- Phase 03 code waves complete
+status: executing
+stopped_at: Phase 4 code-side closeout COMPLETE (built→reviewed→fixed→verified→secured); chaining to Phase 5
+last_updated: "2026-07-10T09:00:00.000Z"
+last_activity: 2026-07-10 -- Phase 04 code-side closeout complete
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 20
-  completed_plans: 19
-  percent: 40
+  total_plans: 28
+  completed_plans: 26
+  percent: 72
 ---
 
 # Project State
@@ -21,18 +21,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-09)
 
 **Core value:** Chat genuinely controls what gets built — safely. The suggest → filter → vote → build loop must work live on stream, and nothing chat requests can ever put the channel at risk of violating Twitch ToS or Community Guidelines.
-**Current focus:** Phase 03 — sandboxed-build-engine-live-show
+**Current focus:** Phase 04 code-side complete → chaining to Phase 05 (build-history + stream-night dry run)
 
 ## Current Position
 
-Phase: 03 (sandboxed-build-engine-live-show) — CODE COMPLETE, in closeout
-Plan: 8 of 9 code plans merged (03-02..03-09); 03-01 (Wave 0 WSL2 go/no-go) HELD for human validation
-Status: Phase 03 closeout — code review → verify → secure; suite 524 pass, tsc+biome clean
-Last activity: 2026-07-10 -- Phase 03 code waves complete
+Phase: 04 (paid-influence-chaos-mode) — CODE COMPLETE (closeout green); 05 next
+Plan: Phase 3 = 8/9 (Wave 0 pending); Phase 4 = 7/8 buildable plans merged (04-08 live gate deferred). Suite 630 pass, tsc+biome clean.
+Status: Phase 04 built (4 waves) → reviewed (3 blockers + 8 findings, ALL fixed) → verified 5/5 vs fakes → secured 19/19. Chaining to Phase 05.
+Last activity: 2026-07-10 -- Phase 04 code-side closeout complete
 
-Progress: [████████░░] 89% (8/9 plans)
+Progress: [███████░░░] 72%
 
-**Wave 0 gate (blocking phase completion):** SANDBOX-SETUP.md verdict is ⏳ PENDING. All code waves were built against injected fakes; NO real build may execute until the streamer performs the hands-on WSL2 validation (filesystem escape, dev-server exposure, wsl --terminate veto, A1 billing, latency) and records GO.
+**Two phase-completion gates remain, both deliberately deferred to the end human-gate batch (user directive: build everything, batch human gates):**
+- **Phase 3 — Wave 0 WSL2 go/no-go** (`03-.../SANDBOX-SETUP.md` ⏳ PENDING): filesystem-escape, dev-server-exposure, wsl --terminate veto, A1 billing, latency. NO real build until GO.
+- **Phase 4 — Live gate 04-08 + CR-03 human-check** (AR-04-01/02): StreamElements account/JWT, `channel:read:redemptions` broadcaster re-auth, real tip/redemption smoke test, Bits AUP/chargeback manual re-read, and CR-03 build-loop under a real WSL2 build engine.
 
 ## Performance Metrics
 
@@ -75,6 +77,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
+- **[Phase 4 — BLOCKING before any real paid use] Live gate 04-08** (`04-08-PLAN.md`, autonomous:false; accepted risks AR-04-01/02): StreamElements account + JWT setup, `channel:read:redemptions` broadcaster RE-AUTH (Phase 2 token lacks it), a real tip + real channel-points redemption smoke test, and a manual re-read of the MEDIUM-confidence Bits AUP + chargeback claims. Plus CR-03 human-check: the paid/chaos build-execution loop (window drain, chaos re-pick) under a REAL WSL2 build engine.
 - **[Phase 3 — BLOCKING before any live/real build] Wave 0 WSL2 go/no-go** (`03-.../SANDBOX-SETUP.md`, verdict ⏳ PENDING): hands-on proofs a) filesystem-escape isolation (SAND-01), b) dev-server-only exposure (SAND-02), c) `wsl.exe --terminate` kills a hung tree (BUILD-04), d) A1 billing (plan credits vs metered), e) cold/warm launch latency. NO real chat-derived build may execute until this reads GO.
 - [Phase 3] Human UAT / judgment items from review-fix: CR-01 terminal-state on a real veto; WR-05 shutdown-drain race (fix present, no dedicated automated test); WR-07 watchdog bounds — confirm DEFAULT_TURN_TIMEOUT_MS=5min / CLOSE_DRAIN_MS=2s suit the live-show timing envelope.
 - [Phase 3 — deferred ticket] COMP-02 `held` plans are narrated + audited but DROPPED, not routed to a console review queue — `main.ts` onHeldForReview carries a documented `TODO(D-08)`; implement review-queue routing (WR-03).
