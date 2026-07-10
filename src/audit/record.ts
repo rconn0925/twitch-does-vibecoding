@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type {
   GateCategory,
   GateDecision,
+  PipelineStage,
   ReasonTag,
   StreamMode,
   SuggestionCandidate,
@@ -254,6 +255,140 @@ export function recordPoolDropped(
     rationale: "Pool at capacity — oldest candidate dropped (D2-13)",
     streamMode: args.streamMode,
     taskId: null,
+  });
+}
+
+// ── Phase 3: build-pipeline audit events (D3-13) ────────────────────────────
+// Every pipeline-stage transition, COMP-02 decision, refusal, retry, skip, and
+// sandbox teardown appends ONE row, all carrying source "orchestrator" and the
+// task id. No schema column changes — audit_log has no CHECK constraints, so the
+// new event_type/source values are schema-safe additions (only schema.sql's
+// descriptive comment is extended). Each mirrors recordGateDecision's
+// arg-object → insert() shape.
+
+/** One row per pipeline-stage transition (BUILD-02, PRES-04): the stage in `decision`. */
+export function recordPipelineStage(
+  db: Database.Database,
+  args: {
+    taskId: string;
+    stage: PipelineStage;
+    streamMode: StreamMode;
+    /** Optional SDK progress summary — display only, never parsed downstream. */
+    summary?: string | null;
+  },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "pipeline_stage",
+    source: "orchestrator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: args.stage,
+    category: null,
+    rationale: args.summary ?? null,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
+/** One row per COMP-02 build-plan re-screen decision (D3-06): re-uses the gate vocabulary. */
+export function recordComp02Decision(
+  db: Database.Database,
+  args: {
+    taskId: string;
+    decision: GateDecision;
+    category: GateCategory | null;
+    rationale: string;
+    streamMode: StreamMode;
+  },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "comp02_decision",
+    source: "orchestrator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: args.decision,
+    category: args.category,
+    rationale: args.rationale,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
+/** One row per mid-build model refusal (D3-08): a first-class narrated event, not an error. */
+export function recordBuildRefusal(
+  db: Database.Database,
+  args: { taskId: string; streamMode: StreamMode; rationale?: string | null },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "build_refused",
+    source: "orchestrator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: args.rationale ?? null,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
+/** One row per build retry (D3-09): auto-retry-once, or streamer-chosen retry. */
+export function recordBuildRetry(
+  db: Database.Database,
+  args: { taskId: string; streamMode: StreamMode; rationale?: string | null },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "build_retry",
+    source: "orchestrator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: args.rationale ?? null,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
+/** One row per build skip (D3-09): the never-silent failure path chose skip. */
+export function recordBuildSkip(
+  db: Database.Database,
+  args: { taskId: string; streamMode: StreamMode; rationale?: string | null },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "build_skip",
+    source: "orchestrator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: args.rationale ?? null,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
+/** One row per sandbox teardown (BUILD-04 / D3-10): the wsl --terminate abort primitive fired. */
+export function recordSandboxTeardown(
+  db: Database.Database,
+  args: { taskId: string; streamMode: StreamMode; rationale?: string | null },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "sandbox_teardown",
+    source: "orchestrator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: args.rationale ?? null,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
   });
 }
 

@@ -8,8 +8,9 @@
 CREATE TABLE IF NOT EXISTS audit_log (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at_ms   INTEGER NOT NULL,          -- Date.now(); indexed for the purge job
-  event_type      TEXT NOT NULL,             -- 'gate_decision' | 'veto' | 'halt' | 'review_resolved' | 'review_expired' | 'submission_refused'
-  source          TEXT NOT NULL,             -- 'chat' | 'channel_points' | 'donation' | 'chaos' | 'operator' | 'console' | 'hotkey'
+  event_type      TEXT NOT NULL,             -- 'gate_decision' | 'veto' | 'halt' | 'review_resolved' | 'review_expired' | 'submission_refused' | 'round_opened' | 'round_closed' | 'pool_dropped'
+                                             --   Phase 3 (D3-13): 'pipeline_stage' | 'comp02_decision' | 'build_refused' | 'build_retry' | 'build_skip' | 'sandbox_teardown'
+  source          TEXT NOT NULL,             -- 'chat' | 'channel_points' | 'donation' | 'chaos' | 'operator' | 'orchestrator' | 'console' | 'hotkey'
   twitch_username TEXT,                      -- nullable: absent for operator-console-originated events
   suggestion_text TEXT,                      -- nullable: absent for pure veto/halt events with no candidate
   decision        TEXT,                      -- 'approved' | 'rejected' | 'held-for-review' | review resolution | null (halt/veto)
