@@ -8,6 +8,7 @@
  *   Text      #F8FAFC
  *   Urgency   #F59E0B — final-10s countdown digits + ON HOLD pill
  *   Winner    #22C55E — winner-beat row highlight only
+ *   Paid      #8B5CF6 — free-reign (paid-control) elements ONLY (Phase 4)
  *
  * Destructive red is DELIBERATELY absent from this file: red on the public
  * surface reads as "the stream is broken" (D2-18). Never add it.
@@ -24,6 +25,14 @@
   --muted: #94a3b8;
   --urgency: #f59e0b;
   --winner: #22c55e;
+  /*
+   * Paid-control semantic (Phase 4, 04-UI-SPEC). Reserved EXCLUSIVELY for the
+   * three free-reign elements: the FREE REIGN pill dot, the banner label + dot,
+   * and the FREE REIGN provenance chip text. Nothing else may ever use it —
+   * chaos gets NO color (a white slate-50 dot), so paid and chaos never share a
+   * visual identity (mirrors D-08). Violet means "someone paid for control."
+   */
+  --paid-control: #8b5cf6;
   --safe-margin: 48px; /* >= 1080p action-safe; survives OBS crop/scale */
   --block-gap: 32px;
   --panel-pad: 24px;
@@ -85,6 +94,79 @@ body {
 
 .pill-onhold .pill-text {
   color: var(--urgency); /* amber, never red — honest but non-alarming */
+}
+
+/* FREE REIGN pill — violet dot (paid-control), default text (Phase 4). */
+.pill-freereign .pill-dot {
+  background: var(--paid-control);
+}
+
+/* CHAOS pill — slate-50 white dot, default text. NO violet: chaos and paid
+ * control never share a visual identity (04-UI-SPEC, mirrors D-08). */
+.pill-chaos .pill-dot {
+  background: var(--text);
+}
+
+/* ── Free-reign banner — top-left, the previously-unused corner ──────── */
+/*
+ * PAID-01/02: mounted while OverlayState.controlWindow != null. Coarse by
+ * design — donor display name + m:ss countdown only; the amount, currency, and
+ * donation message never reach this surface. Violet label/dot are the ONLY
+ * paid-control accents; destructive red stays absent (a revoked/expired window
+ * just collapses this element, no error text ever, D2-18/T-04-14).
+ */
+
+.free-reign-banner {
+  position: fixed;
+  top: var(--safe-margin);
+  left: var(--safe-margin);
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  max-width: 640px;
+  box-sizing: border-box;
+  background: var(--dominant);
+  border-radius: 12px;
+  padding: 8px 16px;
+}
+
+.banner-dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--paid-control); /* violet — paid-control semantic */
+  align-self: center;
+}
+
+.banner-label {
+  flex: none;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--paid-control); /* violet — the only paid-control text accent */
+}
+
+.banner-donor {
+  flex: 1;
+  min-width: 0;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text);
+  /* CSS backstop behind the JS-side 24-char truncation */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.banner-countdown {
+  flex: none;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Vote panel — lower-left, 560px fixed width ─────────────────────── */
@@ -241,6 +323,7 @@ body {
 .build-header {
   display: flex;
   align-items: baseline;
+  gap: 8px;
 }
 
 .build-title {
@@ -248,6 +331,31 @@ body {
   font-size: 32px;
   font-weight: 700;
   line-height: 1.2;
+}
+
+/*
+ * Provenance chip (PAID-01/02/CHAOS-01) — mounts after NOW BUILDING when the
+ * task came from a window or a chaos pick. Secondary bg, Label 20/600. FREE
+ * REIGN uses violet text (paid-control); CHAOS PICK uses default text — chaos
+ * gets no color (04-UI-SPEC). No chip renders for a normal vote winner.
+ */
+.provenance-chip {
+  flex: none;
+  align-self: center;
+  background: var(--secondary);
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.chip-freereign {
+  color: var(--paid-control); /* violet — paid-control semantic */
+}
+
+.chip-chaos {
+  color: var(--text); /* neutral — chaos never uses the paid violet */
 }
 
 .build-task {
