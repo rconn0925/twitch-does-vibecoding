@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Build History — Twitch Does Vibecoding</title>
+    <link rel="stylesheet" href="/history.css" />
+  </head>
+  <body>
+    <!--
+      Audience-facing build-history changelog (HIST-01 / 05-02) — a read-only,
+      screen-shareable browser page (NOT an OBS overlay, NOT the operator
+      console). It reads the durable build_history ledger via GET /api/history on
+      THIS surface's own server and renders a reverse-chronological, night-grouped
+      changelog. Every title below is chat-derived and UNTRUSTED — history.js
+      authors every text node via textContent (never innerHTML), so a suggestion
+      title can never inject markup onto a screen-shared page (T-05-04). No red
+      anywhere: refused/failed builds render in calm amber, an unreachable server
+      reads as a calm non-red error card, never a browser error page.
+
+      Focal point (UI-checker flag a): the entry list is the page's focal point —
+      the most-recent night group sits at the top, reinforced by the Display-size
+      page title. The night-group headings are secondary scan anchors only.
+    -->
+    <header class="page-header">
+      <h1 class="page-title">Build History</h1>
+      <p class="page-tagline">The audience built this together.</p>
+    </header>
+
+    <!-- The single container history.js fills. Focal point of the page. -->
+    <main id="history-root" class="history-root" aria-live="polite"></main>
+
+    <script src="/history.js"></script>
+  </body>
+</html>
