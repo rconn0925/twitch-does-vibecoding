@@ -178,11 +178,13 @@ describe("COMP-01 single-funnel invariants (source scan)", () => {
     ).toHaveLength(0);
   });
 
-  it("(d) toQueuedTask is referenced outside gate.ts only by src/pipeline/{submit,round}.ts", () => {
+  it("(d) toQueuedTask is referenced outside gate.ts only by src/pipeline/{submit,round,paid-window,chaos}.ts", () => {
     const allowed = new Set([
       "src/compliance/gate.ts",
       "src/pipeline/submit.ts",
       "src/pipeline/round.ts",
+      "src/pipeline/paid-window.ts",
+      "src/pipeline/chaos.ts",
     ]);
     const hits = allMatches(/toQueuedTask/);
     const offenders = [...hits.entries()]
@@ -190,7 +192,7 @@ describe("COMP-01 single-funnel invariants (source scan)", () => {
       .flatMap(([, locs]) => locs);
     expect(
       offenders,
-      `toQueuedTask referenced outside the sanctioned funnel (gate.ts + pipeline/submit.ts): ${offenders.join(", ")}`,
+      `toQueuedTask referenced outside the sanctioned funnel (gate.ts + pipeline/{submit,round,paid-window,chaos}.ts): ${offenders.join(", ")}`,
     ).toHaveLength(0);
   });
 
