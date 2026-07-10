@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -5,12 +6,34 @@ import type Database from "better-sqlite3";
 import { type Logger, pino } from "pino";
 import { openDb } from "./audit/db.js";
 import { purgeOldAuditRecords } from "./audit/purge.js";
-import { recordPoolDropped } from "./audit/record.js";
+import { recordChaosPick, recordChaosToggled, recordPoolDropped } from "./audit/record.js";
+import { pickChaos } from "./chaos/selector.js";
 import { CATEGORY_META, isLegalCategory } from "./compliance/categories.js";
 import { classifierDepsFromEnv } from "./compliance/classifier.js";
 import { classify, type FakeClassifier, type GateDeps } from "./compliance/gate.js";
+import {
+  ControlWindow,
+  ControlWindowError,
+  type OpenWindowRequest,
+} from "./control-window/control-window.js";
+import {
+  cooldownMs,
+  loadDonationDurationConfig,
+  loadRedemptionDurationConfig,
+} from "./control-window/duration.js";
 import { type ChatMessageSink, createChatSender } from "./ingestion/chat-sender.js";
-import { createNarrator } from "./ingestion/narration.js";
+import {
+  connectStreamElements,
+  type DonationEventSource,
+  type TipEvent,
+} from "./ingestion/donation-source.js";
+import { createNarrator, type Narrator } from "./ingestion/narration.js";
+import {
+  isMissingRedemptionScopeError,
+  makeRedemptionSource,
+  type RedemptionEvent,
+  type RedemptionEventSource,
+} from "./ingestion/redemption-source.js";
 import { createSuggestIntake } from "./ingestion/suggest-intake.js";
 import { type ChatEventSource, startTwitchChat } from "./ingestion/twitch-chat.js";
 import { AbortRegistry, abortActiveWork } from "./kill-switch/abort.js";
@@ -22,6 +45,7 @@ import {
 } from "./kill-switch/hotkey.js";
 import {
   type ConsoleServerHandle,
+  type DonationsStatus,
   startConsoleServer,
   type TwitchConnectionStatus,
 } from "./operator-console/server.js";
@@ -33,15 +57,24 @@ import type {
   SandboxAdapter,
 } from "./orchestrator/types.js";
 import { type OverlayServerHandle, startOverlayServer } from "./overlay/server.js";
+import { type ChaosPickResult, submitChaosPick } from "./pipeline/chaos.js";
+import { submitDuringWindow } from "./pipeline/paid-window.js";
 import { enqueueWinner } from "./pipeline/round.js";
-import { submitCandidate } from "./pipeline/submit.js";
+import { type SubmitResult, submitCandidate } from "./pipeline/submit.js";
 import { createPreviewManager, resolvePreviewDevServerPort } from "./preview/preview-manager.js";
 import { type PreviewServerHandle, startPreviewServer } from "./preview/server.js";
 import { CandidatePool } from "./queue/pool.js";
 import { TaskQueue } from "./queue/task-queue.js";
-import { HALT_TRIGGERED, ROUND_CLOSED, ROUND_OPENED } from "./shared/events.js";
+import {
+  HALT_TRIGGERED,
+  ROUND_CLOSED,
+  ROUND_OPENED,
+  WINDOW_CLOSED,
+  WINDOW_REVOKED,
+} from "./shared/events.js";
 import type {
   BuildNarrator,
+  ControlWindowSnapshot,
   GateResult,
   HaltContext,
   RoundSnapshot,
@@ -118,6 +151,19 @@ export interface CreateAppOptions {
    * surface from the console + overlay (D3-12).
    */
   previewPort?: number;
+  /**
+   * Paid-influence seams (plan 04-07): injected StreamElements donation source
+   * and channel-points redemption source — test fakes (zero network) or the real
+   * adapters the entrypoint builds. Both feed the SAME ControlWindow FSM. Absent
+   * = that trigger is "unconfigured"; the vote loop keeps running (never a crash).
+   */
+  donationSource?: DonationEventSource;
+  redemptionSource?: RedemptionEventSource;
+  /**
+   * Deterministic chaos-pick RNG (CHAOS-01) — injected in tests so a random pick
+   * is reproducible. Absent = the production `node:crypto.randomInt` uniform pick.
+   */
+  chaosRng?: (max: number) => number;
 }
 
 export interface AppHandle {
@@ -138,6 +184,19 @@ export interface AppHandle {
   orchestrator?: BuildSession;
   /** App-under-construction preview surface (PRES-03) — present only when the orchestrator is composed. */
   preview?: PreviewServerHandle;
+  /** Paid/redemption control-window FSM (PAID-01/02/03/04) — always composed (04-07). */
+  controlWindow: ControlWindow;
+  /**
+   * Chaos-mode controller (CHAOS-01): the on/off state + streamer toggle, plus
+   * `pick()` — a uniform-random selection from the gate-filtered pool routed
+   * through the sanctioned chaos funnel. Returns null when not in chaos mode or
+   * the pool is empty.
+   */
+  chaos: {
+    enabled(): boolean;
+    toggle(): void;
+    pick(): ChaosPickResult | null;
+  };
   close: () => Promise<void>;
 }
 
@@ -247,6 +306,15 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     ...(classifierDeps ? { classifier: classifierDeps } : {}),
   };
 
+  // Shared re-classification path (D2-05): a stale pool winner OR a stale chaos
+  // pick re-enters the ONE funnel (submitCandidate) instead of riding an aged
+  // approval. Reused by the round funnel and the chaos controller below.
+  const resubmit = (candidate: SuggestionCandidate): SubmitResult =>
+    submitCandidate(
+      { db, mode: () => machine.mode, pool, classify: (cand) => classify(gateDeps, cand), logger },
+      candidate,
+    );
+
   // Voting rounds (CHAT-02). The injected wrapper is RoundManager's ONLY
   // bridge to the build queue (COMP-01): it maps the manager's third callback
   // argument — the winner's PERSISTED round_candidates.pooled_at_ms — onto
@@ -270,17 +338,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
           taskQueue,
           db,
           mode: () => machine.mode,
-          resubmit: (c) =>
-            submitCandidate(
-              {
-                db,
-                mode: () => machine.mode,
-                pool,
-                classify: (cand) => classify(gateDeps, cand),
-                logger,
-              },
-              c,
-            ),
+          resubmit,
           logger,
         },
         { candidate, result, addedAtMs: pooledAtMs },
@@ -338,6 +396,167 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     }
   }
 
+  // ── Control-window FSM (Phase 4 PAID-01/02/03/04) ──────────────────────
+  // ONE FSM backs both donation and channel-points windows (D-03). The paid
+  // funnel (submitDuringWindow, 04-06) is INJECTED — control-window.ts never
+  // imports the gate or the queue directly (T-04-09, the paid side of the D-08
+  // separation). restore() runs at startup BEFORE any donation/redemption
+  // listener accepts events (mirrors round.restore()): a window whose deadline
+  // passed during downtime closes as expired; a live one re-arms for the exact
+  // REMAINDER (crash-safe, PAID-04).
+  const controlWindow = new ControlWindow({
+    db,
+    machine,
+    submitDuringWindow: (candidate) =>
+      submitDuringWindow(
+        { taskQueue, classify: (c) => classify(gateDeps, c), mode: () => machine.mode, logger },
+        candidate,
+      ),
+    donationConfig: loadDonationDurationConfig(),
+    redemptionConfig: loadRedemptionDurationConfig(),
+    cooldownMs: cooldownMs(),
+    logger,
+  });
+  controlWindow.restore();
+
+  // The show narrator is composed inside the chat block below (only when a
+  // chatSource/chatSink pair exists). Window/chaos beats route through it when
+  // present; absent → silent-safe (mirrors buildNarrator).
+  let windowNarrator: Narrator | undefined;
+
+  // Donation-feed health for the console pill (04-RESEARCH OQ1 — never silent).
+  let donationsStatus: DonationsStatus = "unconfigured";
+
+  // 30-seconds-left beat (windows ≥ 60s). One window at a time → one timer,
+  // unref'd so it never keeps the process alive.
+  let windowThirtyTimer: NodeJS.Timeout | null = null;
+  const clearWindowThirtyBeat = (): void => {
+    if (windowThirtyTimer !== null) {
+      clearTimeout(windowThirtyTimer);
+      windowThirtyTimer = null;
+    }
+  };
+  const armWindowThirtyBeat = (donor: string, durationMs: number): void => {
+    clearWindowThirtyBeat();
+    if (durationMs >= 60_000) {
+      windowThirtyTimer = setTimeout(() => {
+        windowThirtyTimer = null;
+        windowNarrator?.window30sLeft(donor);
+      }, durationMs - 30_000);
+      windowThirtyTimer.unref();
+    }
+  };
+
+  // Window lifecycle narration: natural expiry / streamer revoke (never silent).
+  // WINDOW_OPENED is narrated at the open() call site instead (it needs the
+  // amount/reward the coarse snapshot deliberately drops), so it is NOT
+  // re-narrated here — avoiding a double beat.
+  controlWindow.on(WINDOW_CLOSED, (...args) => {
+    clearWindowThirtyBeat();
+    const snap = args[0] as ControlWindowSnapshot;
+    windowNarrator?.windowExpired(snap.donorDisplayName);
+  });
+  controlWindow.on(WINDOW_REVOKED, () => {
+    clearWindowThirtyBeat();
+    windowNarrator?.windowRevoked();
+  });
+
+  // Map a validated donation/redemption event → a normalized OpenWindowRequest →
+  // controlWindow.open(). A ControlWindowError (already-active / cooldown /
+  // not-idle) narrates the denial and returns — never silent (D-05). This
+  // mapping lives HERE at the composition root so control-window.ts stays free
+  // of ingestion imports.
+  const openWindowFromDonation = (tip: TipEvent): void => {
+    const request: OpenWindowRequest = {
+      trigger: "donation",
+      donorIdentifier: tip.username,
+      donorDisplayName: tip.displayName,
+      amountOrCost: tip.amount,
+    };
+    try {
+      const snap = controlWindow.open(request);
+      windowNarrator?.windowOpenedDonation(
+        tip.displayName,
+        `$${tip.amount.toFixed(2)}`,
+        snap.durationMs,
+      );
+      armWindowThirtyBeat(tip.displayName, snap.durationMs);
+    } catch (err) {
+      if (err instanceof ControlWindowError) {
+        if (err.reason === "cooldown") windowNarrator?.windowDeniedCooldown(tip.displayName);
+        else windowNarrator?.windowDeniedActive(tip.displayName);
+        return;
+      }
+      throw err;
+    }
+  };
+  const openWindowFromRedemption = (redemption: RedemptionEvent): void => {
+    const request: OpenWindowRequest = {
+      trigger: "channel_points",
+      donorIdentifier: redemption.user_id,
+      donorDisplayName: redemption.user_name,
+      amountOrCost: redemption.reward.cost,
+    };
+    try {
+      const snap = controlWindow.open(request);
+      windowNarrator?.windowOpenedChannelPoints(
+        redemption.user_name,
+        redemption.reward.title,
+        snap.durationMs,
+      );
+      armWindowThirtyBeat(redemption.user_name, snap.durationMs);
+    } catch (err) {
+      if (err instanceof ControlWindowError) {
+        if (err.reason === "cooldown") windowNarrator?.windowDeniedCooldown(redemption.user_name);
+        else windowNarrator?.windowDeniedActive(redemption.user_name);
+        return;
+      }
+      throw err;
+    }
+  };
+
+  // ── Chaos mode (CHAOS-01, D-05 precedence, D-08 separation) ─────────────
+  // toggle() drives IDLE↔CHAOS_MODE (InvalidTransitionError bubbles to the
+  // console route's 409 when precedence forbids the flip). pick() pulls a
+  // uniform selection from the gate-filtered pool and routes it through the
+  // SANCTIONED chaos funnel (submitChaosPick, 04-06) — never a direct enqueue
+  // here. The chaos side references RNG (pickChaos) but no payment event; the
+  // paid side above references payment but no RNG (D-08).
+  let chaosOn = false;
+  const chaos = {
+    enabled: (): boolean => chaosOn,
+    toggle: (): void => {
+      if (!chaosOn) {
+        machine.transition("CHAOS_MODE");
+        chaosOn = true;
+      } else {
+        machine.transition("IDLE");
+        chaosOn = false;
+      }
+      recordChaosToggled(db, { enabled: chaosOn, streamMode: machine.mode });
+      if (chaosOn) windowNarrator?.chaosOn();
+      else windowNarrator?.chaosOff();
+    },
+    pick: (): ChaosPickResult | null => {
+      if (machine.mode !== "CHAOS_MODE") return null;
+      const picked = pickChaos(pool.list(), opts.chaosRng);
+      if (picked === null) return null;
+      const result = submitChaosPick(
+        { taskQueue, mode: () => machine.mode, resubmit, logger },
+        picked,
+      );
+      if (result.queued) {
+        recordChaosPick(db, {
+          taskId: picked.candidate.id,
+          title: picked.candidate.text,
+          streamMode: machine.mode,
+        });
+        windowNarrator?.chaosPick(picked.candidate.text);
+      }
+      return result;
+    },
+  };
+
   // ── Chat pipeline composition (plan 02-04) ─────────────────────────────
   // Runs whenever a chatSource/chatSink pair exists — injected fakes and the
   // entrypoint's real twurple adapters take the IDENTICAL path.
@@ -362,6 +581,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     // orchestrator + the veto-abort handler above via buildNarrator.
     const narrator = createNarrator({ sender, logger, cooldownSeconds: intakeCooldownSeconds });
     buildNarrator = narrator;
+    // Expose the same narrator to the window/chaos beats composed above.
+    windowNarrator = narrator;
     // (3) Chat hears transitions only: round open + close/winner (D2-07).
     round.on(ROUND_OPENED, (...args) => {
       narrator.roundOpened(args[0] as RoundSnapshot);
@@ -457,10 +678,60 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       logger.info({ roundId: mem.roundId }, "reconcile: in-memory round matches the vote ledger");
     };
 
+    // (5b) D-11 open-window routing: while a control window is ACTIVE, ANY
+    // chatter's `!build <text>` routes through the ONE funnel
+    // (controlWindow.submitInstruction → submitDuringWindow → gate → queue) —
+    // there is NO donor-identity gate (an open sponsored slot) and NO direct
+    // enqueue here (single-funnel invariant, T-04-23). Parsed like !suggest;
+    // outside a window it is silently ignored (no chat noise, D2-15). This is
+    // wired as a THIN wrapper over the existing chatSource so main.ts adds no
+    // second EventSub subscription — the interceptor delegates every non-!build
+    // message to startTwitchChat's own handler.
+    const BUILD_COMMAND = /^!build\s+(.+)$/i;
+    const routeWindowInstruction = async (displayName: string, text: string): Promise<void> => {
+      const candidate: SuggestionCandidate = {
+        id: randomUUID(),
+        source: "chat",
+        kind: "suggestion",
+        twitchUsername: displayName,
+        text,
+        submittedAtMs: Date.now(),
+      };
+      const result = await controlWindow.submitInstruction(candidate);
+      if (result.queued) {
+        narrator.instructionAccepted(displayName, text);
+      } else if (result.reason === "rejected") {
+        // The paid funnel returns only a typed reason (no category) — narrate the
+        // never-silent rejection with the generic viewer-safe label. Window time
+        // is NOT consumed (D-12); the window stays open.
+        narrator.instructionRejected(displayName);
+      } else if (result.reason === "held") {
+        narrator.instructionHeld(displayName);
+      }
+      // reason "halted" → the halt itself is already narrated (D-02); no beat.
+    };
+    const buildAwareChatSource: ChatEventSource = {
+      ...chatSource,
+      onChannelChatMessage: (bId, uId, handler) =>
+        chatSource.onChannelChatMessage(bId, uId, (event) => {
+          const match = BUILD_COMMAND.exec(event.messageText.trim());
+          if (match?.[1]) {
+            // Only meaningful during an active window (D-11). Consume the token
+            // either way so it never falls through to the !suggest/!vote path.
+            if (controlWindow.snapshot() !== null) {
+              void routeWindowInstruction(event.chatterDisplayName, match[1]);
+            }
+            return;
+          }
+          handler(event);
+        }),
+    };
+
     // (6) The listener: !suggest -> intake -> submitCandidate (the ONLY
-    // intake path, COMP-01), !vote -> the round ledger.
+    // intake path, COMP-01), !vote -> the round ledger, !build -> the window
+    // funnel (via buildAwareChatSource above).
     chatHandle = startTwitchChat({
-      source: chatSource,
+      source: buildAwareChatSource,
       broadcasterUserId,
       intake,
       submit: (candidate) =>
@@ -480,6 +751,32 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     });
     chatSource.onUserSocketDisconnect(() => {
       twitchStatus = "disconnected";
+    });
+  }
+
+  // ── Donation + redemption ingestion (PAID-01/02) ────────────────────────
+  // Both triggers feed the SAME controlWindow FSM. Injected fakes travel the
+  // IDENTICAL path as the entrypoint's real StreamElements socket + the
+  // redemption subscription on the SINGLE EventSubWsListener (never a second
+  // session). Absent = that trigger stays "unconfigured" and the app still
+  // boots — a missing tip feed never crashes the show (T-04-25).
+  const donationSource = opts.donationSource;
+  if (donationSource) {
+    donationsStatus = "reconnecting"; // until the socket reports ready
+    donationSource.onReady(() => {
+      donationsStatus = "connected";
+    });
+    donationSource.onDisconnect(() => {
+      donationsStatus = "reconnecting";
+    });
+    donationSource.onTip((tip) => {
+      openWindowFromDonation(tip);
+    });
+  }
+  const redemptionSource = opts.redemptionSource;
+  if (redemptionSource) {
+    redemptionSource.onRedemption((redemption) => {
+      openWindowFromRedemption(redemption);
     });
   }
 
@@ -503,6 +800,15 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     retryBuild: (taskId) => orchestrator?.retryBuild(taskId),
     skipTask: (taskId, reasonTag) => orchestrator?.skipTask(taskId, reasonTag),
     buildStatus: () => orchestrator?.snapshot() ?? null,
+    // PAID-04 / CHAOS-01 seams (04-05): the honest full-detail window snapshot +
+    // single-click Revoke, the chaos on/off state + toggle, and the donation-feed
+    // health pill — all backed by the real FSM/controller composed above.
+    controlWindow: {
+      snapshot: () => controlWindow.snapshot(),
+      revoke: () => controlWindow.revoke(),
+    },
+    chaos: { enabled: () => chaos.enabled(), toggle: () => chaos.toggle() },
+    donationsStatus: () => donationsStatus,
     logger,
   });
   logger.info(
@@ -592,6 +898,18 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     taskQueue,
     port: opts.overlayPort ?? 0,
     ...(orchestrator ? { build: orchestrator } : {}),
+    // Coarse public projection of an active window (T-04-13): donor display name
+    // + absolute deadline ONLY — the amount→duration mapping never crosses onto
+    // the broadcast wire. The overlay re-narrows again defensively.
+    controlWindow: {
+      snapshot: () => {
+        const snap = controlWindow.snapshot();
+        return snap === null
+          ? null
+          : { donorDisplayName: snap.donorDisplayName, endsAtMs: snap.endsAtMs };
+      },
+      on: (event, handler) => controlWindow.on(event, handler),
+    },
     logger,
   });
   logger.info(
@@ -611,6 +929,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     round,
     overlay,
     registry,
+    controlWindow,
+    chaos,
     ...(orchestrator ? { orchestrator } : {}),
     ...(preview ? { preview } : {}),
     close: async () => {
@@ -618,6 +938,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // closeRound() could fire after db.close() below and crash the
       // process from inside a setTimeout callback.
       round.dispose();
+      // Cancel the window expiry + 30s-left timers BEFORE db.close() (WR-05
+      // symmetry): a pending window timer must never fire against a closed db.
+      clearWindowThirtyBeat();
+      controlWindow.dispose();
       clearInterval(reviewSweepTimer);
       clearInterval(purgeTimer);
       chatHandle?.stop();
@@ -697,6 +1021,8 @@ interface TwitchAppOptions {
   chatSource?: ChatEventSource;
   chatSink?: ChatMessageSink;
   twitchAuth?: TwitchAuthRoutes;
+  /** Channel-points redemption source (PAID-02) — rides the SAME EventSub listener. */
+  redemptionSource?: RedemptionEventSource;
 }
 
 /**
@@ -791,10 +1117,47 @@ async function buildTwitchAdapters(logger: Logger): Promise<TwitchAppOptions> {
     // ApiClient.chat structurally satisfies ChatMessageSink — passing it
     // directly keeps the sanctioned send call inside chat-sender.ts only.
     const chatSink: ChatMessageSink = apiClient.chat;
+
+    // Channel-points redemptions (PAID-02) ride the SAME `listener` — NEVER a
+    // second EventSubWsListener. makeRedemptionSource owns the zod validation +
+    // fail-closed dispatch; here we only forward twurple's typed event into its
+    // handleRaw as the snake_case shape the schema expects. The subscription
+    // needs channel:read:redemptions (added to TWITCH_SCOPES in 04-02); if the
+    // broadcaster hasn't re-authorized, it degrades LOUDLY (missing-scope) and
+    // chat/voting/builds keep running — never a silent failure.
+    const redemptionSource = makeRedemptionSource(logger);
+    try {
+      listener.onChannelRedemptionAdd(broadcasterUserId, (event) => {
+        redemptionSource.handleRaw({
+          id: event.id,
+          broadcaster_user_id: event.broadcasterId,
+          user_id: event.userId,
+          user_login: event.userName,
+          user_name: event.userDisplayName,
+          user_input: event.input,
+          status: event.status,
+          reward: { id: event.rewardId, title: event.rewardTitle, cost: event.rewardCost },
+          redeemed_at: event.redemptionDate.toISOString(),
+        });
+      });
+    } catch (err) {
+      if (isMissingRedemptionScopeError(err)) {
+        logger.warn(
+          "TWITCH missing channel:read:redemptions — channel-points windows disabled; re-authorize at http://127.0.0.1:%d/auth/start",
+          consolePort,
+        );
+      } else {
+        logger.error(
+          { err },
+          "channel-points redemption subscription failed — points-triggered windows disabled",
+        );
+      }
+    }
+
     // The chat pipeline will compose over THIS provider — a later
     // /auth/callback registers its fresh token here, live (CR-03).
     liveChatProvider = provider;
-    return { chatSource, chatSink, twitchAuth };
+    return { chatSource, chatSink, twitchAuth, redemptionSource };
   } catch (err) {
     logger.error(
       { err },
@@ -844,6 +1207,36 @@ async function buildOrchestratorAdapters(logger: Logger): Promise<OrchestratorAp
   }
 }
 
+/**
+ * Entrypoint-only StreamElements donation adapter (buildTwitchAdapters pattern):
+ * connectStreamElements dynamically imports socket.io-client, so vitest never
+ * opens a real socket. Guarded behind STREAMELEMENTS_JWT presence — an absent
+ * JWT degrades to "donations unconfigured" (the expected pre-setup state), a
+ * broken socket to a LOUD error; the vote loop keeps running either way
+ * (T-04-25). The JWT is a server-side secret — it is passed through and NEVER
+ * logged (T-04-22, mirrors twitch-auth token discipline).
+ */
+async function buildDonationAdapter(logger: Logger): Promise<DonationEventSource | undefined> {
+  const jwt = process.env.STREAMELEMENTS_JWT;
+  if (!jwt) {
+    logger.warn(
+      "DONATIONS DISABLED — set STREAMELEMENTS_JWT to enable tip-triggered control windows",
+    );
+    return undefined;
+  }
+  try {
+    const source = await connectStreamElements(jwt, logger);
+    logger.info("DONATIONS ARMED — StreamElements realtime socket connecting");
+    return source;
+  } catch (err) {
+    logger.error(
+      { err },
+      "DONATIONS UNAVAILABLE — StreamElements socket failed to open; the vote loop keeps running",
+    );
+    return undefined;
+  }
+}
+
 // Run-as-entrypoint branch (npm run dev): tsx executes this file directly.
 const invokedPath = process.argv[1];
 const isMain =
@@ -857,9 +1250,21 @@ if (isMain) {
   const bootLogger = pino({ level: process.env.LOG_LEVEL ?? "info" });
   // Entrypoint-only: build real twurple + build-orchestrator adapters (guarded
   // dynamic imports), then hand them to createApp — which owns ALL composition.
-  Promise.all([buildTwitchAdapters(bootLogger), buildOrchestratorAdapters(bootLogger)])
-    .then(([twitchOpts, orchestratorOpts]) =>
-      createApp({ dbPath, port, overlayPort, previewPort, ...twitchOpts, ...orchestratorOpts }),
+  Promise.all([
+    buildTwitchAdapters(bootLogger),
+    buildOrchestratorAdapters(bootLogger),
+    buildDonationAdapter(bootLogger),
+  ])
+    .then(([twitchOpts, orchestratorOpts, donationSource]) =>
+      createApp({
+        dbPath,
+        port,
+        overlayPort,
+        previewPort,
+        ...twitchOpts,
+        ...orchestratorOpts,
+        ...(donationSource ? { donationSource } : {}),
+      }),
     )
     .then((app) =>
       // Entrypoint-only: this is the sole call path that loads the native

@@ -320,9 +320,7 @@ export function createNarrator(deps: {
     },
 
     windowExpired(donor: string): void {
-      void deps.sender.send(
-        `Time's up — @${donor}'s window is closed. Back to the regular show.`,
-      );
+      void deps.sender.send(`Time's up — @${donor}'s window is closed. Back to the regular show.`);
     },
 
     windowRevoked(): void {
