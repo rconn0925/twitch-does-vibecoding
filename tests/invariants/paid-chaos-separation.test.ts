@@ -35,8 +35,14 @@ const RNG_TOKEN = /Math\.random|randomInt|randomUUID|crypto\.random/;
  * WORD-ANCHORED so "tip" never matches "multiple" and "cheer" never matches a
  * larger word; case-insensitive so `StreamElements` / `channel_points` are
  * caught regardless of casing.
+ *
+ * IN-02 defense-in-depth: the money-adjacent tokens (pay|money|donor|amount|
+ * currency) are included too, so the chaos path can't reference, say, `amount`
+ * or `donorIdentifier` without tripping the scan — the guard now matches the
+ * full D-08 intent, not just the literal event names.
  */
-const PAYMENT_TOKEN = /\b(donation|tip|cheer|streamelements|redemption|channel_points)\b/i;
+const PAYMENT_TOKEN =
+  /\b(donation|tip|cheer|streamelements|redemption|channel_points|pay|money|donor|amount|currency)\b/i;
 
 const paidFiles = files.filter(
   (f) => f.rel.startsWith("src/control-window/") || f.rel === "src/pipeline/paid-window.ts",
@@ -81,6 +87,8 @@ describe("CHAOS-02 paid<->chaos separation invariant (source scan)", () => {
         rel: "src/pipeline/chaos-rogue.ts",
         stripped: "import { onRedemption } from '../redemption.js';\n",
       },
+      // IN-02: a money-adjacent token (not a literal event name) must also flag.
+      { rel: "src/chaos/rogue-amount.ts", stripped: "const n = event.amount;\n" },
       // Innocent substrings — must NOT be flagged (word-anchor proof).
       { rel: "src/chaos/clean.ts", stripped: "const many = pickMultiple(); // description\n" },
       { rel: "src/control-window/clean.ts", stripped: "const label = formatMmss(durationMs);\n" },
@@ -94,6 +102,8 @@ describe("CHAOS-02 paid<->chaos separation invariant (source scan)", () => {
     const paymentHits = allMatches(synthetic, PAYMENT_TOKEN);
     expect(paymentHits.has("src/chaos/rogue.ts")).toBe(true);
     expect(paymentHits.has("src/pipeline/chaos-rogue.ts")).toBe(true);
+    // IN-02: the extended money-adjacent tokens flag too (word-anchored).
+    expect(paymentHits.has("src/chaos/rogue-amount.ts")).toBe(true);
     // "multiple"/"description" contain "tip"/"tion" substrings — the word-anchored
     // regex must NOT flag them (the exact W5 false-match guard).
     expect(paymentHits.has("src/chaos/clean.ts")).toBe(false);
