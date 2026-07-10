@@ -22,9 +22,10 @@ Resolution order:
 1. **Preferred: keep everything non-elevated.** OBS, the orchestrator, and any
    app that takes focus during the show all run at normal integrity level.
 2. **Not recommended: elevating the orchestrator to match.** The orchestrator
-   process holds Twitch and Anthropic API credentials — running it elevated
-   widens the blast radius of any future orchestrator-side compromise. Prefer
-   de-elevating the other app instead.
+   process holds Twitch credentials and the `claude login` plan credentials that
+   bill the Sonnet compliance gate (Agent SDK query() — no `ANTHROPIC_API_KEY`)
+   — running it elevated widens the blast radius of any future orchestrator-side
+   compromise. Prefer de-elevating the other app instead.
 
 If an elevated app is unavoidable during the show, treat the hotkey as dead
 while that app has focus and rely on the operator console's Halt button

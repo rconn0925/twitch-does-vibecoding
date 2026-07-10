@@ -24,14 +24,16 @@ the console is the kill switch and has no auth; it must never be exposed to the 
 
 ## Environment variables
 
-Copy `.env.example` to `.env` (gitignored). All values have working defaults except
-`ANTHROPIC_API_KEY`, which the compliance classifier (plan 01-02) requires.
+Copy `.env.example` to `.env` (gitignored). All values have working defaults. The
+compliance classifier (plan 01-02) authenticates via `claude login` — it bills the
+Sonnet gate against your Claude plan/subscription credits, so no `ANTHROPIC_API_KEY`
+is required (and it must stay UNSET, or the SDK falls back to pay-per-token API
+billing — see CLAUDE.md "What NOT to Use").
 
 | Variable               | Default            | Purpose                                          |
 | ---------------------- | ------------------ | ------------------------------------------------ |
 | `CONSOLE_PORT`         | `4900`             | Operator console port (always bound to 127.0.0.1) |
 | `AUDIT_DB_PATH`        | `./data/audit.db`  | SQLite append-only audit ledger                  |
-| `ANTHROPIC_API_KEY`    | —                  | Sonnet compliance classifier (metered API)       |
 | `GATE_MODEL`           | `claude-sonnet-5`  | Classifier model id                              |
 | `GATE_MAX_RETRIES`     | `2`                | Classifier retry budget (fail-closed after)      |
 | `PANIC_HOTKEY`         | `F13`              | Global panic hotkey (double-tap within ~2s)      |

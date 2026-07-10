@@ -44,7 +44,7 @@ Everything buildable is built and green. These are the human-action gates, defer
 **A. Phase 1 — kill switch & console (streaming PC)**
 - [ ] Physical panic-hotkey test on the streaming PC (armed-log + double-tap → HALTED; single-tap no-op); log any anomaly in `docs/OPERATIONS.md` §5 (`01-HUMAN-UAT.md`).
 - [ ] Operator-console browser walkthrough (Halt / triage / recover).
-- [ ] Live Sonnet `gate:eval` pass (needs `ANTHROPIC_API_KEY` for the eval only — NOT in the streaming machine's runtime env).
+- [ ] Live Sonnet `gate:eval` pass (bills the Claude plan via `claude login`; needs NO `ANTHROPIC_API_KEY` — the key must stay UNSET on the streaming machine).
 
 **B. Phase 2 — live Twitch loop**
 - [ ] Live Twitch OAuth bootstrap + one real-channel vote round (`02-HUMAN-UAT.md`; runbook `docs/OPERATIONS.md` §6).
@@ -119,7 +119,7 @@ Recent decisions affecting current work:
 - **[Phase 3 — BLOCKING before any live/real build] Wave 0 WSL2 go/no-go** (`03-.../SANDBOX-SETUP.md`, verdict ⏳ PENDING): hands-on proofs a) filesystem-escape isolation (SAND-01), b) dev-server-only exposure (SAND-02), c) `wsl.exe --terminate` kills a hung tree (BUILD-04), d) A1 billing (plan credits vs metered), e) cold/warm launch latency. NO real chat-derived build may execute until this reads GO.
 - [Phase 3] Human UAT / judgment items from review-fix: CR-01 terminal-state on a real veto; WR-05 shutdown-drain race (fix present, no dedicated automated test); WR-07 watchdog bounds — confirm DEFAULT_TURN_TIMEOUT_MS=5min / CLOSE_DRAIN_MS=2s suit the live-show timing envelope.
 - [Phase 3 — deferred ticket] COMP-02 `held` plans are narrated + audited but DROPPED, not routed to a console review queue — `main.ts` onHeldForReview carries a documented `TODO(D-08)`; implement review-queue routing (WR-03).
-- Human UAT (01-HUMAN-UAT.md): physical panic-hotkey test, live Sonnet gate:eval (needs ANTHROPIC_API_KEY), console browser run-through
+- Human UAT (01-HUMAN-UAT.md): physical panic-hotkey test, live Sonnet gate:eval (bills the Claude plan via `claude login`; no ANTHROPIC_API_KEY), console browser run-through
 - Human UAT (02-HUMAN-UAT.md): live Twitch smoke test (OAuth bootstrap + real-channel round, deferred 02-06 checkpoint; runbook docs/OPERATIONS.md §6), OBS overlay browser-source check
 - Stale `TODO(01-02)` at src/shared/types.ts:43 — GateCategory never narrowed to the categories.ts union (type-looseness only)
 - Review Info findings IN-02..IN-08 in 02-REVIEW.md remain open by scope decision (non-blocking)
