@@ -59,14 +59,16 @@ describe("preview-manager (DevServerProbe seam)", () => {
 
   it("exposes a loopback dev-server URL built from the fixed port and nothing else", () => {
     const manager = createPreviewManager({ port: 5555, connect: async () => true });
-    expect(manager.devServerUrl).toBe("http://localhost:5555");
+    // WR-06: the framed URL pins 127.0.0.1 to MATCH the probe's address family
+    // (never `localhost`, which could resolve to ::1 while the dev server is IPv4).
+    expect(manager.devServerUrl).toBe("http://127.0.0.1:5555");
     expect(manager.port).toBe(5555);
   });
 
   it("defaults to the SANDBOX-SETUP dev-server port (5555) when none is given", () => {
     const manager = createPreviewManager({ connect: async () => true });
     expect(manager.port).toBe(DEFAULT_PREVIEW_DEV_SERVER_PORT);
-    expect(manager.devServerUrl).toBe("http://localhost:5555");
+    expect(manager.devServerUrl).toBe("http://127.0.0.1:5555");
   });
 
   it("re-probes on every call (stateless across a distro teardown+relaunch)", async () => {

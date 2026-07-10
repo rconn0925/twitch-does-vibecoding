@@ -92,7 +92,12 @@ export function createPreviewManager(options: PreviewManagerOptions = {}): Previ
   const port = options.port ?? DEFAULT_PREVIEW_DEV_SERVER_PORT;
   const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
   const connect = options.connect ?? openTcpConnection;
-  const devServerUrl = `http://localhost:${port}`;
+  // WR-06: frame the SAME address family the probe checks. openTcpConnection
+  // probes 127.0.0.1; if this framed `localhost` resolved to IPv6 ::1 while the
+  // sandboxed dev server bound IPv4 only, the probe would report reachable while
+  // the iframe rendered a blank "LIVE" preview on the broadcast. Pin both to
+  // 127.0.0.1 so probe and frame can never disagree on the address family.
+  const devServerUrl = `http://127.0.0.1:${port}`;
 
   return {
     devServerUrl,
