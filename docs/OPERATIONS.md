@@ -220,3 +220,79 @@ auto-resumes):
   (nothing is deleted, D-02). Start a fresh round whenever ready.
 
 No acknowledged vote is ever lost to a restart.
+
+## 7. Build-History Changelog (Phase 5)
+
+The changelog is the audience-facing "the audience built this together" page —
+a read-only, reverse-chronological list of completed builds grouped by stream
+night. It is served on loopback like the other surfaces and is **safe to
+screen-share**.
+
+### 7.1 Opening It
+
+- Served at <http://127.0.0.1:4900/history> (same `CONSOLE_PORT` host process;
+  loopback-bound, non-loopback Host headers get 403 — it never leaves the
+  machine in v1).
+- It is **read-only**: `GET /history` (page) and `GET /api/history` (data) only.
+  There are no mutating routes, no WebSocket, and no `express.json` body parser —
+  nothing on this surface can change state.
+- Full history loads on open and paginates by night (10 nights per page, a
+  "load older" cursor); each night caps at 50 entries in the projection.
+
+### 7.2 What It Shows (and Deliberately Does Not)
+
+Each entry is a **gate-APPROVED** build: its title, a provenance chip, an honest
+result, and a time label. Provenance chips reuse the Phase-4 vocabulary:
+
+| Chip | Meaning |
+| --- | --- |
+| **VOTE** | A vote-round winner. |
+| **FREE REIGN** | A paid free-reign window build (donation OR channel-points — both coarsen to the same chip; the trigger type is NOT shown). |
+| **CHAOS PICK** | A chaos-mode random pick, no vote. |
+
+Results are honest but calm: **Built** (green), **Refused** / **Failed**
+(amber). There is **no red** on this surface (red is reserved for the live
+kill-switch state), and there are no screenshots in v1.
+
+Load-bearing compliance guarantees (D-03), the same ones the invariant tests and
+the e2e test enforce — verify by eye during the dry run:
+
+- **Only gate-approved titles appear.** Pre-gate / rejected-at-intake text NEVER
+  reaches this page — a `refused`/`failed` row is a suggestion that *passed*
+  intake and later failed (e.g. COMP-02 in-flight or a build error), never raw
+  banned text.
+- **No donor identity or amount, no trigger type** — the coarse projection
+  carries none of it (a paid build is indistinguishable from a channel-points
+  one here).
+- Chat-derived titles render **textContent-only** (truncated) — no `innerHTML`,
+  so a suggestion title can never inject markup on the shared screen.
+
+### 7.3 Durability
+
+The changelog is a **view over the durable ledger** — a build-history row is
+written at build completion (`recordBuildHistory`), so entries survive process
+restarts and span multiple stream nights automatically (SQLite is durable). A
+**killed / aborted build writes NO changelog row** (`finalizeAborted` records
+the teardown but never a `build_history` entry) — so a vetoed build never shows
+up as if it shipped. This is one of the dry-run checks (Section 5 of the
+runbook).
+
+## 8. Stream-Night Dry Run (v1 Go-Live Gate)
+
+Before the first REAL stream night, run the end-to-end rehearsal in
+`.planning/phases/05-build-history-stream-night-dry-run/05-DRY-RUN.md` on a
+**low-stakes test channel**. It consolidates every deferred human gate into one
+pass and ends in a recorded **GO / NO-GO** verdict.
+
+- **Preconditions (both must read GO first):** Phase 3 Wave 0 WSL2 go/no-go
+  (`SANDBOX-SETUP.md`) and the Phase 4 live gate (`04-LIVE-GATE.md`). The dry run
+  exercises both, so it is BLOCKED until they are cleared.
+- **What it rehearses:** the full suggest→filter→vote→build→preview loop, a real
+  small donation free-reign window, a channel-points window, a chaos round, the
+  **kill switch against a genuinely in-progress build** (confirm HALTED is
+  instant, no false "BUILT IT", and no changelog row for the killed build), and
+  an audit + changelog review (zero unfiltered inputs reached an agent, every
+  rejection produced chat feedback, no donor detail or pre-gate text on the
+  shared changelog).
+- **Do not run a real stream night until the runbook's verdict reads GO.** A
+  NO-GO records the failing check; fix it and re-run that section.
