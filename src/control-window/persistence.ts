@@ -69,6 +69,27 @@ export function readActiveWindow(db: Database.Database): ControlWindowRow | unde
     .get() as ControlWindowRow | undefined;
 }
 
+/** The most-recent grant time per donor (WR-03 cooldown rebuild input). */
+export interface DonorLastGrant {
+  donor_identifier: string;
+  opened_at_ms: number;
+}
+
+/**
+ * WR-03: the most recent opened_at_ms per donor across ALL windows
+ * (active/expired/revoked). On restore() the FSM seeds its per-donor cooldown
+ * map from this so a mid-show crash-restart never resets the D-04 anti-abuse
+ * guard — a donor who just consumed a window still can't immediately open
+ * another after a restart.
+ */
+export function readLastGrantsByDonor(db: Database.Database): DonorLastGrant[] {
+  return db
+    .prepare(
+      "SELECT donor_identifier, MAX(opened_at_ms) AS opened_at_ms FROM control_windows GROUP BY donor_identifier",
+    )
+    .all() as DonorLastGrant[];
+}
+
 /** Close a window row with its terminal status ('expired' | 'revoked') and closed_at_ms. */
 export function closeWindow(
   db: Database.Database,

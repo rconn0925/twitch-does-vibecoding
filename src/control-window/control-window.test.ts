@@ -413,4 +413,36 @@ describe("ControlWindow.restore (crash safety, D-06/PAID-04/T-04-08)", () => {
     expect(h.manager.snapshot()).toBeNull();
     h.db.close();
   });
+
+  it("WR-03: the per-donor cooldown survives a restart (rebuilt from the ledger, not reset)", () => {
+    const h = makeHarness();
+    h.manager.open(donationRequest()); // viewer_a granted at t=1000
+    h.manager.revoke(); // window closed, but the grant persists in the ledger
+    h.manager.dispose();
+
+    // A fresh FSM on the SAME db, still WITHIN the cooldown window (elapsed
+    // 1000ms << 120s cooldown). Before WR-03 the in-memory map was empty here,
+    // so the donor could immediately re-open — the D-04 bypass this fixes.
+    const machine2 = new StreamModeMachine();
+    const manager2 = new ControlWindow({
+      db: h.db,
+      machine: machine2,
+      submitDuringWindow: vi.fn(async () => ({ queued: true }) as { queued: true }),
+      donationConfig: DONATION_CFG,
+      redemptionConfig: REDEMPTION_CFG,
+      cooldownMs: COOLDOWN_MS,
+      now: () => 2_000, // 1s after the original grant — inside the 120s cooldown
+    });
+    manager2.restore();
+
+    let caught: ControlWindowError | null = null;
+    try {
+      manager2.open(donationRequest());
+    } catch (err) {
+      caught = err as ControlWindowError;
+    }
+    expect(caught?.reason).toBe("cooldown");
+    manager2.dispose();
+    h.db.close();
+  });
 });

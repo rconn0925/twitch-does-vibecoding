@@ -52,7 +52,12 @@ import type {
 } from "../shared/types.js";
 import type { StreamModeMachine } from "../state-machine/stream-mode.js";
 import { amountToDurationSeconds, type DurationConfig } from "./duration.js";
-import { closeWindow, insertWindow, readActiveWindow } from "./persistence.js";
+import {
+  closeWindow,
+  insertWindow,
+  readActiveWindow,
+  readLastGrantsByDonor,
+} from "./persistence.js";
 
 /** Thrown by open() when a window request is refused (D-05, never silent). */
 export class ControlWindowError extends Error {
@@ -348,6 +353,13 @@ export class ControlWindow {
    * (never a fresh full duration — the D-06 crash-safety linchpin, T-04-08).
    */
   restore(): void {
+    // WR-03: rebuild the per-donor cooldown from the durable ledger FIRST (even
+    // when no window is currently active) — the D-04 anti-abuse guard must
+    // survive a mid-show crash-restart, not reset to empty.
+    for (const grant of readLastGrantsByDonor(this.#db)) {
+      this.#lastGrantedAtMs.set(grant.donor_identifier, grant.opened_at_ms);
+    }
+
     const row = readActiveWindow(this.#db);
     if (row === undefined) return;
 
