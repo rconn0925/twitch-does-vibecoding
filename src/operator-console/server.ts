@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
@@ -51,8 +51,21 @@ export interface ConsoleServerDeps {
    * registered agent process trees, not just flip state.
    */
   abortActiveWork?: (frozen: StateSnapshot) => Promise<void>;
+  /**
+   * OAuth bootstrap (D2-10, INFRA-01): GET /auth/start builds the authorize
+   * redirect; GET /auth/callback completes the code exchange. Absent when
+   * TWITCH_CLIENT_ID/SECRET are not configured — the routes answer 503.
+   */
+  twitchAuth?: {
+    authorizeUrl(state: string): string;
+    complete(code: string): Promise<void>;
+  };
+  /** Live Twitch connection health for the console pill; absent = unauthorized. */
+  twitchStatus?: () => TwitchConnectionStatus;
   logger?: Logger;
 }
+
+export type TwitchConnectionStatus = "connected" | "disconnected" | "unauthorized";
 
 export interface ConsoleServerHandle {
   server: Server;
@@ -68,6 +81,8 @@ export interface ConsoleState extends StateSnapshot {
   review: ReviewItem[];
   /** Current voting round, or null when none is open (plan 02-03). */
   round: RoundSnapshot | null;
+  /** Twitch connection health for the console pill (plan 02-04). */
+  twitch: TwitchConnectionStatus;
 }
 
 // zod v4 validation at every untrusted boundary (ASVS V5): terse 400s, never stack traces.
@@ -104,6 +119,15 @@ const AuditQuerySchema = z.object({
   eventType: z.string().min(1).max(64).optional(),
   decision: z.string().min(1).max(64).optional(),
 });
+
+// OAuth callback query (T-02-16): both fields required, zod-validated.
+const AuthCallbackQuerySchema = z.object({
+  code: z.string().min(1),
+  state: z.string().min(1),
+});
+
+/** The state nonce expires after this long (login-CSRF window bound, T-02-16). */
+const AUTH_STATE_TTL_MS = 10 * 60_000;
 
 /**
  * Localhost-only operator console: static UI + JSON API + ws state push.
@@ -171,6 +195,7 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       pendingReviewCount: review.length,
       review,
       round: deps.round.snapshot(),
+      twitch: deps.twitchStatus?.() ?? "unauthorized",
     };
   }
 
@@ -232,6 +257,58 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
 
   app.get("/api/state", (_req, res) => {
     res.json(buildState());
+  });
+
+  // ── One-time OAuth bootstrap (D2-10, T-02-16) ───────────────────────
+  // GET routes pass the CSRF middleware above, so these carry their own
+  // defense: a single-use, 10-minute state nonce. /auth/callback WRITES
+  // credentials, so it must not be triggerable by a foreign page — the
+  // state parameter does for this GET what the Origin check does for POSTs.
+  let authStateSlot: { nonce: string; expiresAtMs: number } | null = null;
+
+  app.get("/auth/start", (_req, res) => {
+    if (!deps.twitchAuth) {
+      res.status(503).json({ error: "Twitch auth not configured — set TWITCH_CLIENT_ID/SECRET" });
+      return;
+    }
+    // Single-slot: a second /auth/start invalidates any earlier nonce.
+    const nonce = randomBytes(32).toString("hex");
+    authStateSlot = { nonce, expiresAtMs: Date.now() + AUTH_STATE_TTL_MS };
+    res.redirect(302, deps.twitchAuth.authorizeUrl(nonce));
+  });
+
+  app.get("/auth/callback", async (req, res) => {
+    const twitchAuth = deps.twitchAuth;
+    if (!twitchAuth) {
+      res.status(503).json({ error: "Twitch auth not configured — set TWITCH_CLIENT_ID/SECRET" });
+      return;
+    }
+    const parsed = AuthCallbackQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid authorization callback" });
+      return;
+    }
+    const slot = authStateSlot;
+    if (!slot || parsed.data.state !== slot.nonce || Date.now() > slot.expiresAtMs) {
+      // Login-CSRF defense: no match, no unexpired nonce -> no token write.
+      res.status(403).json({ error: "invalid or expired authorization state" });
+      return;
+    }
+    authStateSlot = null; // single use — a matched nonce is burned before the exchange
+    try {
+      await twitchAuth.complete(parsed.data.code);
+    } catch (err) {
+      logger?.error({ err }, "Twitch authorization code exchange failed");
+      res.status(400).json({ error: "authorization failed" });
+      return;
+    }
+    logger?.info({}, "Twitch authorization complete — token persisted");
+    // Static string only — nothing user-controlled is interpolated into HTML.
+    res
+      .type("html")
+      .send(
+        "<!doctype html><html><body><p>Twitch authorized — you can close this tab.</p></body></html>",
+      );
   });
 
   app.post("/api/halt", (req, res) => {

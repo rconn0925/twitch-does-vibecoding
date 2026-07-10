@@ -21,6 +21,7 @@
         <span class="pill" data-mode="CHAOS_MODE">CHAOS_MODE</span>
         <span class="pill pill-halted" data-mode="HALTED">HALTED</span>
       </nav>
+      <span id="twitch-pill" class="status-pill"></span>
       <button id="halt-button" class="halt-button" type="button">Halt Everything</button>
     </header>
 
@@ -41,6 +42,8 @@
         independently of this page.
       </p>
     </div>
+
+    <div id="twitch-error" class="error-state" hidden></div>
 
     <nav id="tabs" class="tabs" aria-label="Console views">
       <button class="tab active" type="button" data-view="review">Needs Review</button>
