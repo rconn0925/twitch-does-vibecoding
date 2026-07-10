@@ -168,3 +168,36 @@ export interface BuildStatusView {
   title: string;
   stage: PipelineStage;
 }
+
+/**
+ * Build-pipeline chat-narration surface (BUILD-03 / D3-08 / D3-09). Every method
+ * is a single TRANSITION beat (one message per transition — never per-token /
+ * per-file churn, which belongs to the overlay + preview), so a build failure is
+ * NEVER silent dead air. The Narrator (src/ingestion/narration.ts) implements
+ * these; the build session (src/orchestrator/build-session.ts) calls them.
+ * `title` is the chat-derived task text — the narrator truncates it to 60 chars.
+ */
+export interface BuildNarrator {
+  /** Build picked up → researching (03-UI-SPEC "Build picked up"). */
+  buildPickedUp(title: string): void;
+  /** Stage → planning. */
+  stagePlanning(title: string): void;
+  /** Stage → building. */
+  stageBuilding(title: string): void;
+  /** Build done — live on screen. */
+  buildDone(title: string): void;
+  /** Mid-build model refusal (D3-08, first-class narrated event, never an error). */
+  buildRefused(title: string): void;
+  /** A transient build failure — auto-retrying once (D3-09). */
+  buildRetryingOnce(title: string): void;
+  /** Retry used up — the streamer is calling retry or skip (D3-09). */
+  buildDeciding(title: string): void;
+  /** The streamer chose retry. */
+  buildRetryChosen(title: string): void;
+  /** The streamer chose skip. */
+  buildSkipped(title: string): void;
+  /** COMP-02 rejected the plan/output — can't build that one (D3-06/D3-07). */
+  comp02Rejected(title: string): void;
+  /** A streamer veto aborted an in-flight build (D3-10). */
+  buildVetoed(title: string): void;
+}

@@ -5,6 +5,7 @@ import { listAuditRecords } from "../audit/record.js";
 import { AbortRegistry } from "../kill-switch/abort.js";
 import { TaskQueue } from "../queue/task-queue.js";
 import type {
+  BuildNarrator,
   BuildStatusView,
   GateResult,
   PipelineStage,
@@ -109,11 +110,74 @@ function throwingBuildRunner(script: Script) {
   return { runner, calls };
 }
 
+/**
+ * Fake AgentRunner whose BUILD turn yields a DIFFERENT scripted stream on each
+ * successive build-turn call (research/plan reuse HAPPY_SCRIPT). Drives the
+ * auto-retry-once path: e.g. [failed] then [ok] proves exactly one retry.
+ */
+function sequencedBuildRunner(buildSequence: unknown[][]) {
+  const calls: AgentRunSpec[] = [];
+  let buildIdx = 0;
+  const runner: AgentRunner = {
+    run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
+      calls.push(spec);
+      const kind = spec.agent === "research" ? "research" : spec.sandbox ? "build" : "plan";
+      let messages: unknown[];
+      if (kind === "build") {
+        messages = buildSequence[Math.min(buildIdx, buildSequence.length - 1)] ?? [];
+        buildIdx += 1;
+      } else {
+        messages = HAPPY_SCRIPT[kind] ?? [];
+      }
+      return (async function* () {
+        for (const message of messages) {
+          yield message as AgentMessage;
+        }
+      })();
+    },
+  };
+  return { runner, calls, buildTurns: () => buildIdx };
+}
+
 function fakeSandbox(): SandboxAdapter & { terminate: ReturnType<typeof vi.fn> } {
   return {
     spawn: vi.fn(),
     terminate: vi.fn(async () => {}),
   } as unknown as SandboxAdapter & { terminate: ReturnType<typeof vi.fn> };
+}
+
+/** A BuildNarrator that records every beat (name + title) for assertions. */
+function fakeNarrator(): {
+  narrator: BuildNarrator;
+  calls: Array<[string, string]>;
+  names: string[];
+} {
+  const calls: Array<[string, string]> = [];
+  const rec =
+    (name: string) =>
+    (title: string): void => {
+      calls.push([name, title]);
+    };
+  const narrator: BuildNarrator = {
+    buildPickedUp: rec("buildPickedUp"),
+    stagePlanning: rec("stagePlanning"),
+    stageBuilding: rec("stageBuilding"),
+    buildDone: rec("buildDone"),
+    buildRefused: rec("buildRefused"),
+    buildRetryingOnce: rec("buildRetryingOnce"),
+    buildDeciding: rec("buildDeciding"),
+    buildRetryChosen: rec("buildRetryChosen"),
+    buildSkipped: rec("buildSkipped"),
+    comp02Rejected: rec("comp02Rejected"),
+    buildVetoed: rec("buildVetoed"),
+  };
+  return {
+    narrator,
+    calls,
+    get names(): string[] {
+      return calls.map((c) => c[0]);
+    },
+  };
 }
 
 /** COMP-02 classify fake keyed by candidate id suffix (-plan vs -output). */
@@ -167,6 +231,7 @@ function makeDeps(over: {
   progress: ProgressSink;
   registry?: AbortRegistry;
   onHeldForReview?: (task: QueuedTask, planText: string) => void;
+  narrator?: BuildNarrator;
 }): { deps: BuildSessionDeps; taskQueue: TaskQueue } {
   const taskQueue = new TaskQueue();
   taskQueue.enqueue(over.task);
@@ -180,6 +245,7 @@ function makeDeps(over: {
     comp02: over.comp02,
     progress: over.progress,
     ...(over.onHeldForReview ? { onHeldForReview: over.onHeldForReview } : {}),
+    ...(over.narrator ? { narrator: over.narrator } : {}),
   };
   return { deps, taskQueue };
 }
@@ -451,11 +517,12 @@ describe("createBuildSession — fail-closed / never-throw (T-03-22)", () => {
     db.close();
   });
 
-  it("a model refusal maps to `refused` and returns to IDLE", async () => {
+  it("a model refusal maps to `refused` (D3-08), narrates, and freezes a streamer decision — never silent, never auto-IDLE", async () => {
     const { machine } = fakeMachine();
     const { runner } = fakeAgentRunner({ ...HAPPY_SCRIPT, build: [modelRefusal] });
     const { deps: comp02 } = fakeComp02(() => APPROVED);
     const { sink, views } = capturingSink();
+    const narr = fakeNarrator();
     const task = queuedTask("task-6", "make a page");
     const { deps } = makeDeps({
       task,
@@ -465,36 +532,80 @@ describe("createBuildSession — fail-closed / never-throw (T-03-22)", () => {
       sandboxAdapter: fakeSandbox(),
       comp02,
       progress: sink,
+      narrator: narr.narrator,
     });
 
-    await createBuildSession(deps).startBuild(task);
+    const session = createBuildSession(deps);
+    await session.startBuild(task);
+
+    // Refusal is a first-class narrated event, NOT an error, and it surfaces a
+    // decision (the machine stays BUILD_IN_PROGRESS — never a silent auto-IDLE).
     expect(stages(views).at(-1)).toBe("refused");
-    expect(machine.mode).toBe("IDLE");
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS");
+    expect(session.snapshot()?.stage).toBe("refused");
+    expect(narr.names).toContain("buildRefused");
+    // Never auto-retried a refusal.
+    expect(narr.names).not.toContain("buildRetryingOnce");
     const refusals = listAuditRecords(db, { limit: 10, eventType: "build_refused" });
     expect(refusals).toHaveLength(1);
+    expect(listAuditRecords(db, { limit: 10, eventType: "build_retry" })).toHaveLength(0);
   });
 
-  it("a build turn that emits a failure result maps to `failed`", async () => {
+  it("a transient build failure auto-retries EXACTLY ONCE, then freezes a retry/skip decision", async () => {
     const { machine } = fakeMachine();
-    const { runner } = fakeAgentRunner({ ...HAPPY_SCRIPT, build: [resultFailed] });
+    // Build turn fails on both attempts → after the single auto-retry, decide.
+    const seq = sequencedBuildRunner([[resultFailed], [resultFailed]]);
     const { deps: comp02 } = fakeComp02(() => APPROVED);
     const { sink, views } = capturingSink();
+    const narr = fakeNarrator();
     const task = queuedTask("task-7", "make a page");
     const { deps } = makeDeps({
       task,
       db,
       machine,
-      agentRunner: runner,
+      agentRunner: seq.runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+    });
+    await createBuildSession(deps).startBuild(task);
+
+    // Exactly two build turns ran (1 initial + 1 auto-retry) — not three.
+    expect(seq.buildTurns()).toBe(2);
+    expect(stages(views).at(-1)).toBe("failed");
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS");
+    expect(narr.names).toEqual(expect.arrayContaining(["buildRetryingOnce", "buildDeciding"]));
+    expect(listAuditRecords(db, { limit: 10, eventType: "build_retry" })).toHaveLength(1);
+  });
+
+  it("a transient build failure that succeeds on the auto-retry reaches done (retry recovers)", async () => {
+    const { machine } = fakeMachine();
+    const seq = sequencedBuildRunner([
+      [resultFailed],
+      [writeBatch("app.js", "console.log('ok')"), resultSuccess],
+    ]);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const task = queuedTask("task-7b", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: seq.runner,
       sandboxAdapter: fakeSandbox(),
       comp02,
       progress: sink,
     });
     await createBuildSession(deps).startBuild(task);
-    expect(stages(views).at(-1)).toBe("failed");
+
+    expect(seq.buildTurns()).toBe(2);
+    expect(stages(views).at(-1)).toBe("done");
     expect(machine.mode).toBe("IDLE");
+    expect(listAuditRecords(db, { limit: 10, eventType: "build_retry" })).toHaveLength(1);
   });
 
-  it("a THROWN agent error resolves to `failed` and never escapes startBuild", async () => {
+  it("a THROWN agent error resolves to `failed`, auto-retries once, then decides — never escapes startBuild", async () => {
     const { machine } = fakeMachine();
     const { runner } = throwingBuildRunner(HAPPY_SCRIPT);
     const { deps: comp02 } = fakeComp02(() => APPROVED);
@@ -512,7 +623,7 @@ describe("createBuildSession — fail-closed / never-throw (T-03-22)", () => {
     // Must resolve, never reject.
     await expect(createBuildSession(deps).startBuild(task)).resolves.toBeUndefined();
     expect(stages(views).at(-1)).toBe("failed");
-    expect(machine.mode).toBe("IDLE");
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS");
   });
 
   it("refuses to build while HALTED (belt-and-suspenders)", async () => {
@@ -534,6 +645,140 @@ describe("createBuildSession — fail-closed / never-throw (T-03-22)", () => {
     expect(calls).toHaveLength(0);
     expect(views).toHaveLength(0);
     expect(machine.mode).toBe("HALTED");
+  });
+});
+
+describe("createBuildSession — streamer retry/skip decision (BUILD-03 / D3-09)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  /** Drive a build to a decision-pending `refused` freeze and return the handle. */
+  async function freezeRefused(narr = fakeNarrator()) {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner({ ...HAPPY_SCRIPT, build: [modelRefusal] });
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const task = queuedTask("task-decide", "make a page");
+    const { deps, taskQueue } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+    });
+    const session = createBuildSession(deps);
+    await session.startBuild(task);
+    return { session, machine, views, task, taskQueue, narr };
+  }
+
+  it("skipTask drops the frozen build, returns to IDLE, dequeues, and audits recordBuildSkip", async () => {
+    const { session, machine, task, taskQueue, narr } = await freezeRefused();
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS");
+
+    session.skipTask(task.id, "gut-feeling");
+
+    expect(machine.mode).toBe("IDLE");
+    // Overlay collapses (no active build).
+    expect(session.snapshot()).toBeNull();
+    // DEQUEUE-only clean exit.
+    expect(taskQueue.list()).toHaveLength(0);
+    expect(narr.names).toContain("buildSkipped");
+    const skips = listAuditRecords(db, { limit: 10, eventType: "build_skip" });
+    expect(skips).toHaveLength(1);
+    expect(skips[0]?.rationale).toContain("gut-feeling");
+  });
+
+  it("retryBuild re-runs the build from the approved plan and can reach done", async () => {
+    // The build refuses first (freeze), then the SAME runner's build script is
+    // swapped to succeed on retry via a fresh session is overkill — instead use a
+    // sequenced runner: build turn 1 refuses, build turn 2 (streamer retry) ok.
+    const { machine } = fakeMachine();
+    const seq = sequencedBuildRunner([
+      [modelRefusal],
+      [writeBatch("app.js", "console.log('ok')"), resultSuccess],
+    ]);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const narr = fakeNarrator();
+    const task = queuedTask("task-retry", "make a page");
+    const { deps, taskQueue } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: seq.runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+    });
+    const session = createBuildSession(deps);
+    await session.startBuild(task);
+    // Frozen on the refusal.
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS");
+    expect(session.snapshot()?.stage).toBe("refused");
+
+    session.retryBuild(task.id);
+    // The retry re-runs the build turn asynchronously through the p-queue.
+    await vi.waitFor(() => expect(machine.mode).toBe("IDLE"));
+
+    expect(stages(views).at(-1)).toBe("done");
+    expect(taskQueue.list()).toHaveLength(0);
+    expect(narr.names).toContain("buildRetryChosen");
+    // A streamer-chosen retry writes a build_retry row.
+    expect(
+      listAuditRecords(db, { limit: 10, eventType: "build_retry" }).length,
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it("retryBuild/skipTask are no-ops for a non-matching or absent decision", async () => {
+    const { session, machine } = await freezeRefused();
+    session.skipTask("some-other-id");
+    session.retryBuild("some-other-id");
+    // Still frozen — nothing resolved the wrong task.
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS");
+    expect(session.snapshot()?.stage).toBe("refused");
+    // Now resolve properly to leave a clean machine.
+    const taskId = session.snapshot()?.taskId ?? "";
+    session.skipTask(taskId);
+    expect(machine.mode).toBe("IDLE");
+  });
+
+  it("a COMP-02 compliance rejection NEVER auto-retries and drops straight to IDLE", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02((id) =>
+      id.endsWith("-plan")
+        ? { decision: "rejected", category: "tos-risk", rationale: "no" }
+        : APPROVED,
+    );
+    const { sink, views } = capturingSink();
+    const narr = fakeNarrator();
+    const task = queuedTask("task-comp", "risky idea");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+    });
+    await createBuildSession(deps).startBuild(task);
+
+    expect(stages(views).at(-1)).toBe("refused");
+    expect(machine.mode).toBe("IDLE");
+    expect(narr.names).toContain("comp02Rejected");
+    expect(narr.names).not.toContain("buildRetryingOnce");
+    expect(listAuditRecords(db, { limit: 10, eventType: "build_retry" })).toHaveLength(0);
   });
 });
 

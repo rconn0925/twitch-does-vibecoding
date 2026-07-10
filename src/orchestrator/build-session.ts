@@ -36,6 +36,8 @@ import PQueue from "p-queue";
 import type { Logger } from "pino";
 import {
   recordBuildRefusal,
+  recordBuildRetry,
+  recordBuildSkip,
   recordComp02Decision,
   recordPipelineStage,
   recordSandboxTeardown,
@@ -43,7 +45,14 @@ import {
 import type { AbortRegistry } from "../kill-switch/abort.js";
 import { BUILD_STAGE_CHANGED } from "../overlay/server.js";
 import type { TaskQueue } from "../queue/task-queue.js";
-import type { BuildStatusView, GateDecision, PipelineStage, QueuedTask } from "../shared/types.js";
+import type {
+  BuildNarrator,
+  BuildStatusView,
+  GateDecision,
+  PipelineStage,
+  QueuedTask,
+  ReasonTag,
+} from "../shared/types.js";
 import { type Comp02Deps, screenBuildPlan, screenOutputBatch } from "./comp02.js";
 import { translate } from "./progress-events.js";
 import { buildBuildPrompt, buildResearchPrompt } from "./prompt-boundary.js";
@@ -90,6 +99,13 @@ export interface BuildSessionDeps {
    * unit tests that only assert the held path ends cleanly.
    */
   onHeldForReview?: (task: QueuedTask, planText: string) => void;
+  /**
+   * Build-pipeline chat narration (BUILD-03 / D3-08 / D3-09). Optional — absent
+   * when no chat pipeline is composed (createApp only builds a Narrator when a
+   * chatSource/chatSink pair exists). Every failure/refusal/retry/skip beat goes
+   * through here so the show is never silent.
+   */
+  narrator?: BuildNarrator;
   logger?: Logger;
 }
 
@@ -97,10 +113,23 @@ export interface BuildSessionDeps {
 export interface BuildSession {
   /**
    * Serialize one build through the p-queue (concurrency-1). Resolves when the
-   * build reaches a terminal stage (done/failed/refused); NEVER rejects — a
+   * build reaches a terminal stage (done) OR a decision-pending freeze
+   * (failed/refused awaiting the streamer's retry/skip); NEVER rejects — a
    * failure is a stage event, not a thrown error (fail-closed).
    */
   startBuild(task: QueuedTask): Promise<void>;
+  /**
+   * BUILD-03 / D3-09: the streamer chose RETRY for a failed/refused build. Re-runs
+   * the build from the approved plan (or the whole pipeline if the failure was
+   * pre-plan). No-op unless `taskId` matches the decision-pending build.
+   */
+  retryBuild(taskId: string): void;
+  /**
+   * BUILD-03 / D3-09: the streamer chose SKIP for a failed/refused build (or a
+   * routine drop). Audits recordBuildSkip, collapses the overlay, returns to
+   * IDLE, and dequeues. No-op unless `taskId` matches the decision-pending build.
+   */
+  skipTask(taskId: string, reasonTag?: ReasonTag | null): void;
   /** OverlayBuildSource: the live build status, or null when no build is active. */
   snapshot(): BuildStatusView | null;
   /** OverlayBuildSource: BUILD_STAGE_CHANGED subscription (overlay push). */
@@ -215,6 +244,14 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   const emitter = new EventEmitter();
   let current: BuildStatusView | null = null;
   let active: { task: QueuedTask; ac: AbortController } | null = null;
+  /**
+   * A build frozen on a `failed`/`refused` decision awaiting the streamer's
+   * retry/skip (D3-09). While set, the machine stays BUILD_IN_PROGRESS, the task
+   * stays queued, and the overlay renders the frozen (amber) stage. `planText` is
+   * the approved plan to retry from, or null when the failure was pre-plan.
+   */
+  let pending: { task: QueuedTask; planText: string | null; reason: "failed" | "refused" } | null =
+    null;
 
   const streamMode = () => deps.machine.mode;
 
@@ -364,17 +401,147 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     });
   }
 
+  /** True while a halt/veto has aborted the current turn — the kill-switch path owns cleanup. */
+  function abortedNow(ac: AbortController): boolean {
+    return ac.signal.aborted || deps.machine.mode === "HALTED";
+  }
+
+  /** Register the fresh AbortController + WSL2 teardown for one build attempt. */
+  function registerAbort(taskId: string, ac: AbortController): void {
+    deps.registry.registerController(taskId, ac);
+    deps.registry.registerSandboxTeardown(taskId, () => deps.sandboxAdapter.terminate());
+  }
+
+  /**
+   * Freeze the build on a `failed`/`refused` decision (D3-09): emit the terminal
+   * stage (overlay stepper freezes at the current step, amber caption), keep the
+   * machine in BUILD_IN_PROGRESS and the task in the queue, and park a pending
+   * decision for the streamer's retryBuild/skipTask. NEVER silent — the caller
+   * has already narrated the failure/refusal beat. `planText` is null when the
+   * failure was pre-plan (retry re-runs the whole pipeline).
+   */
+  function enterDecision(
+    task: QueuedTask,
+    planText: string | null,
+    reason: "failed" | "refused",
+  ): void {
+    emitStage(task, reason);
+    active = null;
+    pending = { task, planText, reason };
+  }
+
+  /**
+   * Map a non-ok research/plan turn outcome (pre-approved-plan) onto a narrated
+   * streamer decision. A non-build turn never auto-retries (D3-09 scopes the
+   * auto-retry to the build step); it surfaces the retry/skip decision directly.
+   */
+  function handleTurnFailure(
+    task: QueuedTask,
+    outcome: TurnOutcome,
+    planText: string | null,
+  ): void {
+    if (outcome === "refused") {
+      recordBuildRefusal(deps.db, {
+        taskId: task.id,
+        streamMode: streamMode(),
+        rationale: "the model refused a pipeline turn (D3-08)",
+      });
+      deps.narrator?.buildRefused(task.text);
+      enterDecision(task, planText, "refused");
+      return;
+    }
+    // "failed" (or an unexpected outcome) → narrated retry/skip decision.
+    deps.narrator?.buildDeciding(task.text);
+    enterDecision(task, planText, "failed");
+  }
+
+  /**
+   * Run ONE sandboxed build attempt (+ in-flight COMP-02) and route its outcome:
+   *   - aborted (halt/veto)       → quiet finalize (kill-switch owns teardown + the buildVetoed beat)
+   *   - in-flight COMP-02 reject  → abort + teardown + comp02Rejected beat → drop (never auto-retry)
+   *   - refused                   → buildRefused beat → decision pending (D3-08)
+   *   - failed + allowAutoRetry   → buildRetryingOnce beat → ONE more attempt (D3-09)
+   *   - failed + no retry left    → buildDeciding beat → decision pending
+   *   - ok                        → buildDone beat → finalize done
+   */
+  async function runBuildAttempt(
+    task: QueuedTask,
+    planText: string,
+    ac: AbortController,
+    allowAutoRetry: boolean,
+  ): Promise<void> {
+    emitStage(task, "building");
+    const build = buildBuildPrompt(planText);
+    const buildTurn = await runTurn(
+      {
+        agent: "build",
+        model: undefined,
+        systemPrompt: build.systemPrompt,
+        userPrompt: build.userPrompt,
+        sandbox: deps.sandboxAdapter,
+        spawnClaudeCodeProcess: (opts) => deps.sandboxAdapter.spawn(opts),
+        abortController: ac,
+      },
+      task,
+      ac,
+      true,
+    );
+
+    // A streamer halt/veto aborted this turn mid-stream: finalize quietly — the
+    // kill-switch path (abortActiveWork) owns teardown and the buildVetoed beat.
+    if (abortedNow(ac)) {
+      finalize(task, "done");
+      return;
+    }
+
+    if (buildTurn.outcome === "compliance-rejected") {
+      await abortForCompliance(task, ac);
+      deps.narrator?.comp02Rejected(task.text);
+      finalize(task, "refused", "in-flight COMP-02 rejected an output batch (D3-07)");
+      return;
+    }
+    if (buildTurn.outcome === "refused") {
+      recordBuildRefusal(deps.db, {
+        taskId: task.id,
+        streamMode: streamMode(),
+        rationale: "the build agent refused the build turn (D3-08)",
+      });
+      deps.narrator?.buildRefused(task.text);
+      enterDecision(task, planText, "refused");
+      return;
+    }
+    if (buildTurn.outcome === "failed") {
+      if (allowAutoRetry) {
+        // D3-09: a transient/tooling build failure auto-retries AT MOST ONCE.
+        recordBuildRetry(deps.db, {
+          taskId: task.id,
+          streamMode: streamMode(),
+          rationale: "auto-retry once on a transient build failure (D3-09)",
+        });
+        deps.narrator?.buildRetryingOnce(task.text);
+        await runBuildAttempt(task, planText, ac, false);
+        return;
+      }
+      deps.narrator?.buildDeciding(task.text);
+      enterDecision(task, planText, "failed");
+      return;
+    }
+    // ok → done.
+    deps.narrator?.buildDone(task.text);
+    finalize(task, "done");
+  }
+
   /** The full per-task pipeline. Wrapped so it can never throw out of the p-queue. */
   async function runPipeline(task: QueuedTask): Promise<void> {
     const ac = new AbortController();
     active = { task, ac };
     try {
       enterBuildMode(task);
-      deps.registry.registerController(task.id, ac);
-      deps.registry.registerSandboxTeardown(task.id, () => deps.sandboxAdapter.terminate());
+      registerAbort(task.id, ac);
 
       // 1) Research (Sonnet, host-side, read-only — RESEARCH Open Question 1).
       emitStage(task, "researching");
+      deps.narrator?.buildPickedUp(task.text);
       const research = buildResearchPrompt(task);
       const researchTurn = await runTurn(
         {
@@ -388,12 +555,14 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         ac,
         false,
       );
+      if (abortedNow(ac)) return finalize(task, "done");
       if (researchTurn.outcome !== "ok") {
-        return finalizeTurn(task, researchTurn.outcome, ac);
+        return handleTurnFailure(task, researchTurn.outcome, null);
       }
 
       // 2) Plan (Fable session default — model undefined — host-side).
       emitStage(task, "planning");
+      deps.narrator?.stagePlanning(task.text);
       const plan = buildPlanPrompt(task.text, researchTurn.text);
       const planTurn = await runTurn(
         {
@@ -407,8 +576,9 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         ac,
         false,
       );
+      if (abortedNow(ac)) return finalize(task, "done");
       if (planTurn.outcome !== "ok") {
-        return finalizeTurn(task, planTurn.outcome, ac);
+        return handleTurnFailure(task, planTurn.outcome, null);
       }
       const planText = planTurn.text.length > 0 ? planTurn.text : researchTurn.text || task.text;
 
@@ -422,8 +592,9 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         streamMode: streamMode(),
       });
       if (!screen.proceed) {
-        // rejected → narrate + abort; held → route to console review (D-08).
-        // Both end the session cleanly WITHOUT running the build query().
+        // A compliance failure NEVER auto-retries (D3-09). rejected → narrate +
+        // drop; held → route to console review (D-08). Both end cleanly WITHOUT
+        // running the build query() and WITHOUT a retry/skip decision.
         if (screen.disposition === "held") {
           deps.onHeldForReview?.(task, planText);
           return finalize(
@@ -432,6 +603,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
             "COMP-02 held the build plan for streamer review (D-08)",
           );
         }
+        deps.narrator?.comp02Rejected(task.text);
         return finalize(
           task,
           "refused",
@@ -439,52 +611,14 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         );
       }
 
-      // 4) Build (Fable session default, SANDBOXED) + in-flight COMP-02 (D3-07).
-      emitStage(task, "building");
-      const build = buildBuildPrompt(planText);
-      const buildTurn = await runTurn(
-        {
-          agent: "build",
-          model: undefined,
-          systemPrompt: build.systemPrompt,
-          userPrompt: build.userPrompt,
-          sandbox: deps.sandboxAdapter,
-          spawnClaudeCodeProcess: (opts) => deps.sandboxAdapter.spawn(opts),
-          abortController: ac,
-        },
-        task,
-        ac,
-        true,
-      );
-      if (buildTurn.outcome === "compliance-rejected") {
-        await abortForCompliance(task, ac);
-        return finalize(task, "refused", "in-flight COMP-02 rejected an output batch (D3-07)");
-      }
-      if (buildTurn.outcome !== "ok") {
-        return finalizeTurn(task, buildTurn.outcome, ac);
-      }
-
-      // 5) Done.
-      finalize(task, "done");
+      // 4) Build (Fable session default, SANDBOXED) + in-flight COMP-02 (D3-07),
+      //    auto-retrying a transient failure at most once (D3-09).
+      deps.narrator?.stageBuilding(task.text);
+      await runBuildAttempt(task, planText, ac, true);
     } catch (err) {
       deps.logger?.error({ err, taskId: task.id }, "build pipeline error — failing closed to IDLE");
       finalize(task, "failed", "unexpected build-pipeline error (fail-closed)");
     }
-  }
-
-  /** Map a non-ok turn outcome onto a terminal stage + audit and finalize. */
-  function finalizeTurn(task: QueuedTask, outcome: TurnOutcome, _ac: AbortController): void {
-    if (outcome === "refused") {
-      recordBuildRefusal(deps.db, {
-        taskId: task.id,
-        streamMode: streamMode(),
-        rationale: "agent refused the turn (D3-08)",
-      });
-      finalize(task, "refused", "the model refused (D3-08)");
-      return;
-    }
-    // "failed" (or an unexpected outcome) → failed stage, clean IDLE exit.
-    finalize(task, "failed", "the build turn failed (fail-closed)");
   }
 
   return {
@@ -498,6 +632,65 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       }
       return queue.add(() => runPipeline(task)) as Promise<void>;
     },
+
+    retryBuild(taskId: string): void {
+      const p = pending;
+      if (!p || p.task.id !== taskId) return;
+      if (deps.machine.mode === "HALTED") return;
+      pending = null;
+      recordBuildRetry(deps.db, {
+        taskId,
+        streamMode: streamMode(),
+        rationale: "streamer chose retry from the console (D3-09)",
+      });
+      deps.narrator?.buildRetryChosen(p.task.text);
+      if (p.planText === null) {
+        // The failure was pre-plan — re-run the whole pipeline from research.
+        void queue.add(() => runPipeline(p.task));
+        return;
+      }
+      // Re-run the build from the already-approved plan (UI-SPEC: "Retry runs the
+      // build again from the plan"). The streamer explicitly chose retry, so no
+      // further auto-retry — a second failure surfaces the decision again.
+      const ac = new AbortController();
+      active = { task: p.task, ac };
+      registerAbort(taskId, ac);
+      const planText = p.planText;
+      void queue.add(() => {
+        deps.narrator?.stageBuilding(p.task.text);
+        return runBuildAttempt(p.task, planText, ac, false);
+      });
+    },
+
+    skipTask(taskId: string, reasonTag?: ReasonTag | null): void {
+      const p = pending;
+      if (!p || p.task.id !== taskId) return;
+      pending = null;
+      recordBuildSkip(deps.db, {
+        taskId,
+        streamMode: streamMode(),
+        rationale: reasonTag
+          ? `streamer skipped a failed/refused build (${reasonTag}) (D3-09)`
+          : "streamer skipped a failed/refused build (D3-09)",
+      });
+      deps.narrator?.buildSkipped(p.task.text);
+      // Collapse the overlay panel, return to IDLE, dequeue (T-03-22 clean exit).
+      current = null;
+      active = null;
+      try {
+        if (deps.machine.mode === "BUILD_IN_PROGRESS") {
+          deps.machine.transition("IDLE");
+        }
+        deps.machine.setActiveTask(null, null);
+      } catch (err) {
+        deps.logger?.error({ err, taskId }, "failed to return machine to IDLE after skip");
+      }
+      deps.registry.unregister(taskId);
+      deps.taskQueue.remove(taskId);
+      // snapshot() is now null → the overlay build panel collapses.
+      emitter.emit(BUILD_STAGE_CHANGED);
+    },
+
     snapshot(): BuildStatusView | null {
       return current;
     },
@@ -506,6 +699,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     },
     async close(): Promise<void> {
       queue.clear();
+      pending = null;
       const inFlight = active;
       if (inFlight) {
         inFlight.ac.abort();

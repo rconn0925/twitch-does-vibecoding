@@ -74,6 +74,18 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
       feedbackCalls.push([kind, displayName, categoryLabel]);
     },
     error: vi.fn(),
+    // Build-pipeline beats (unused by the chat listener; present to satisfy Narrator).
+    buildPickedUp: vi.fn(),
+    stagePlanning: vi.fn(),
+    stageBuilding: vi.fn(),
+    buildDone: vi.fn(),
+    buildRefused: vi.fn(),
+    buildRetryingOnce: vi.fn(),
+    buildDeciding: vi.fn(),
+    buildRetryChosen: vi.fn(),
+    buildSkipped: vi.fn(),
+    comp02Rejected: vi.fn(),
+    buildVetoed: vi.fn(),
   };
 }
 

@@ -193,12 +193,79 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
   it("the Narrator interface has no tally-shaped input (rate-budget doctrine is structural)", () => {
     const { sender } = capturingSender();
     const narrator = createNarrator({ sender });
-    expect(Object.keys(narrator).sort()).toEqual([
-      "error",
-      "feedback",
-      "roundClosed",
-      "roundOpened",
-    ]);
+    // Round/feedback beats + build-pipeline beats (BUILD-03/D3-08/D3-09). Every
+    // method is a transition (title string at most) — none takes a vote tally,
+    // so the rate-budget doctrine stays structural even with the build events.
+    expect(Object.keys(narrator).sort()).toEqual(
+      [
+        "buildDeciding",
+        "buildDone",
+        "buildPickedUp",
+        "buildRefused",
+        "buildRetryChosen",
+        "buildRetryingOnce",
+        "buildSkipped",
+        "buildVetoed",
+        "comp02Rejected",
+        "error",
+        "feedback",
+        "roundClosed",
+        "roundOpened",
+        "stageBuilding",
+        "stagePlanning",
+      ].sort(),
+    );
+  });
+
+  describe("build-pipeline narration (BUILD-03 / D3-08 / D3-09 — 03-UI-SPEC copy)", () => {
+    it("emits each build-event template VERBATIM through the sender", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.buildPickedUp("a counter app");
+      n.stagePlanning("a counter app");
+      n.stageBuilding("a counter app");
+      n.buildDone("a counter app");
+      n.buildRefused("a counter app");
+      n.buildRetryingOnce("a counter app");
+      n.buildDeciding("a counter app");
+      n.buildRetryChosen("a counter app");
+      n.buildSkipped("a counter app");
+      n.comp02Rejected("a counter app");
+      n.buildVetoed("a counter app");
+      expect(sent).toEqual([
+        'Building "a counter app" now — researching how to pull it off.',
+        'Plan\'s coming together for "a counter app"…',
+        'Writing the code for "a counter app" now — watch it come alive.',
+        '"a counter app" is built — it\'s live on screen. GG.',
+        'Heads up — the build agent won\'t build "a counter app". Moving on to the next one.',
+        '"a counter app" hit a snag — giving it one more shot.',
+        "\"a counter app\" won't build cleanly — streamer's calling retry or skip.",
+        'Another go at "a counter app" — here we go.',
+        'Skipping "a counter app" — on to the next idea.',
+        "\"a counter app\" didn't pass the second safety check — can't build that one. Next up.",
+        'Build stopped — pulling the plug on "a counter app". Standing by.',
+      ]);
+    });
+
+    it("truncates the task title to 60 chars in every build-event message", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      const long = "y".repeat(100);
+      n.buildPickedUp(long);
+      n.buildDone(long);
+      n.buildVetoed(long);
+      for (const message of sent) {
+        expect(message).toContain(`"${"y".repeat(59)}…"`);
+        expect(message).not.toContain("y".repeat(60));
+      }
+    });
+
+    it("each build event is exactly one message (one transition → one send)", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.buildRefused("x");
+      expect(sent).toHaveLength(1);
+    });
   });
 
   describe("feedback burst coalescing (D2-07, fake timers)", () => {
