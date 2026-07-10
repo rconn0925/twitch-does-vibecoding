@@ -87,6 +87,20 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     comp02Rejected: vi.fn(),
     buildHeld: vi.fn(),
     buildVetoed: vi.fn(),
+    // Phase 4 window/chaos beats (unused by the chat listener; present to satisfy Narrator).
+    windowOpenedDonation: vi.fn(),
+    windowOpenedChannelPoints: vi.fn(),
+    windowDeniedActive: vi.fn(),
+    windowDeniedCooldown: vi.fn(),
+    instructionRejected: vi.fn(),
+    instructionHeld: vi.fn(),
+    instructionAccepted: vi.fn(),
+    window30sLeft: vi.fn(),
+    windowExpired: vi.fn(),
+    windowRevoked: vi.fn(),
+    chaosOn: vi.fn(),
+    chaosOff: vi.fn(),
+    chaosPick: vi.fn(),
   };
 }
 

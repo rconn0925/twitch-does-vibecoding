@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CATEGORY_META } from "../compliance/categories.js";
 import type { RoundCandidate, RoundSnapshot } from "../shared/types.js";
 import type { ChatSender } from "./chat-sender.js";
 import { createNarrator } from "./narration.js";
@@ -214,6 +215,21 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "roundOpened",
         "stageBuilding",
         "stagePlanning",
+        // Phase 4 window/chaos beats — each is a transition (donor/title string
+        // at most), so the rate-budget doctrine stays structural.
+        "windowOpenedDonation",
+        "windowOpenedChannelPoints",
+        "windowDeniedActive",
+        "windowDeniedCooldown",
+        "instructionRejected",
+        "instructionHeld",
+        "instructionAccepted",
+        "window30sLeft",
+        "windowExpired",
+        "windowRevoked",
+        "chaosOn",
+        "chaosOff",
+        "chaosPick",
       ].sort(),
     );
   });
@@ -268,6 +284,102 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       const n = createNarrator({ sender });
       n.buildRefused("x");
       expect(sent).toHaveLength(1);
+    });
+  });
+
+  describe("window/chaos narration (PAID-01/02/03, CHAOS-01 — 04-UI-SPEC copy)", () => {
+    it("distinct donation vs channel-points window-opened templates (trigger-appropriate wording)", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.windowOpenedDonation("alice", "$5.00", 60_000);
+      n.windowOpenedChannelPoints("bob", "Take the Wheel", 30_000);
+      expect(sent).toEqual([
+        "@alice tipped $5.00 and takes the wheel — free reign for 1:00! Type !build <your instruction> to use it.",
+        "@bob redeemed Take the Wheel — direct control for 0:30! Type !build <your instruction> to use it.",
+      ]);
+      // A channel-points redeemer is NEVER labelled a "donor"/"tipped".
+      expect(sent[1]).not.toContain("tipped");
+      expect(sent[1]).toContain("redeemed");
+    });
+
+    it("renders denial, held, accepted, 30s, expiry, revoke templates verbatim", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.windowDeniedActive("carol");
+      n.windowDeniedCooldown("dave");
+      n.instructionHeld("erin");
+      n.instructionAccepted("frank", "a counter app");
+      n.window30sLeft("grace");
+      n.windowExpired("heidi");
+      n.windowRevoked();
+      expect(sent).toEqual([
+        "Thanks @carol — a control window is already running, so this one can't open. One window at a time.",
+        "Thanks @dave — you're on cooldown from your last window. Try again in a bit.",
+        "That one needs a human look first, @erin — the streamer's checking it. Your window's still open.",
+        'Locked in — building @frank\'s pick: "a counter app".',
+        "30 seconds left on @grace's window.",
+        "Time's up — @heidi's window is closed. Back to the regular show.",
+        "Streamer's call — the control window is closed early. Back to the regular show.",
+      ]);
+    });
+
+    it("rejected-instruction copy carries the CATEGORY_META label, never the internal code", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      // Pass the viewer-safe label; the internal code ("hateful-conduct") must not leak.
+      n.instructionRejected("mallory", CATEGORY_META["hateful-conduct"].label);
+      const message = sent[0] ?? "";
+      expect(message).toContain("Hateful conduct");
+      expect(message).not.toContain("hateful-conduct");
+      expect(message).toContain("Your window's still open");
+    });
+
+    it("chaos on/off/pick templates render verbatim, title truncated to 60 chars", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.chaosOn();
+      n.chaosOff();
+      n.chaosPick("a counter app");
+      expect(sent).toEqual([
+        "CHAOS MODE ON — the next build is a random pick from the approved pool. No votes.",
+        "Chaos mode off — voting is back.",
+        'Chaos pick: "a counter app" — no vote needed, building it now.',
+      ]);
+      const long = "z".repeat(100);
+      n.chaosPick(long);
+      expect(sent[3]).toContain(`"${"z".repeat(59)}…"`);
+      expect(sent[3]).not.toContain("z".repeat(60));
+    });
+
+    it("COPY-SEPARATION INVARIANT (D-08): paid copy has no chance words; chaos copy has no money words", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      // Paid-window template strings — rendered with neutral sample args.
+      n.windowOpenedDonation("u", "$5.00", 60_000);
+      n.windowOpenedChannelPoints("u", "Wheel", 60_000);
+      n.windowDeniedActive("u");
+      n.windowDeniedCooldown("u");
+      n.instructionRejected("u", CATEGORY_META.harassment.label);
+      n.instructionHeld("u");
+      n.instructionAccepted("u", "a build");
+      n.window30sLeft("u");
+      n.windowExpired("u");
+      n.windowRevoked();
+      const paidStrings = [...sent];
+      const CHANCE = /chance|luck|odds|random|roll|lottery/i;
+      for (const message of paidStrings) {
+        expect(message, `paid copy mentions chance: "${message}"`).not.toMatch(CHANCE);
+      }
+
+      // Chaos template strings.
+      sent.length = 0;
+      n.chaosOn();
+      n.chaosOff();
+      n.chaosPick("a build");
+      const MONEY = /money|tip|donation|points|pay/i;
+      for (const message of sent) {
+        expect(message, `chaos copy mentions money: "${message}"`).not.toMatch(MONEY);
+      }
     });
   });
 
