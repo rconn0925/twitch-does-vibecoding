@@ -4,7 +4,15 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import type { Logger } from "pino";
 import { WebSocketServer } from "ws";
-import { ROUND_CLOSED, ROUND_OPENED, STATE_CHANGED, VOTE_RECORDED } from "../shared/events.js";
+import {
+  ROUND_CLOSED,
+  ROUND_OPENED,
+  STATE_CHANGED,
+  VOTE_RECORDED,
+  WINDOW_CLOSED,
+  WINDOW_OPENED,
+  WINDOW_REVOKED,
+} from "../shared/events.js";
 import { isLoopbackHostHeader, isLoopbackOrigin } from "../shared/loopback.js";
 import type { BuildStatusView, RoundSnapshot, StreamMode } from "../shared/types.js";
 
@@ -38,8 +46,20 @@ export const BUILD_STAGE_CHANGED = "build:stage-changed" as const;
  * OBS-scene-switch-reload safe (D2-18, CLAUDE.md overlay pattern).
  */
 
-/** Public pill vocabulary — the ONLY state words that ever reach the stream (D2-18). */
-export type OverlayPill = "STANDBY" | "VOTING OPEN" | "BUILDING" | "ON HOLD";
+/**
+ * Public pill vocabulary — the ONLY state words that ever reach the stream
+ * (D2-18). Phase 4 performs the one deliberate, final vocabulary extension
+ * (04-UI-SPEC §Overlay state model): the set becomes exactly SIX words with
+ * the addition of "FREE REIGN" (paid/redemption control window) and "CHAOS"
+ * (random-pick mode). No further word may be added without a UI-SPEC amendment.
+ */
+export type OverlayPill =
+  | "STANDBY"
+  | "VOTING OPEN"
+  | "BUILDING"
+  | "ON HOLD"
+  | "FREE REIGN"
+  | "CHAOS";
 
 /** The full overlay state, pushed on connect and on every change. */
 export interface OverlayState {
@@ -56,6 +76,21 @@ export interface OverlayState {
    * truncated client-side (T-03-15).
    */
   buildStatus: BuildStatusView | null;
+  /**
+   * The COARSE public projection of an active paid/redemption control window
+   * (PAID-01/02, D-11), or null when no window is active. This is the ENTIRE
+   * broadcast surface for a window — donor display name + absolute deadline,
+   * and NOTHING else. No amount, currency, message text, or trigger type ever
+   * crosses onto the public wire (T-04-13 Information-Disclosure mitigation,
+   * 04-UI-SPEC narrow-public-projection). The amount→duration mapping is the
+   * console's and audit ledger's job; the overlay stays deliberately coarse.
+   *
+   * The donor display name is attacker-controlled (StreamElements displayName /
+   * EventSub user_name) — rendered textContent-only, 24-char truncated
+   * client-side (T-04-12). The client computes the countdown from `endsAtMs`
+   * on its 1s tick (the server never streams timer frames).
+   */
+  controlWindow: { donorDisplayName: string; endsAtMs: number } | null;
 }
 
 /**
@@ -99,12 +134,40 @@ const NULL_BUILD_SOURCE: OverlayBuildSource = {
   on: () => {},
 };
 
+/**
+ * The control-window sliver the overlay needs (mirrors OverlayBuildSource): a
+ * point-in-time snapshot plus WINDOW_OPENED/WINDOW_CLOSED/WINDOW_REVOKED
+ * subscriptions. `snapshot()` returns the ALREADY-COARSE public projection —
+ * donor display name + absolute deadline only — or null when no window is
+ * active. The Phase 4 window engine (04-01..04-03) feeds this seam; tests
+ * inject a plain fake. The server re-projects the snapshot down to exactly
+ * {donorDisplayName,endsAtMs} regardless (defence-in-depth), so even a source
+ * that leaked richer fields could never push donor financials onto the wire.
+ */
+export interface OverlayControlWindowSource {
+  snapshot(): { donorDisplayName: string; endsAtMs: number } | null;
+  on(event: string, handler: (...args: unknown[]) => void): void;
+}
+
+/**
+ * A no-op control-window source: no window ever active, no lifecycle events.
+ * Used until the Phase 4 window engine feeds a real OverlayControlWindowSource —
+ * the composition root (main.ts) can wire the overlay before the window engine
+ * exists, and the banner simply stays absent (controlWindow === null).
+ */
+const NULL_CONTROL_WINDOW_SOURCE: OverlayControlWindowSource = {
+  snapshot: () => null,
+  on: () => {},
+};
+
 export interface OverlayServerDeps {
   machine: OverlayModeSource;
   round: OverlayRoundSource;
   taskQueue: OverlayQueueSource;
   /** Optional until 03-06 wires the orchestrator; defaults to no build active. */
   build?: OverlayBuildSource;
+  /** Optional until Phase 4 wires the window engine; defaults to no window active. */
+  controlWindow?: OverlayControlWindowSource;
   port: number;
   /** Tally push debounce; defaults to the UI-SPEC 300ms. */
   debounceMs?: number;
@@ -122,15 +185,17 @@ const DEFAULT_TALLY_DEBOUNCE_MS = 300;
 /**
  * Internal mode → public pill wording. The internal word "HALTED" is mapped
  * FROM here and never emitted: the broadcast surface says "ON HOLD" — honest,
- * non-alarming, never red (D2-18, T-02-21). FREE_REIGN_WINDOW / CHAOS_MODE
- * are unreachable this phase and read as STANDBY.
+ * non-alarming, never red (D2-18, T-02-21). Phase 4 makes FREE_REIGN_WINDOW /
+ * CHAOS_MODE reachable and maps them to the two new words "FREE REIGN" /
+ * "CHAOS" (04-UI-SPEC §Overlay state model, the one-time final vocabulary
+ * extension), replacing their Phase 2 STANDBY placeholders.
  */
 const PILL_BY_MODE: Record<StreamMode, OverlayPill> = {
   IDLE: "STANDBY",
   VOTING_ROUND: "VOTING OPEN",
   BUILD_IN_PROGRESS: "BUILDING",
-  FREE_REIGN_WINDOW: "STANDBY",
-  CHAOS_MODE: "STANDBY",
+  FREE_REIGN_WINDOW: "FREE REIGN",
+  CHAOS_MODE: "CHAOS",
   HALTED: "ON HOLD",
 };
 
@@ -144,6 +209,7 @@ const PILL_BY_MODE: Record<StreamMode, OverlayPill> = {
 export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServerHandle> {
   const { machine, round, taskQueue, logger } = deps;
   const build = deps.build ?? NULL_BUILD_SOURCE;
+  const controlWindow = deps.controlWindow ?? NULL_CONTROL_WINDOW_SOURCE;
   const app = express();
 
   // ── DNS-rebinding defense (CR-02, shared with the console) ──────────
@@ -163,10 +229,17 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
 
   /** Compose the public overlay state — round + build snapshots + queue titles ONLY (T-02-21). */
   function buildOverlayState(): OverlayState {
+    // Re-project the window snapshot down to EXACTLY the two public fields.
+    // Even if the underlying source returned a richer object (amount, message,
+    // trigger), this explicit narrowing guarantees only donorDisplayName +
+    // endsAtMs ever reach the wire (T-04-13 coarse-surface, defence-in-depth).
+    const cw = controlWindow.snapshot();
     return {
       pill: PILL_BY_MODE[machine.mode],
       round: round.snapshot(),
       buildStatus: build.snapshot(),
+      controlWindow:
+        cw === null ? null : { donorDisplayName: cw.donorDisplayName, endsAtMs: cw.endsAtMs },
       nextUp: taskQueue
         .list()
         .slice(0, 3)
@@ -232,6 +305,19 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   build.on(BUILD_STAGE_CHANGED, () => {
     pushState();
   });
+
+  // Control-window lifecycle beats (open / natural expiry / streamer revoke)
+  // are low-frequency show beats → push IMMEDIATELY, exactly like ROUND_OPENED
+  // and BUILD_STAGE_CHANGED, never through the vote-tally debounce (04-UI-SPEC
+  // push cadence). Each push re-reads the coarse snapshot: WINDOW_OPENED carries
+  // the new {donorDisplayName,endsAtMs}; WINDOW_CLOSED/WINDOW_REVOKED collapse
+  // the banner silently (controlWindow: null) — no error text, no red, ever
+  // (T-04-14). Chaos toggles ride STATE_CHANGED above (mode → CHAOS pill).
+  for (const windowEvent of [WINDOW_OPENED, WINDOW_CLOSED, WINDOW_REVOKED]) {
+    controlWindow.on(windowEvent, () => {
+      pushState();
+    });
+  }
 
   // High-frequency tally events collapse into one push per debounce window:
   // the first vote arms ONE unref'd timer; every vote inside the window rides
