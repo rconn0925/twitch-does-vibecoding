@@ -392,6 +392,152 @@ export function recordSandboxTeardown(
   });
 }
 
+// ── Phase 4: paid-window + chaos lifecycle audit events (PAID-04, COMP-05) ───
+// Every control-window beat (open/expire/revoke/deny) and every chaos beat
+// (toggle/pick) appends ONE row — the never-silent doctrine carried from Phases
+// 2/3. Window events carry source = the trigger ("donation" | "channel_points")
+// so the ledger is filterable by influence path; chaos events carry "chaos"
+// (picks) or "operator" (the streamer toggling the mode). No schema/CHECK change:
+// audit_log has no CHECK constraint, so these new event_type/source values are
+// schema-safe additions. Each mirrors recordRoundOpened's arg-object → insert()
+// shape. The durable ledger itself lives in the control_windows table (schema.sql).
+
+/** Trigger for a control window — donation tip or channel-points redemption (D-03). */
+type WindowTriggerArg = "donation" | "channel_points";
+
+/**
+ * One row per paid/redemption window OPEN (PAID-04). The rationale carries the
+ * human-readable amount→duration mapping text (D-04) so the ledger shows exactly
+ * how much control the money/points bought.
+ */
+export function recordWindowOpened(
+  db: Database.Database,
+  args: {
+    trigger: WindowTriggerArg;
+    donorIdentifier: string;
+    amountOrCost: number;
+    durationMs: number;
+    streamMode: StreamMode;
+  },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "window_opened",
+    source: args.trigger,
+    twitchUsername: args.donorIdentifier,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: `Amount/cost ${args.amountOrCost} -> ${args.durationMs}ms window`,
+    streamMode: args.streamMode,
+    taskId: null,
+  });
+}
+
+/** One row per window natural EXPIRY (D-12: the full amount-proportional duration elapsed). */
+export function recordWindowExpired(
+  db: Database.Database,
+  args: { trigger: WindowTriggerArg; donorIdentifier: string; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "window_expired",
+    source: args.trigger,
+    twitchUsername: args.donorIdentifier,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: "Window reached ends_at_ms — reverting to the normal loop (D-12)",
+    streamMode: args.streamMode,
+    taskId: null,
+  });
+}
+
+/** One row per streamer REVOKE of an active window (PAID-03: revocable at any moment). */
+export function recordWindowRevoked(
+  db: Database.Database,
+  args: { trigger: WindowTriggerArg; donorIdentifier: string; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "window_revoked",
+    source: args.trigger,
+    twitchUsername: args.donorIdentifier,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: "Window revoked by streamer — reverting to the normal loop",
+    streamMode: args.streamMode,
+    taskId: null,
+  });
+}
+
+/**
+ * One row per window DENIAL — a donation/redemption arriving while a window is
+ * already active, or inside the per-donor cooldown, is turned away NEVER silently
+ * (D-05, never-silent doctrine). `reason` carries which guard fired.
+ */
+export function recordWindowDenied(
+  db: Database.Database,
+  args: {
+    trigger: WindowTriggerArg;
+    donorIdentifier: string;
+    reason: "already-active" | "cooldown";
+    streamMode: StreamMode;
+  },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "window_denied",
+    source: args.trigger,
+    twitchUsername: args.donorIdentifier,
+    suggestionText: null,
+    decision: null,
+    category: args.reason,
+    rationale: `Window request denied — ${args.reason} (D-05)`,
+    streamMode: args.streamMode,
+    taskId: null,
+  });
+}
+
+/** One row per chaos-mode TOGGLE (CHAOS-01): the streamer flipped random selection on/off. */
+export function recordChaosToggled(
+  db: Database.Database,
+  args: { enabled: boolean; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "chaos_toggled",
+    source: "operator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: args.enabled ? "enabled" : "disabled",
+    category: null,
+    rationale: `Chaos mode ${args.enabled ? "enabled" : "disabled"}`,
+    streamMode: args.streamMode,
+    taskId: null,
+  });
+}
+
+/** One row per chaos PICK (CHAOS-01): a uniform-random selection from the filtered pool. */
+export function recordChaosPick(
+  db: Database.Database,
+  args: { taskId: string; title: string; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "chaos_pick",
+    source: "chaos",
+    twitchUsername: null,
+    suggestionText: args.title,
+    decision: null,
+    category: null,
+    rationale: "Uniform-random pick from the gate-filtered pool (CHAOS-01)",
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
 /** Read the ledger newest-first with optional filters. */
 export function listAuditRecords(
   db: Database.Database,
