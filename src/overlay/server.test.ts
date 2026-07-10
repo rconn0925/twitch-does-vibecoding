@@ -291,6 +291,52 @@ describe("overlay server (read-only broadcast surface)", () => {
     await until(() => noOrigin.messages.length >= 1, "no-origin full-state push");
   });
 
+  it("refuses DNS-rebound requests: foreign Host on HTTP and agreeing foreign Host/Origin on ws (CR-02)", async () => {
+    const { handle } = await start({ nextUpTexts: ["secret queue title"] });
+
+    // Rebound GET: the socket reaches 127.0.0.1 but Host names the attacker.
+    // fetch() forbids Host overrides, so use a raw http request.
+    const http = await import("node:http");
+    const rebound = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: handle.port,
+          method: "GET",
+          path: "/api/state",
+          headers: { host: `attacker.example:${handle.port}` },
+        },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk) => {
+            data += String(chunk);
+          });
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body: data }));
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    expect(rebound.status).toBe(403);
+    expect(rebound.body).not.toContain("secret queue title");
+
+    // Rebound ws: Host and Origin AGREE (both the attacker's name) — the
+    // old self-referential origin===host comparison would have passed this.
+    const ws = new WebSocket(`ws://127.0.0.1:${handle.port}`, {
+      headers: {
+        host: `attacker.example:${handle.port}`,
+        origin: `http://attacker.example:${handle.port}`,
+      },
+    });
+    sockets.push(ws);
+    const outcome = await new Promise<"open" | "rejected">((resolve) => {
+      ws.on("open", () => resolve("open"));
+      ws.on("error", () => resolve("rejected"));
+      ws.on("unexpected-response", () => resolve("rejected"));
+    });
+    expect(outcome).toBe("rejected");
+  });
+
   it("binds 127.0.0.1 and close() terminates clients and resolves", async () => {
     const { handle } = await start();
     expect((handle.server.address() as AddressInfo).address).toBe("127.0.0.1");

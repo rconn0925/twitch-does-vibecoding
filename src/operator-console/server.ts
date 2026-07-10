@@ -17,6 +17,7 @@ import { submitCandidate } from "../pipeline/submit.js";
 import type { CandidatePool } from "../queue/pool.js";
 import type { TaskQueue } from "../queue/task-queue.js";
 import { ROUND_CLOSED, ROUND_OPENED, STATE_CHANGED, VOTE_RECORDED } from "../shared/events.js";
+import { isLoopbackHostHeader, isLoopbackOrigin } from "../shared/loopback.js";
 import type {
   GateResult,
   RoundSnapshot,
@@ -142,6 +143,20 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
   const { machine, db, pool, taskQueue, logger } = deps;
   const app = express();
 
+  // ── DNS-rebinding defense (CR-02) ───────────────────────────────────
+  // FIRST middleware, ALL methods (reads leak console state too): the Host
+  // header must name a loopback host. A remote page whose DNS is rebound
+  // to 127.0.0.1 arrives with Host: attacker.com — and every Origin/Host
+  // agreement check below would otherwise validate the attacker against
+  // their own Host header. See src/shared/loopback.ts.
+  app.use((req, res, next) => {
+    if (!isLoopbackHostHeader(req.get("host"))) {
+      res.status(403).json({ error: "forbidden host" });
+      return;
+    }
+    next();
+  });
+
   // ── CSRF defense (CR-01) ────────────────────────────────────────────
   // Binding to 127.0.0.1 does NOT stop a malicious page in the streamer's
   // browser: it runs on the same host, and cross-origin "simple" requests
@@ -151,10 +166,12 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
   // to be required" as CSRF protection:
   //
   //  1. Origin/Host agreement: browsers attach Origin to every cross-origin
-  //     request and to all non-GET requests. A present Origin must exactly
-  //     match this server's own origin (derived from the Host header).
-  //     Same-origin console fetches always pass; any other page is refused
-  //     before a handler runs.
+  //     request and to all non-GET requests. A present Origin must be a
+  //     loopback origin (CR-02 — the Host header above is already pinned
+  //     to loopback, so the exact match can't be self-referential) and
+  //     exactly match this server's own origin. Same-origin console
+  //     fetches always pass; any other page is refused before a handler
+  //     runs.
   //  2. Content-Type must be application/json: a JSON-typed POST is never a
   //     "simple" request, so a cross-origin attempt is preflighted — and
   //     this server never answers CORS preflights, so the browser refuses
@@ -171,7 +188,10 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
     }
     const origin = req.get("origin");
     const host = req.get("host");
-    if (origin !== undefined && (host === undefined || origin !== `http://${host}`)) {
+    if (
+      origin !== undefined &&
+      (host === undefined || !isLoopbackOrigin(origin) || origin !== `http://${host}`)
+    ) {
       res.status(403).json({ error: "cross-origin request refused" });
       return;
     }
@@ -213,10 +233,17 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
   // upgrade time (401). Non-browser clients (no Origin header) are allowed —
   // they sit outside the in-browser exfiltration threat model that loopback
   // binding cannot stop.
+  //
+  // CR-02: the handshake's Host header must ALSO name a loopback host —
+  // otherwise a DNS-rebound page's ws connect carries Origin and Host that
+  // agree with each other (both the attacker's name) and the comparison
+  // below would validate the attacker against themselves.
   const wss = new WebSocketServer({
     server,
     verifyClient: (info: { origin?: string; req: IncomingMessage }) =>
-      info.origin === undefined || info.origin === `http://${info.req.headers.host}`,
+      isLoopbackHostHeader(info.req.headers.host) &&
+      (info.origin === undefined ||
+        (isLoopbackOrigin(info.origin) && info.origin === `http://${info.req.headers.host}`)),
   });
 
   function pushState(): void {

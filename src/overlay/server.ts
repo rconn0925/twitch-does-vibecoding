@@ -5,6 +5,7 @@ import express from "express";
 import type { Logger } from "pino";
 import { WebSocketServer } from "ws";
 import { ROUND_CLOSED, ROUND_OPENED, STATE_CHANGED, VOTE_RECORDED } from "../shared/events.js";
+import { isLoopbackHostHeader, isLoopbackOrigin } from "../shared/loopback.js";
 import type { RoundSnapshot, StreamMode } from "../shared/types.js";
 
 /**
@@ -100,6 +101,18 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   const { machine, round, taskQueue, logger } = deps;
   const app = express();
 
+  // ── DNS-rebinding defense (CR-02, shared with the console) ──────────
+  // FIRST middleware, all methods: the Host header must name a loopback
+  // host. A remote page whose DNS is rebound to 127.0.0.1 would otherwise
+  // read overlay state (round candidates, queue titles) from off-machine.
+  app.use((req, res, next) => {
+    if (!isLoopbackHostHeader(req.get("host"))) {
+      res.status(403).json({ error: "forbidden host" });
+      return;
+    }
+    next();
+  });
+
   const publicDir = fileURLToPath(new URL("./public", import.meta.url));
   app.use(express.static(publicDir));
 
@@ -121,13 +134,18 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
 
   const server = createServer(app);
 
-  // WR-01 Origin check copied from the console: a foreign browser page must
+  // WR-01 Origin check shared with the console: a foreign browser page must
   // not read overlay state over ws (handshakes bypass CORS). Non-browser
   // clients (no Origin) and the same-origin OBS CEF page are accepted.
+  // CR-02: the Host header must ALSO be a loopback host — a DNS-rebound
+  // page's Origin and Host agree with each other, so a self-referential
+  // comparison alone would validate the attacker against themselves.
   const wss = new WebSocketServer({
     server,
     verifyClient: (info: { origin?: string; req: IncomingMessage }) =>
-      info.origin === undefined || info.origin === `http://${info.req.headers.host}`,
+      isLoopbackHostHeader(info.req.headers.host) &&
+      (info.origin === undefined ||
+        (isLoopbackOrigin(info.origin) && info.origin === `http://${info.req.headers.host}`)),
   });
 
   function pushState(roundOverride?: RoundSnapshot): void {

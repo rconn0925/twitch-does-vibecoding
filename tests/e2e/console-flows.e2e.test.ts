@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import http from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -379,6 +380,104 @@ describe("ws state channel origin check (WR-01)", () => {
       socket.on("error", reject);
     });
     expect(state.mode).toBe("IDLE");
+  });
+});
+
+describe("DNS-rebinding defense (CR-02)", () => {
+  /**
+   * Raw HTTP request with an attacker-controlled Host header — fetch()
+   * forbids overriding Host, but a DNS-rebound browser sends exactly this
+   * shape: the TCP connection lands on 127.0.0.1 while Host (and Origin)
+   * carry the attacker's own name, so Origin and Host AGREE.
+   */
+  function rawRequest(
+    port: number,
+    options: { method: string; path: string; headers: Record<string, string>; body?: string },
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port,
+          method: options.method,
+          path: options.path,
+          headers: options.headers,
+        },
+        (res) => {
+          let data = "";
+          res.on("data", (chunk) => {
+            data += String(chunk);
+          });
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body: data }));
+        },
+      );
+      req.on("error", reject);
+      if (options.body !== undefined) req.write(options.body);
+      req.end();
+    });
+  }
+
+  it("refuses a rebound GET — Host names a foreign host even though the socket reaches 127.0.0.1", async () => {
+    const handle = await startApp();
+    const res = await rawRequest(handle.port, {
+      method: "GET",
+      path: "/api/state",
+      headers: { host: `attacker.example:${handle.port}` },
+    });
+    expect(res.status).toBe(403);
+    expect(res.body).toContain("forbidden host");
+  });
+
+  it("refuses a rebound state-changing POST whose Origin and Host AGREE (the self-referential-check bypass)", async () => {
+    const handle = await startApp();
+    const res = await rawRequest(handle.port, {
+      method: "POST",
+      path: "/api/halt",
+      headers: {
+        host: `attacker.example:${handle.port}`,
+        origin: `http://attacker.example:${handle.port}`,
+        "content-type": "application/json",
+      },
+      body: "{}",
+    });
+    expect(res.status).toBe(403);
+    // The kill switch did NOT fire from off-machine: mode is unchanged.
+    const state = (await (await fetch(`${baseUrl(handle)}/api/state`)).json()) as {
+      mode: string;
+    };
+    expect(state.mode).toBe("IDLE");
+  });
+
+  it("drops a ws handshake whose Host and Origin are rebound to a foreign name", async () => {
+    const handle = await startApp();
+    await new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket(`ws://127.0.0.1:${handle.port}`, {
+        headers: {
+          host: `attacker.example:${handle.port}`,
+          origin: `http://attacker.example:${handle.port}`,
+        },
+      });
+      socket.on("open", () => {
+        socket.terminate();
+        reject(new Error("rebound ws handshake was accepted"));
+      });
+      socket.on("unexpected-response", (_req, res) => {
+        expect(res.statusCode).toBe(401);
+        socket.terminate();
+        resolve();
+      });
+      socket.on("error", () => resolve());
+    });
+  });
+
+  it("still accepts localhost as a loopback alias", async () => {
+    const handle = await startApp();
+    const res = await rawRequest(handle.port, {
+      method: "GET",
+      path: "/api/state",
+      headers: { host: `localhost:${handle.port}` },
+    });
+    expect(res.status).toBe(200);
   });
 });
 
