@@ -17,9 +17,9 @@ Chat genuinely controls what gets built — safely. The suggest → filter → v
 ### Active
 
 **Chat control loop**
-- [ ] Viewers submit ideas via chat command (e.g., `!suggest`)
-- [ ] Timed voting rounds where chat picks between candidate ideas (e.g., `!vote 1/2/3`)
-- [ ] Winning suggestion becomes the next build task
+- [x] Viewers submit ideas via chat command (e.g., `!suggest`) — *Built in Phase 2: EventSub listener → pre-classification intake limits → gate. Live-channel smoke pending (02-HUMAN-UAT.md).*
+- [x] Timed voting rounds where chat picks between candidate ideas (e.g., `!vote 1/2/3`) — *Built in Phase 2: console-triggered rounds, chatterId-keyed crash-recoverable ledger, revote override.*
+- [x] Winning suggestion becomes the next build task — *Built in Phase 2: winner → single-funnel gate → brand-typed queue, staleness re-check per D2-05.*
 
 **Paid influence**
 - [ ] Donations grant the donor a "free reign" window — direct control over what gets built, with duration proportional to the donation amount
@@ -31,7 +31,7 @@ Chat genuinely controls what gets built — safely. The suggest → filter → v
 
 **ToS compliance (hard requirement)**
 - [x] AI filter screens every suggestion/instruction against Twitch ToS and Community Guidelines categories (hateful conduct, harassment, sexual content, illegal activity, malware/harmful code, privacy violations, etc.) before it can enter the queue — *Built in Phase 1: single-funnel gate (prefilter + fail-closed Sonnet classifier, 15-category taxonomy, machine-enforced invariant). Live-Sonnet eval + physical hotkey test pending human verification (01-HUMAN-UAT.md); chat feedback lands with Phase 2 chat integration.*
-- [ ] Rejected suggestions get feedback in chat
+- [x] Rejected suggestions get feedback in chat — *Built in Phase 2: category-label-only @-replies, coalesced under the rate budget (COMP-03).*
 - [x] Streamer veto / kill switch on anything queued or in progress — *Built in Phase 1: double-tap panic hotkey, tree-kill abort, operator console with per-task veto + HALTED triage.*
 
 **Build engine**
@@ -93,4 +93,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-09 after Phase 1 (compliance gate & kill switch) completion*
+*Last updated: 2026-07-10 after Phase 2 (chat vote loop) completion*
