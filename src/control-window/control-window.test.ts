@@ -98,8 +98,9 @@ describe("ControlWindow.open (PAID-01/02, D-04/D-05)", () => {
     expect(snap.donorDisplayName).toBe("Viewer A");
     expect(snap.durationMs).toBe(60_000); // $5 * 12 = 60s
     expect(snap.endsAtMs).toBe(61_000); // now 1000 + 60000
-    // Honest console mapping text (D-04): $5 → 1:00, cap shown as 5:00.
-    expect(snap.amountLabel).toBe("$5.00 -> 1:00 window (capped at 5:00)");
+    // Honest console mapping text (D-04/WR-02): 5 USD → 1:00, cap shown as 5:00,
+    // labelled in the actual currency (USD default) — never a hardcoded "$".
+    expect(snap.amountLabel).toBe("5.00 USD -> 1:00 window (capped at 5:00)");
     expect(events).toHaveLength(1);
 
     const row = h.db
@@ -125,6 +126,22 @@ describe("ControlWindow.open (PAID-01/02, D-04/D-05)", () => {
     // 1000 points * 0.03 = 30s (clears the floor exactly).
     expect(snap.durationMs).toBe(30_000);
     expect(snap.amountLabel).toBe("1000 points -> 0:30 window");
+  });
+
+  it("WR-02: a non-USD donation earns only the FLOOR window and is labelled in its actual currency", () => {
+    h = makeHarness();
+    // amount 5 in JPY would map to 60s if treated as USD; least-favorable
+    // treatment floors it to 30s and the label reads JPY, never "$".
+    const snap = h.manager.open(donationRequest({ amountOrCost: 5, currency: "JPY" }));
+    expect(snap.durationMs).toBe(30_000); // floor (minSeconds 30), NOT 60s
+    expect(snap.amountLabel).toBe("5.00 JPY -> 0:30 window (capped at 5:00)");
+  });
+
+  it("WR-02: an explicit USD donation maps normally (currency-aware, not least-favorable)", () => {
+    h = makeHarness();
+    const snap = h.manager.open(donationRequest({ amountOrCost: 5, currency: "usd" }));
+    expect(snap.durationMs).toBe(60_000); // $5 * 12 = 60s, full mapping
+    expect(snap.amountLabel).toBe("5.00 USD -> 1:00 window (capped at 5:00)");
   });
 
   it("refuses a second window while one is active: window-active + window_denied(already-active), no stacking", () => {

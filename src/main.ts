@@ -472,12 +472,14 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       donorIdentifier: tip.username,
       donorDisplayName: tip.displayName,
       amountOrCost: tip.amount,
+      currency: tip.currency,
     };
     try {
       const snap = controlWindow.open(request);
+      // WR-02: narrate the ACTUAL currency (ISO code), never a hardcoded "$".
       windowNarrator?.windowOpenedDonation(
         tip.displayName,
-        `$${tip.amount.toFixed(2)}`,
+        `${tip.amount.toFixed(2)} ${tip.currency.toUpperCase()}`,
         snap.durationMs,
       );
       armWindowThirtyBeat(tip.displayName, snap.durationMs);

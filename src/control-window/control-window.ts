@@ -105,6 +105,14 @@ export interface OpenWindowRequest {
   donorDisplayName: string;
   /** Tip amount (dollars) or redemption cost (points) — the D-04 mapping input. */
   amountOrCost: number;
+  /**
+   * WR-02: the tip's ISO-4217 currency code (donations only; redemptions are
+   * points and leave this undefined). Without an FX table (no network on the
+   * live host), a non-USD donation is treated LEAST-FAVORABLY — it earns only
+   * the floor window and is labelled/narrated in its ACTUAL currency, never as
+   * dollars. Absent/undefined is treated as USD.
+   */
+  currency?: string;
 }
 
 /** In-memory authoritative view of the single active window. */
@@ -114,6 +122,8 @@ interface ActiveWindow {
   donorIdentifier: string;
   donorDisplayName: string;
   amountOrCost: number;
+  /** ISO currency code for a donation window (WR-02); undefined for points. */
+  currency: string | undefined;
   amountLabel: string;
   durationMs: number;
   openedAtMs: number;
@@ -220,9 +230,24 @@ export class ControlWindow {
     }
 
     const config = request.trigger === "donation" ? this.#donationConfig : this.#redemptionConfig;
-    const durationMs = amountToDurationSeconds(request.amountOrCost, config) * 1_000;
+    // WR-02: a non-USD donation earns only the FLOOR window (least-favorable
+    // treatment, since we can't fairly convert without an FX table) — so a
+    // "5" JPY tip never buys the same window a $5 USD tip does. USD donations
+    // and points map normally.
+    const currency = request.currency?.toUpperCase();
+    const nonUsdDonation =
+      request.trigger === "donation" && currency !== undefined && currency !== "USD";
+    const durationSeconds = nonUsdDonation
+      ? config.minSeconds
+      : amountToDurationSeconds(request.amountOrCost, config);
+    const durationMs = durationSeconds * 1_000;
     const endsAtMs = nowMs + durationMs;
-    const amountLabel = this.#buildAmountLabel(request.trigger, request.amountOrCost, durationMs);
+    const amountLabel = this.#buildAmountLabel(
+      request.trigger,
+      request.amountOrCost,
+      durationMs,
+      request.currency,
+    );
 
     const id = insertWindow(this.#db, {
       trigger: request.trigger,
@@ -239,6 +264,7 @@ export class ControlWindow {
       donorIdentifier: request.donorIdentifier,
       donorDisplayName: request.donorDisplayName,
       amountOrCost: request.amountOrCost,
+      currency: request.currency,
       amountLabel,
       durationMs,
       openedAtMs: nowMs,
@@ -334,6 +360,10 @@ export class ControlWindow {
       // the stable identifier is the honest fallback for the console projection.
       donorDisplayName: row.donor_identifier,
       amountOrCost: row.amount_or_cost,
+      // WR-02: currency is not persisted (schema has no column); a restored
+      // donation window's console label falls back to USD — best-effort after a
+      // crash, mirroring the donorDisplayName→identifier fallback above.
+      currency: undefined,
       amountLabel: this.#buildAmountLabel(trigger, row.amount_or_cost, row.duration_ms),
       durationMs: row.duration_ms,
       openedAtMs: row.opened_at_ms,
@@ -464,10 +494,17 @@ export class ControlWindow {
    * points. This label is CONSOLE-ONLY — the coarse public overlay projection
    * (04-04) never carries an amount (T-04-03 info-disclosure mitigation).
    */
-  #buildAmountLabel(trigger: WindowTrigger, amountOrCost: number, durationMs: number): string {
+  #buildAmountLabel(
+    trigger: WindowTrigger,
+    amountOrCost: number,
+    durationMs: number,
+    currency?: string,
+  ): string {
     if (trigger === "donation") {
       const capMs = this.#donationConfig.maxSeconds * 1_000;
-      return `$${amountOrCost.toFixed(2)} -> ${formatMmss(durationMs)} window (capped at ${formatMmss(capMs)})`;
+      // WR-02: label in the ACTUAL currency (ISO code), never a hardcoded "$".
+      const cur = currency?.toUpperCase() ?? "USD";
+      return `${amountOrCost.toFixed(2)} ${cur} -> ${formatMmss(durationMs)} window (capped at ${formatMmss(capMs)})`;
     }
     return `${amountOrCost} points -> ${formatMmss(durationMs)} window`;
   }
