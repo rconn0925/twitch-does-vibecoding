@@ -24,8 +24,36 @@ import { type Options, query } from "@anthropic-ai/claude-agent-sdk";
 import { buildSandboxOptions } from "./sandbox-process.js";
 import type { AgentMessage, AgentRunner, AgentRunSpec } from "./types.js";
 
-/** Read-only tool allowlist for the host-side research turn (RESEARCH Open Q1). */
-const RESEARCH_TOOLS = ["Read", "Grep", "Glob", "WebSearch", "WebFetch"];
+/**
+ * Read-only tool allowlist for the host-side research turn (RESEARCH Open Q1).
+ *
+ * CR-02: WebSearch/WebFetch are DELIBERATELY absent. The research turn runs
+ * UNSANDBOXED on the host with the process cwd that holds the very secrets the
+ * sandbox design protects (`.env`, `./data/twitch-token.json`, the audit DB) and
+ * its only input is untrusted, chat-derived `task.text`. Read/Grep/Glob alone
+ * cannot exfiltrate; pairing them with WebFetch would give a
+ * read-then-egress channel a prompt injection could drive. Breaking that pairing
+ * structurally (allowlist, not prompt wording) removes the exfiltration channel.
+ * Sandboxing the research turn too is the ideal, deferred to Wave-0 sandbox
+ * validation so the test path stays on fakes (no real WSL2 dependency).
+ */
+const RESEARCH_TOOLS = ["Read", "Grep", "Glob"];
+
+/**
+ * Tools structurally FORBIDDEN on every unsandboxed host turn (research + plan):
+ * network egress plus host write/exec. A defensive denylist alongside the
+ * allowlist so the host tool boundary never depends on an SDK default (CR-02 /
+ * WR-01) — even if a future SDK widens the implicit default tool set.
+ */
+const HOST_TURN_DISALLOWED = [
+  "WebFetch",
+  "WebSearch",
+  "Write",
+  "Edit",
+  "MultiEdit",
+  "NotebookEdit",
+  "Bash",
+];
 
 /**
  * Construct the real AgentRunner. Called ONLY from main.ts's guarded entrypoint;
@@ -40,10 +68,20 @@ export function createSdkAgentRunner(): AgentRunner {
         abortController: spec.abortController,
       };
       if (spec.model !== undefined) options.model = spec.model;
-      if (spec.agent === "research") options.allowedTools = RESEARCH_TOOLS;
       if (spec.sandbox && spec.spawnClaudeCodeProcess) {
+        // Sandboxed build turn: WSL2 process isolation IS the boundary — the
+        // Claude Code engine runs inside the distro (SAND-01/02/03).
         options.sandbox = buildSandboxOptions();
         options.spawnClaudeCodeProcess = spec.spawnClaudeCodeProcess;
+      } else if (spec.agent === "research") {
+        // Unsandboxed host research turn: read-only, NO egress (CR-02).
+        options.allowedTools = RESEARCH_TOOLS;
+        options.disallowedTools = HOST_TURN_DISALLOWED;
+      } else {
+        // Unsandboxed host plan turn: text-only — NO tools reachable on the host
+        // (WR-01). Do not depend on an SDK default for this safety boundary.
+        options.allowedTools = [];
+        options.disallowedTools = HOST_TURN_DISALLOWED;
       }
       const turn = query({ prompt: spec.userPrompt, options });
       for await (const message of turn) {
