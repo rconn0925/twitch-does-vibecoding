@@ -188,6 +188,31 @@ describe("overlay server (read-only broadcast surface)", () => {
     expect(messages[3]?.pill).toBe("VOTING OPEN");
   });
 
+  it("the ROUND_CLOSED push carries the event's closed snapshot (winner-beat input)", async () => {
+    // RoundManager nulls its live round BEFORE emitting ROUND_CLOSED, so the
+    // push must use the event payload — snapshot() already returns null here.
+    const closedSnap = sampleRound({ status: "closed", winnerOption: 1 });
+    const emitter = new EventEmitter();
+    const round: FakeRound = {
+      snapshot: () => null,
+      on: (event, handler) => {
+        emitter.on(event, handler);
+      },
+      emit: (event) => {
+        emitter.emit(event, closedSnap);
+      },
+    };
+    const { handle } = await start({ round });
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.round).toBeNull();
+
+    round.emit(ROUND_CLOSED);
+    await until(() => messages.length >= 2, "ROUND_CLOSED push");
+    expect(messages[1]?.round?.status).toBe("closed");
+    expect(messages[1]?.round?.winnerOption).toBe(1);
+  });
+
   it("five rapid VOTE_RECORDED emissions produce exactly ONE push after the debounce window", async () => {
     const round = makeFakeRound(sampleRound());
     const { handle } = await start({ round });

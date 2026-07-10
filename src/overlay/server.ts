@@ -130,8 +130,12 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
       info.origin === undefined || info.origin === `http://${info.req.headers.host}`,
   });
 
-  function pushState(): void {
-    const payload = JSON.stringify(buildOverlayState());
+  function pushState(roundOverride?: RoundSnapshot): void {
+    const state = buildOverlayState();
+    if (roundOverride !== undefined) {
+      state.round = roundOverride;
+    }
+    const payload = JSON.stringify(state);
     for (const client of wss.clients) {
       if (client.readyState === client.OPEN) {
         client.send(payload);
@@ -143,13 +147,16 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
     socket.send(JSON.stringify(buildOverlayState()));
   });
 
-  // Low-frequency lifecycle events push immediately.
+  // Low-frequency lifecycle events push immediately. These pushes carry the
+  // EVENT's own snapshot: RoundManager nulls its live round BEFORE emitting
+  // ROUND_CLOSED, so snapshot() would drop the closed round (winnerOption and
+  // final tally) that the client's 8-second winner beat renders from.
   machine.on(STATE_CHANGED, () => {
     pushState();
   });
   for (const roundEvent of [ROUND_OPENED, ROUND_CLOSED]) {
-    round.on(roundEvent, () => {
-      pushState();
+    round.on(roundEvent, (...args) => {
+      pushState(args[0] as RoundSnapshot | undefined);
     });
   }
 
