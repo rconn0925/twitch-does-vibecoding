@@ -243,10 +243,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       sink: chatSink,
       broadcasterId: broadcasterUserId,
       logger,
-      intervalCap: envPositive(
-        process.env.CHAT_SEND_INTERVAL_CAP,
-        DEFAULT_CHAT_SEND_INTERVAL_CAP,
-      ),
+      intervalCap: envPositive(process.env.CHAT_SEND_INTERVAL_CAP, DEFAULT_CHAT_SEND_INTERVAL_CAP),
       intervalMs: envPositive(process.env.CHAT_SEND_INTERVAL_MS, DEFAULT_CHAT_SEND_INTERVAL_MS),
     });
     // (2) Show narration in exact UI-SPEC copy (CHAT-05).
