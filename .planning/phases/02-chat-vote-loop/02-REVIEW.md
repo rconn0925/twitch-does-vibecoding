@@ -54,7 +54,8 @@ findings:
   warning: 6
   info: 8
   total: 17
-status: issues_found
+status: fixed
+fix_report: 02-REVIEW-FIX.md
 ---
 
 # Phase 2: Code Review Report
@@ -62,7 +63,7 @@ status: issues_found
 **Reviewed:** 2026-07-09
 **Depth:** standard
 **Files Reviewed:** 45
-**Status:** issues_found
+**Status:** fixed — CR-01..CR-03, WR-01..WR-06, and IN-01 resolved (see 02-REVIEW-FIX.md); IN-02..IN-08 remain open
 
 ## Summary
 
@@ -89,6 +90,8 @@ scriptable surface.
 ## Critical Issues
 
 ### CR-01: Crash-restored frozen round is unrecoverable, and `startRound()` can silently orphan it (data loss)
+
+**Status:** fixed — commits e54c874 + 46733a2 (follow-up: boot re-enters HALTED so triage offers resume AND discard; discards audited)
 
 **File:** `src/state-machine/round.ts:192-199` (triage detection), `src/state-machine/round.ts:207-215` (missing guard), `src/main.ts:228-237`, `docs/OPERATIONS.md:199-206`
 **Issue:** `#resume()`/`#discard()` fire only on a live `STATE_CHANGED` event
@@ -144,6 +147,8 @@ triage is available; either way update OPERATIONS.md 6.6 to match.
 
 ### CR-02: DNS rebinding defeats every Origin/CSRF/ws check — the console's checks validate against the attacker's own Host header
 
+**Status:** fixed — commit 6c25795
+
 **File:** `src/operator-console/server.ts:167-183` (CSRF middleware), `src/operator-console/server.ts:216-220` (ws verifyClient), `src/overlay/server.ts:127-131`
 **Issue:** All three browser-facing defenses compare the request's `Origin`
 to `http://${req.headers.host}` — a self-referential check. A remote page at
@@ -176,6 +181,8 @@ app.use((req, res, next) => {
 ```
 
 ### CR-03: Re-auth "while the app is running" is documented and narrated but not implemented — chat stays dead until restart
+
+**Status:** fixed — commit 0e02d64
 
 **File:** `src/main.ts:504-573` (`buildTwitchAdapters`, boot-only), `src/operator-console/server.ts:300-314`, `src/ingestion/twitch-auth.ts:109-123`, `docs/OPERATIONS.md:145-168` (6.2 step 4, 6.3)
 **Issue:** The twurple adapters (`ApiClient`, `EventSubWsListener`,
@@ -217,6 +224,8 @@ invoked from the auth-complete path).
 
 ### WR-01: `closeRound()` has no `frozen` guard, and a refused winner is dropped — neither queued nor repooled
 
+**Status:** fixed — commit 7070fb8
+
 **File:** `src/state-machine/round.ts:337-339`, `src/state-machine/round.ts:395-401`, `src/pipeline/round.ts:71-77`
 **Issue:** Two related gaps in the close path. (1) `closeRound()` only checks
 `round?.status !== "open"` — a halt-frozen round still has status `"open"`,
@@ -240,6 +249,8 @@ closeRound(): void {
 
 ### WR-02: Chat is told "Queued for the build" even when the winner was not queued
 
+**Status:** fixed — commit 8d838b4
+
 **File:** `src/ingestion/narration.ts:112-132`, `src/state-machine/round.ts:395-401`
 **Issue:** `roundClosed()` renders the winner template ("… Queued for the
 build.") from the `RoundSnapshot` alone. The snapshot carries no
@@ -256,6 +267,8 @@ re-checked before the build" variant when false.
 
 ### WR-03: Fail-closed classifier feedback bypasses coalescing — identical-message chat spam and unbounded sender queue growth during an outage
 
+**Status:** fixed — commit 3aca4f7
+
 **File:** `src/main.ts:283-287`, `src/ingestion/narration.ts:144-146`, `src/ingestion/chat-sender.ts:54-77`
 **Issue:** `classifyThenNotify` routes the fail-closed rejection (classifier
 down / no API key, D-11) through `narrator.error()`, which sends immediately
@@ -271,6 +284,8 @@ throttle it directly: keep a `lastErrorSentAtMs` in the `classifyThenNotify`
 closure and send the backed-up notice at most once per (say) 30 seconds.
 
 ### WR-04: No-op revotes still hit SQLite and emit VOTE_RECORDED; the console pushes full state synchronously per vote
+
+**Status:** fixed — commit cc11ec0
 
 **File:** `src/state-machine/round.ts:304-330`, `src/operator-console/server.ts:237-244`
 **Issue:** `recordVote()` runs the upsert and emits `VOTE_RECORDED` (with a
@@ -292,6 +307,8 @@ operator surface).
 
 ### WR-05: `close()` never clears the round timer — a pending `closeRound()` fires against a closed database
 
+**Status:** fixed — commit 23163e2
+
 **File:** `src/main.ts:418-426`, `src/state-machine/round.ts:569-576`
 **Issue:** `AppHandle.close()` clears the sweep/purge intervals, stops chat,
 closes both servers, then `db.close()` — but `RoundManager` has no dispose
@@ -306,6 +323,8 @@ shutdown attempt mid-round can turn into a crash.
 call `round.dispose()` first in `close()`.
 
 ### WR-06: Token file writes are non-atomic — a crash during a refresh corrupts the credential and kills chat on next boot
+
+**Status:** fixed — commit 60ac68f
 
 **File:** `src/ingestion/twitch-auth.ts:179-190`
 **Issue:** `persistToken` rewrites `twitch-token.json` in place with
@@ -325,6 +344,8 @@ renameSync(tmp, deps.tokenPath); // atomic on the same volume
 ## Info
 
 ### IN-01: Confirmed biome `useOptionalChain` lint debt in overlay.js
+
+**Status:** fixed — commit 8bb5da7
 
 **File:** `src/overlay/public/overlay.js:146-147`, `src/overlay/public/overlay.js:216`
 **Issue:** Confirms the two deferred lint hits

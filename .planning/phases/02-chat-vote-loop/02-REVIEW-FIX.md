@@ -20,7 +20,7 @@ status: all_fixed
 - Fixed: 10
 - Skipped: 0
 
-**Verification:** `tsc --noEmit` clean, full `vitest run` green (34 files / 378
+**Verification:** `tsc --noEmit` clean, full `vitest run` green (34 files / 380
 tests, including the new CR/WR regression tests), `npm run lint` clean
 repo-wide (76 files). All machine-enforced invariants (single-funnel,
 chat-sender sole-caller, dom-safety, append-only audit) pass unchanged.
@@ -29,17 +29,27 @@ chat-sender sole-caller, dom-safety, append-only audit) pass unchanged.
 
 ### CR-01: Crash-restored frozen round is unrecoverable; startRound() can silently orphan it
 
-**Files modified:** `src/state-machine/round.ts`, `src/main.ts`, `src/state-machine/round.test.ts`, `tests/e2e/recovery.e2e.test.ts`, `docs/OPERATIONS.md`
-**Commit:** e54c874
+**Files modified:** `src/state-machine/round.ts`, `src/main.ts`, `src/audit/record.ts`, `src/state-machine/round.test.ts`, `tests/e2e/recovery.e2e.test.ts`, `docs/OPERATIONS.md`
+**Commits:** e54c874 + 46733a2 (follow-up)
 **Applied fix:** `startRound()` now throws a new `RoundStartError("round-active")`
 whenever ANY round is loaded (mode alone was insufficient — a restored frozen
-round sits in memory while IDLE). A frozen round found at boot is given a real
-exit via the new `discardRestoredFrozen()` (row → `discarded`, candidates
-repooled, votes kept in the ledger, ROUND_CLOSED emitted — the review's
-"safest minimal policy"). OPERATIONS.md 6.6 updated to match. New unit tests
-prove the round-active guard and the boot discard; the recovery e2e that
-previously pinned the stuck state now proves the exit is real (row resolved,
-votes retained, a fresh round starts cleanly).
+round sits in memory while IDLE), so the frozen round can never be silently
+overwritten. The first pass gave a restored frozen round an exit by
+auto-discarding it at boot (the review's "safest minimal policy"); the
+follow-up commit replaced that with the review's alternative, which matches
+the locked decisions better: a frozen round found at boot **re-enters HALTED**
+with a synthesized halt context (frozen.mode = VOTING_ROUND), so the D-04
+recovery triage is reachable after a restart exactly as it was before the
+crash — Resume re-arms the exact frozen remainder, Reset-to-Idle discards.
+Rationale: auto-discard silently un-halted a stream the streamer explicitly
+halted (D-04: nothing auto-resumes) and dropped the resume option D2-16
+promises ("recovery triage decides resume-round vs discard-round"). Discards
+(live or restored) now also write a `round_closed` audit row with decision
+`discarded` (COMP-05). OPERATIONS.md 6.6 updated to match. Unit tests prove
+the round-active guard, resume-with-remainder, and the audited discard; the
+recovery e2e proves BOTH triage exits across a restart, including that
+`/api/round/start` 409s while the frozen round is loaded and that a fresh
+round starts cleanly after a discard.
 
 ### CR-02: DNS rebinding defeats every Origin/CSRF/ws check
 
