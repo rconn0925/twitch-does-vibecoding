@@ -15,8 +15,10 @@ import { describe, expect, it } from "vitest";
  *       src/compliance/gate.ts (toQueuedTask is the sole brand constructor)
  *   (b) `.enqueue(` is called only from src/pipeline/ — no ingestion,
  *       console, or state-machine module feeds the build queue directly
- *   (c) only src/compliance/ imports "@anthropic-ai/sdk" (the classifier
- *       boundary: nothing else talks to the model)
+ *   (c) the raw "@anthropic-ai/sdk" Messages API is imported NOWHERE in src/ —
+ *       the compliance gate now bills via the Agent SDK query() under
+ *       src/orchestrator/ (a self-testing scan with a synthetic-offender
+ *       self-test, so it can never pass by scanning or matching nothing)
  *   (d) `toQueuedTask` is referenced outside gate.ts only by the two
  *       sanctioned funnel entry points under src/pipeline/: submit.ts
  *       (new-candidate intake) and round.ts (round-winner promotion)
@@ -138,6 +140,20 @@ function allMatches(pattern: RegExp): Map<string, string[]> {
   return byFile;
 }
 
+/** The retired raw Messages API import — must appear NOWHERE in src/ (check c). */
+const RAW_SDK_IMPORT = /["']@anthropic-ai\/sdk["']/;
+
+/**
+ * Offenders = every "file:line" where the raw @anthropic-ai/sdk Messages API is
+ * imported anywhere in the scanned src tree. A PURE function of the scanned
+ * files so the SAME logic runs on the real tree AND on a synthetic planted
+ * offender (self-test) — mirroring the prompt-injection-boundary self-test so
+ * the check can never pass vacuously (empty scan or trivially matching nothing).
+ */
+function rawSdkImportOffenders(scanFiles: ScannedFile[]): string[] {
+  return scanFiles.flatMap((file) => matchLocations(file, RAW_SDK_IMPORT));
+}
+
 describe("COMP-01 single-funnel invariants (source scan)", () => {
   it("scans a plausible source tree", () => {
     expect(files.length).toBeGreaterThan(10);
@@ -167,15 +183,22 @@ describe("COMP-01 single-funnel invariants (source scan)", () => {
     ).toHaveLength(0);
   });
 
-  it("(c) only src/compliance/ imports @anthropic-ai/sdk", () => {
-    const hits = allMatches(/["']@anthropic-ai\/sdk["']/);
-    const offenders = [...hits.entries()]
-      .filter(([rel]) => !rel.startsWith("src/compliance/"))
-      .flatMap(([, locs]) => locs);
+  it("(c) the raw @anthropic-ai/sdk Messages API is imported NOWHERE in src/", () => {
+    const offenders = rawSdkImportOffenders(files);
     expect(
       offenders,
-      `Anthropic SDK imported outside the classifier boundary (src/compliance/): ${offenders.join(", ")}`,
+      `raw @anthropic-ai/sdk Messages API imported in src/ — the compliance gate now bills via the Agent SDK query() under src/orchestrator/ (single-funnel c): ${offenders.join(", ")}`,
     ).toHaveLength(0);
+  });
+
+  it("(c self-test) the raw-SDK scan FLAGS a planted src/rogue/anthropic-rogue.ts import", () => {
+    const rogue: ScannedFile = {
+      rel: "src/rogue/anthropic-rogue.ts",
+      stripped: 'import Anthropic from "@anthropic-ai/sdk";\n',
+    };
+    const offenders = rawSdkImportOffenders([...files, rogue]);
+    // Proves the scan actually catches a violation (fails-loud, not a silent pass).
+    expect(offenders).toContain("src/rogue/anthropic-rogue.ts:1");
   });
 
   it("(d) toQueuedTask is referenced outside gate.ts only by src/pipeline/{submit,round,paid-window,chaos}.ts", () => {
