@@ -238,6 +238,11 @@ export class ControlWindow {
     };
     this.#lastGrantedAtMs.set(request.donorIdentifier, nowMs);
 
+    // IN-03: capture the mode the request ARRIVED in (guaranteed IDLE by the
+    // not-idle guard above) BEFORE the transition, so the window_opened ledger
+    // row reflects the pre-open mode rather than the freshly-entered
+    // FREE_REIGN_WINDOW.
+    const priorMode = this.#machine.mode;
     this.#machine.transition("FREE_REIGN_WINDOW");
     this.#armTimer(durationMs);
     recordWindowOpened(this.#db, {
@@ -245,7 +250,7 @@ export class ControlWindow {
       donorIdentifier: request.donorIdentifier,
       amountOrCost: request.amountOrCost,
       durationMs,
-      streamMode: this.#machine.mode,
+      streamMode: priorMode,
     });
 
     const snap = this.#buildSnapshot(this.#window);
