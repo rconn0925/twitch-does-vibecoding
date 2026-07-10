@@ -1,0 +1,274 @@
+import { describe, expect, it, vi } from "vitest";
+import type { SubmitResult } from "../pipeline/submit.js";
+import type { SuggestionCandidate } from "../shared/types.js";
+import type { FeedbackKind, Narrator } from "./narration.js";
+import type { IntakeVerdict, SuggestIntake } from "./suggest-intake.js";
+import {
+  type ChatEventSource,
+  type ChatMessageEvent,
+  startTwitchChat,
+  type TwitchChatDeps,
+} from "./twitch-chat.js";
+
+interface FakeSource {
+  source: ChatEventSource;
+  emitMessage(event: unknown): void;
+  emitReady(userId: string, sessionId: string): void;
+  emitDisconnect(userId: string, error?: Error): void;
+  subscribeArgs: string[][];
+  startCount(): number;
+  stopCount(): number;
+}
+
+function fakeSource(): FakeSource {
+  const messageHandlers: ((e: ChatMessageEvent) => void)[] = [];
+  const readyHandlers: ((userId: string, sessionId: string) => void)[] = [];
+  const disconnectHandlers: ((userId: string, error?: Error) => void)[] = [];
+  const subscribeArgs: string[][] = [];
+  let started = 0;
+  let stopped = 0;
+  return {
+    source: {
+      onChannelChatMessage(broadcasterId, userId, handler) {
+        subscribeArgs.push([broadcasterId, userId]);
+        messageHandlers.push(handler);
+        return {};
+      },
+      onUserSocketReady(handler) {
+        readyHandlers.push(handler);
+        return {};
+      },
+      onUserSocketDisconnect(handler) {
+        disconnectHandlers.push(handler);
+        return {};
+      },
+      start() {
+        started += 1;
+      },
+      stop() {
+        stopped += 1;
+      },
+    },
+    emitMessage(event: unknown) {
+      for (const handler of messageHandlers) handler(event as ChatMessageEvent);
+    },
+    emitReady(userId, sessionId) {
+      for (const handler of readyHandlers) handler(userId, sessionId);
+    },
+    emitDisconnect(userId, error) {
+      for (const handler of disconnectHandlers) handler(userId, error);
+    },
+    subscribeArgs,
+    startCount: () => started,
+    stopCount: () => stopped,
+  };
+}
+
+function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, string?][] } {
+  const feedbackCalls: [FeedbackKind, string, string?][] = [];
+  return {
+    feedbackCalls,
+    roundOpened: vi.fn(),
+    roundClosed: vi.fn(),
+    feedback(kind, displayName, categoryLabel) {
+      feedbackCalls.push([kind, displayName, categoryLabel]);
+    },
+    error: vi.fn(),
+  };
+}
+
+function fakeIntake(verdict: IntakeVerdict): SuggestIntake & { registered: string[][] } {
+  const registered: string[][] = [];
+  return {
+    registered,
+    check: () => verdict,
+    registerAccepted(chatterId, candidateId) {
+      registered.push([chatterId, candidateId]);
+    },
+  };
+}
+
+function fakeLogger() {
+  return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+}
+
+function makeDeps(
+  overrides: Partial<TwitchChatDeps> = {},
+): TwitchChatDeps & {
+  submitted: SuggestionCandidate[];
+  votes: [string, number][];
+} {
+  const submitted: SuggestionCandidate[] = [];
+  const votes: [string, number][] = [];
+  const src = fakeSource();
+  const deps: TwitchChatDeps = {
+    source: src.source,
+    broadcasterUserId: "999",
+    intake: fakeIntake({ ok: true }),
+    submit(candidate): SubmitResult {
+      submitted.push(candidate);
+      return { accepted: true, id: candidate.id };
+    },
+    round: {
+      recordVote(id, option) {
+        votes.push([id, option]);
+        return true;
+      },
+    },
+    narrator: fakeNarrator(),
+    reconcile: vi.fn(),
+    logger: fakeLogger(),
+    ...overrides,
+  };
+  return Object.assign(deps, { submitted, votes });
+}
+
+const CHAT_EVENT = {
+  chatterId: "42",
+  chatterDisplayName: "viewer1",
+  messageText: "!suggest cool idea",
+};
+
+describe("startTwitchChat — EventSub listener wiring (CHAT-01/D2-15/T-02-15)", () => {
+  it("registers onChannelChatMessage with the broadcaster id passed as BOTH args and starts", () => {
+    const src = fakeSource();
+    const deps = makeDeps({ source: src.source });
+    const handle = startTwitchChat(deps);
+    expect(src.subscribeArgs).toEqual([["999", "999"]]);
+    expect(src.startCount()).toBe(1);
+    handle.stop();
+    expect(src.stopCount()).toBe(1);
+  });
+
+  it("!suggest with intake ok builds a well-formed candidate, submits it, and registers acceptance", () => {
+    const src = fakeSource();
+    const intake = fakeIntake({ ok: true });
+    const deps = makeDeps({ source: src.source, intake });
+    startTwitchChat(deps);
+    src.emitMessage(CHAT_EVENT);
+
+    expect(deps.submitted).toHaveLength(1);
+    const candidate = deps.submitted[0];
+    expect(candidate).toMatchObject({
+      source: "chat",
+      kind: "suggestion",
+      twitchUsername: "viewer1",
+      text: "cool idea",
+    });
+    expect(candidate?.id).toBeTruthy();
+    expect(typeof candidate?.submittedAtMs).toBe("number");
+    expect(intake.registered).toEqual([["42", candidate?.id]]);
+  });
+
+  it.each([
+    ["cooldown", "cooldown"],
+    ["pending-exists", "cooldown"],
+    ["duplicate", "duplicate"],
+  ] as const)("intake verdict %s skips submit and sends the %s notice", (reason, kind) => {
+    const src = fakeSource();
+    const narrator = fakeNarrator();
+    const deps = makeDeps({
+      source: src.source,
+      intake: fakeIntake({ ok: false, reason }),
+      narrator,
+    });
+    startTwitchChat(deps);
+    src.emitMessage(CHAT_EVENT);
+
+    expect(deps.submitted).toHaveLength(0);
+    expect(narrator.feedbackCalls).toEqual([[kind, "viewer1", undefined]]);
+  });
+
+  it("a halted submit result registers nothing and stays silent (D-02)", () => {
+    const src = fakeSource();
+    const intake = fakeIntake({ ok: true });
+    const narrator = fakeNarrator();
+    const deps = makeDeps({
+      source: src.source,
+      intake,
+      narrator,
+      submit: () => ({ accepted: false, reason: "halted" }),
+    });
+    startTwitchChat(deps);
+    src.emitMessage(CHAT_EVENT);
+    expect(intake.registered).toEqual([]);
+    expect(narrator.feedbackCalls).toEqual([]);
+  });
+
+  it("!vote 2 records a vote keyed by the EventSub chatterId", () => {
+    const src = fakeSource();
+    const deps = makeDeps({ source: src.source });
+    startTwitchChat(deps);
+    src.emitMessage({ ...CHAT_EVENT, messageText: "!vote 2" });
+    expect(deps.votes).toEqual([["42", 2]]);
+    expect(deps.submitted).toHaveLength(0);
+  });
+
+  it("a non-command chatter message calls nothing", () => {
+    const src = fakeSource();
+    const narrator = fakeNarrator();
+    const deps = makeDeps({ source: src.source, narrator });
+    startTwitchChat(deps);
+    src.emitMessage({ ...CHAT_EVENT, messageText: "hello everyone" });
+    expect(deps.submitted).toHaveLength(0);
+    expect(deps.votes).toHaveLength(0);
+    expect(narrator.feedbackCalls).toEqual([]);
+  });
+
+  it.each([
+    [{ chatterDisplayName: "x", messageText: "!vote 1" }],
+    [{ chatterId: "42", chatterDisplayName: "x" }],
+    [{ chatterId: "", chatterDisplayName: "x", messageText: "!vote 1" }],
+    [null],
+    ["not an object"],
+  ])("a zod-invalid EventSub payload %j never crashes the listener and calls nothing", (raw) => {
+    const src = fakeSource();
+    const deps = makeDeps({ source: src.source });
+    startTwitchChat(deps);
+    expect(() => src.emitMessage(raw)).not.toThrow();
+    expect(deps.submitted).toHaveLength(0);
+    expect(deps.votes).toHaveLength(0);
+  });
+
+  it("a downstream throw (submit throws) is caught and logged — the listener survives", () => {
+    const src = fakeSource();
+    const logger = fakeLogger();
+    const deps = makeDeps({
+      source: src.source,
+      logger,
+      submit: () => {
+        throw new Error("boom");
+      },
+    });
+    startTwitchChat(deps);
+    expect(() => src.emitMessage(CHAT_EVENT)).not.toThrow();
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    // A later, valid message still works: the listener is alive.
+    src.emitMessage({ ...CHAT_EVENT, messageText: "!vote 1" });
+    expect(deps.votes).toEqual([["42", 1]]);
+  });
+
+  it("onUserSocketDisconnect logs a warning with the RESEARCH.md wording", () => {
+    const src = fakeSource();
+    const logger = fakeLogger();
+    startTwitchChat(makeDeps({ source: src.source, logger }));
+    src.emitDisconnect("999", new Error("gone"));
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "999" }),
+      "EventSub socket disconnected — twurple will auto-reconnect",
+    );
+  });
+
+  it("onUserSocketReady logs AND invokes deps.reconcile() (INFRA-02)", () => {
+    const src = fakeSource();
+    const logger = fakeLogger();
+    const reconcile = vi.fn();
+    startTwitchChat(makeDeps({ source: src.source, logger, reconcile }));
+    src.emitReady("999", "session-1");
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "999", sessionId: "session-1" }),
+      "EventSub socket (re)connected and ready",
+    );
+    expect(reconcile).toHaveBeenCalledTimes(1);
+  });
+});
