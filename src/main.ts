@@ -25,6 +25,7 @@ import {
   startConsoleServer,
   type TwitchConnectionStatus,
 } from "./operator-console/server.js";
+import { type OverlayServerHandle, startOverlayServer } from "./overlay/server.js";
 import { enqueueWinner } from "./pipeline/round.js";
 import { submitCandidate } from "./pipeline/submit.js";
 import { CandidatePool } from "./queue/pool.js";
@@ -50,6 +51,12 @@ export interface TwitchAuthRoutes {
 export interface CreateAppOptions {
   dbPath: string;
   port: number;
+  /**
+   * Public OBS overlay port (plan 02-05). Defaults to 0 (ephemeral) so test
+   * apps never collide; the npm-run-dev entrypoint passes OVERLAY_PORT
+   * (default 4901) — always a SEPARATE surface from the console (D2-17).
+   */
+  overlayPort?: number;
   /**
    * Test-injected classifier (vitest never talks to the network). When absent,
    * the live Sonnet classifier is wired from ANTHROPIC_API_KEY; with neither,
@@ -80,6 +87,8 @@ export interface AppHandle {
   taskQueue: TaskQueue;
   /** Voting-round lifecycle manager (plans 02-04/02-05 and the e2e suite need it). */
   round: RoundManager;
+  /** Public OBS overlay surface — separate server + port from the console (D2-17). */
+  overlay: OverlayServerHandle;
   /** Phase 3's orchestrator registers agent-session PIDs/controllers here. */
   registry: AbortRegistry;
   close: () => Promise<void>;
@@ -379,6 +388,22 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     console_.port,
   );
 
+  // Public OBS overlay (PRES-01) — a physically separate read-only surface,
+  // never the console's app/port (D2-17). Ephemeral port 0 by default so
+  // parallel test apps never collide; the entrypoint passes OVERLAY_PORT.
+  const overlay = await startOverlayServer({
+    machine,
+    round,
+    taskQueue,
+    port: opts.overlayPort ?? 0,
+    logger,
+  });
+  logger.info(
+    { port: overlay.port },
+    "public overlay listening at http://127.0.0.1:%d — add as OBS browser source at 1920x1080",
+    overlay.port,
+  );
+
   return {
     server: console_.server,
     port: console_.port,
@@ -388,11 +413,13 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     pool,
     taskQueue,
     round,
+    overlay,
     registry,
     close: async () => {
       clearInterval(reviewSweepTimer);
       clearInterval(purgeTimer);
       chatHandle?.stop();
+      await overlay.close();
       await console_.close();
       db.close();
     },
@@ -552,12 +579,13 @@ const isMain =
 
 if (isMain) {
   const port = Number(process.env.CONSOLE_PORT ?? 4900);
+  const overlayPort = Number(process.env.OVERLAY_PORT ?? 4901);
   const dbPath = process.env.AUDIT_DB_PATH ?? "./data/audit.db";
   const bootLogger = pino({ level: process.env.LOG_LEVEL ?? "info" });
   // Entrypoint-only: build real twurple adapters (guarded dynamic imports),
   // then hand them to createApp — which owns ALL chat composition.
   buildTwitchAdapters(bootLogger)
-    .then((twitchOpts) => createApp({ dbPath, port, ...twitchOpts }))
+    .then((twitchOpts) => createApp({ dbPath, port, overlayPort, ...twitchOpts }))
     .then((app) =>
       // Entrypoint-only: this is the sole call path that loads the native
       // uiohook module. Test runs (vitest) never reach this branch.
