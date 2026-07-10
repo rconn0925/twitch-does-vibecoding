@@ -97,7 +97,7 @@ describe("classifyWithSonnet — happy path", () => {
 
 describe("classifyWithSonnet — tolerant JSON extraction", () => {
   it("parses raw text wrapped in a ```json code fence", async () => {
-    const fenced = "```json\n" + APPROVED + "\n```";
+    const fenced = ["```json", APPROVED, "```"].join("\n");
     const { transport } = makeTransport([fenced]);
     const result = await classifyWithSonnet(deps(transport), candidate());
     expect(result.decision).toBe("approved");

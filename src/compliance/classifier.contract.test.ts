@@ -55,7 +55,7 @@ describe("classifier transport contract (network-free, no SDK)", () => {
   });
 
   it("extracts JSON wrapped in a ```json code fence", async () => {
-    const fenced = "```json\n" + RAW_JSON + "\n```";
+    const fenced = ["```json", RAW_JSON, "```"].join("\n");
     const result = await classifyWithSonnet(
       { transport: fixedTransport(fenced), maxRetries: 0 },
       candidate("x"),
