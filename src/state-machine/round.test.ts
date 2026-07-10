@@ -276,6 +276,33 @@ describe("RoundManager.recordVote (CHAT-03/D2-14/D2-15)", () => {
     h.db.close();
   });
 
+  it("a no-op revote (same option) refreshes voted_at_ms but does NOT emit VOTE_RECORDED (WR-04)", () => {
+    const h = makeHarness();
+    h.manager.startRound();
+    let emits = 0;
+    h.manager.on(VOTE_RECORDED, () => {
+      emits += 1;
+    });
+
+    h.setNow(2_000);
+    expect(h.manager.recordVote("111", 1)).toBe(true);
+    expect(emits).toBe(1);
+
+    h.setNow(3_000);
+    expect(h.manager.recordVote("111", 1)).toBe(true); // same option — no-op
+    expect(emits).toBe(1); // vote spam does not ride the event path
+    // …but the write-through still refreshed voted_at_ms.
+    const row = h.db
+      .prepare("SELECT voted_at_ms FROM round_votes WHERE twitch_user_id = '111'")
+      .get() as { voted_at_ms: number };
+    expect(row.voted_at_ms).toBe(3_000);
+
+    // A REAL revote (different option) still emits.
+    expect(h.manager.recordVote("111", 2)).toBe(true);
+    expect(emits).toBe(2);
+    h.db.close();
+  });
+
   it("silently ignores invalid votes: bad option, no round open, wrong machine mode", () => {
     const h = makeHarness();
 

@@ -327,15 +327,21 @@ export class RoundManager {
     });
 
     const previous = round.votesByUser.get(twitchUserId);
-    if (previous !== option) {
-      if (previous !== undefined) {
-        const prevOption = round.options[previous - 1];
-        if (prevOption) prevOption.votes -= 1;
-      }
-      const nextOption = round.options[option - 1];
-      if (nextOption) nextOption.votes += 1;
-      round.votesByUser.set(twitchUserId, option);
+    if (previous === option) {
+      // WR-04: a no-op revote (same option) — the upsert above already
+      // refreshed voted_at_ms; skip the emit. VOTE_RECORDED fires at CHAT
+      // frequency and every emit deep-copies a snapshot and triggers
+      // console/overlay push work — `!vote 1` spam must not ride the live
+      // event path.
+      return true;
     }
+    if (previous !== undefined) {
+      const prevOption = round.options[previous - 1];
+      if (prevOption) prevOption.votes -= 1;
+    }
+    const nextOption = round.options[option - 1];
+    if (nextOption) nextOption.votes += 1;
+    round.votesByUser.set(twitchUserId, option);
 
     this.#emitter.emit(VOTE_RECORDED, this.#buildSnapshot(round));
     return true;

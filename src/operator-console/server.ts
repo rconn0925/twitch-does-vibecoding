@@ -266,14 +266,26 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
   machine.on(STATE_CHANGED, () => {
     pushState();
   });
-  // Round lifecycle pushes stay synchronous per-event: this is an
-  // operator-frequency surface, not the overlay — the 300ms vote-tally
-  // debounce is the overlay's concern (plan 02-05).
-  for (const roundEvent of [ROUND_OPENED, ROUND_CLOSED, VOTE_RECORDED]) {
+  // Round lifecycle beats (open/close) are operator-frequency — push
+  // synchronously. VOTE_RECORDED is NOT: it fires at chat frequency
+  // (WR-04), and each push rebuilds the full ConsoleState (listPending
+  // query + JSON.stringify of pool/queue/review) per connected client —
+  // so it gets the overlay's trailing-debounce treatment instead.
+  for (const roundEvent of [ROUND_OPENED, ROUND_CLOSED]) {
     deps.round.on(roundEvent, () => {
       pushState();
     });
   }
+  const VOTE_PUSH_DEBOUNCE_MS = 250;
+  let votePushTimer: NodeJS.Timeout | null = null;
+  deps.round.on(VOTE_RECORDED, () => {
+    if (votePushTimer !== null) return;
+    votePushTimer = setTimeout(() => {
+      votePushTimer = null;
+      pushState();
+    }, VOTE_PUSH_DEBOUNCE_MS);
+    votePushTimer.unref();
+  });
 
   /**
    * Wrap the gate so a ws snapshot lands AFTER background routing settles:
@@ -610,6 +622,10 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
         port: boundPort,
         close: () =>
           new Promise<void>((closeResolve, closeReject) => {
+            if (votePushTimer !== null) {
+              clearTimeout(votePushTimer);
+              votePushTimer = null;
+            }
             for (const client of wss.clients) {
               client.terminate();
             }
