@@ -55,6 +55,11 @@ function resultMessage(text: string): unknown {
   return { type: "result", subtype: "success", is_error: false, result: text };
 }
 
+/** A NON-success terminal result (e.g. error_max_turns / error_during_execution). */
+function errorResultMessage(subtype: string): unknown {
+  return { type: "result", subtype, is_error: true };
+}
+
 describe("createClassifierTransport — tool-authority + single-turn guards", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -108,14 +113,8 @@ describe("createClassifierTransport — prompt boundary (T-01-06)", () => {
   });
 });
 
-describe("createClassifierTransport — raw text return", () => {
-  it("returns the concatenated assistant text when no result message is present", async () => {
-    const { queryFn } = makeFakeQuery([assistantMessage(JSON_BODY)]);
-    const raw = await createClassifierTransport({ queryFn })("x");
-    expect(raw).toBe(JSON_BODY);
-  });
-
-  it("prefers the final result message text when present", async () => {
+describe("createClassifierTransport — raw text return (fail-closed contract)", () => {
+  it("returns the authoritative result text on a SUCCESS result", async () => {
     const { queryFn } = makeFakeQuery([
       assistantMessage("partial chunk"),
       resultMessage(JSON_BODY),
@@ -124,9 +123,54 @@ describe("createClassifierTransport — raw text return", () => {
     expect(raw).toBe(JSON_BODY);
   });
 
+  it("falls back to assistant chunks only when a SUCCESS result had empty text", async () => {
+    const { queryFn } = makeFakeQuery([assistantMessage(JSON_BODY), resultMessage("")]);
+    const raw = await createClassifierTransport({ queryFn })("x");
+    expect(raw).toBe(JSON_BODY);
+  });
+
+  it("returns empty (→ fail closed) when the stream has NO success result", async () => {
+    // Assistant text present but no terminal success → the gate must not trust it.
+    const { queryFn } = makeFakeQuery([assistantMessage(JSON_BODY)]);
+    const raw = await createClassifierTransport({ queryFn })("x");
+    expect(raw).toBe("");
+  });
+
+  it("returns empty on a NON-success terminal result even with valid-looking text (WR-01)", async () => {
+    // A run that emits a complete `{"decision":"approved"}` and THEN errors must
+    // NOT approve — trust text only on subtype:success.
+    const { queryFn } = makeFakeQuery([
+      assistantMessage(JSON_BODY),
+      errorResultMessage("error_max_turns"),
+    ]);
+    const raw = await createClassifierTransport({ queryFn })("x");
+    expect(raw).toBe("");
+  });
+
   it("calls the query transport exactly once per classification", async () => {
-    const { queryFn, callCount } = makeFakeQuery([assistantMessage(JSON_BODY)]);
+    const { queryFn, callCount } = makeFakeQuery([resultMessage(JSON_BODY)]);
     await createClassifierTransport({ queryFn })("x");
     expect(callCount()).toBe(1);
+  });
+});
+
+describe("createClassifierTransport — hard timeout bound (WR-02)", () => {
+  it("rejects (→ fail closed) if the query stalls past the timeout budget", async () => {
+    vi.useFakeTimers();
+    try {
+      // A generator that never yields and never returns — a stalled query().
+      const queryFn = (() =>
+        (async function* () {
+          await new Promise(() => {});
+          // eslint-disable-next-line no-unreachable
+          yield resultMessage(JSON_BODY);
+        })() as unknown as ReturnType<QueryFn>) as QueryFn;
+      const promise = createClassifierTransport({ queryFn })("x");
+      const assertion = expect(promise).rejects.toThrow(/timed out/);
+      await vi.advanceTimersByTimeAsync(8000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

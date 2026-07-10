@@ -184,7 +184,7 @@ async function main(): Promise<number> {
   }
   if (unavailable.length === rows.length) {
     console.error(
-      "\nEvery call failed closed (classifier-unavailable) — the API was never reachable, so nothing was actually evaluated. Treating as failure.",
+      "\nEvery call failed closed (classifier-unavailable) — the plan-billed classifier was never reachable (is `claude login` active?), so nothing was actually evaluated. Treating as failure.",
     );
     return 1;
   }
@@ -194,7 +194,7 @@ async function main(): Promise<number> {
       console.error(`  ${row.id}: expected ${row.expected}, got ${row.actual} — ${row.note}`);
     }
     console.error(
-      "\nIterate the classifier system prompt in src/compliance/classifier.ts and re-run.",
+      "\nIterate the CLASSIFIER_SYSTEM_PROMPT in src/orchestrator/prompt-boundary.ts and re-run.",
     );
     return 1;
   }

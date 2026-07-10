@@ -14,7 +14,7 @@ import {
   isLegalCategory,
   TAXONOMY_CATEGORIES,
 } from "./categories.js";
-import { GateDecisionSchema, getGateDecisionJsonSchema } from "./schema.js";
+import { GateDecisionSchema } from "./schema.js";
 
 describe("TAXONOMY_CATEGORIES", () => {
   it("has exactly 15 entries", () => {
@@ -157,18 +157,5 @@ describe("GateDecisionSchema (zod v4)", () => {
       rationale: longRationale,
     });
     expect(result.success).toBe(false);
-  });
-});
-
-describe("getGateDecisionJsonSchema", () => {
-  it("returns a non-empty object", () => {
-    const schema = getGateDecisionJsonSchema();
-    expect(schema).toBeTypeOf("object");
-    expect(schema).not.toBeNull();
-  });
-
-  it("is a valid JSON object (can be stringified and parsed)", () => {
-    const schema = getGateDecisionJsonSchema();
-    expect(() => JSON.parse(JSON.stringify(schema))).not.toThrow();
   });
 });

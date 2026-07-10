@@ -68,10 +68,23 @@ export function createClassifierTransport(injected?: {
   const queryFn = injected?.queryFn ?? query;
   return async (candidateText: string): Promise<string> => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), CLASSIFIER_TIMEOUT_MS);
-    // Do not let the abort timer keep the event loop alive.
-    if (typeof timer.unref === "function") timer.unref();
-    try {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    // Hard latency bound (WR-02): race the stream consumption against an explicit
+    // timeout that BOTH aborts the query AND rejects. The abortController alone is
+    // not enough — if query() ignores or is slow to honor the abort, a stalled
+    // call would hang classify() indefinitely. On timeout the reject propagates,
+    // classifier.ts catches it, and the gate fails CLOSED (never open).
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("classifier query timed out"));
+      }, CLASSIFIER_TIMEOUT_MS);
+      // Do not let the abort timer keep the event loop alive.
+      if (timer && typeof timer.unref === "function") timer.unref();
+    });
+
+    const consume = async (): Promise<string> => {
       const options: Options = {
         // BARE reference to a fixed const — zero interpolation (SAND-04 / T-01-06).
         systemPrompt: CLASSIFIER_SYSTEM_PROMPT,
@@ -85,12 +98,20 @@ export function createClassifierTransport(injected?: {
         abortController: controller,
       };
       const stream = queryFn({ prompt: candidateText, options });
+      let sawSuccess = false;
       let resultText: string | undefined;
       const assistantChunks: string[] = [];
       for await (const message of stream) {
         if (message.type === "result") {
-          // The final result message carries the authoritative assistant text.
-          if (message.subtype === "success") resultText = message.result;
+          // Trust the run ONLY when the SDK reports success (WR-01). A non-success
+          // terminal result (error_max_turns / error_during_execution) must NOT
+          // yield text — even a complete-looking `{"decision":"approved"}` from a
+          // failed run has to fail closed, so we leave the text empty and let the
+          // compliance envelope reject.
+          if (message.subtype === "success") {
+            sawSuccess = true;
+            resultText = message.result;
+          }
         } else if (message.type === "assistant") {
           const content = message.message.content;
           if (Array.isArray(content)) {
@@ -100,10 +121,17 @@ export function createClassifierTransport(injected?: {
           }
         }
       }
-      // Prefer the final result message; fall back to concatenated assistant text.
-      return resultText ?? assistantChunks.join("");
+      // No successful result → return empty so the envelope fails closed.
+      if (!sawSuccess) return "";
+      // Prefer the authoritative result text; the streamed chunks are only a
+      // fallback for a successful run whose result field came back empty.
+      return resultText && resultText.length > 0 ? resultText : assistantChunks.join("");
+    };
+
+    try {
+      return await Promise.race([consume(), timeout]);
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
     }
   };
 }

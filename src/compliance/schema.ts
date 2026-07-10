@@ -1,11 +1,11 @@
 /**
  * Zod v4 schema for the compliance classifier's JSON output.
  *
- * This schema is used in two places (belt-and-suspenders):
- * 1. z.toJSONSchema(GateDecisionSchema) → sent to the Anthropic API as the
- *    Structured Output JSON schema constraint.
- * 2. Re-parsed from the raw API response text to validate the model's output
- *    before it reaches any business logic.
+ * The gate now bills via the plan-billed Agent SDK `query()` transport, which
+ * has no native JSON-schema output constraint, so this schema's sole role is the
+ * belt-and-suspenders re-parse: the classifier extracts JSON from the model's
+ * raw text and validates it against GateDecisionSchema BEFORE it reaches any
+ * business logic. Any parse/validation failure fails CLOSED.
  *
  * Refinement rules:
  *   - approved ⇒ category must be null (approved suggestions carry no category)
@@ -86,13 +86,3 @@ export const GateDecisionSchema = GateDecisionShapeSchema.refine(
 
 /** Type-level inference from the schema. */
 export type ClassifierDecision = z.infer<typeof GateDecisionSchema>;
-
-/**
- * The JSON Schema object sent to the Anthropic API via output_config.format.
- *
- * Uses zod v4's native toJSONSchema() — NOT the SDK's zod output-format helper
- * (known zod-v4 incompatibility, RESEARCH.md Pitfall 1).
- */
-export function getGateDecisionJsonSchema(): object {
-  return z.toJSONSchema(GateDecisionSchema);
-}
