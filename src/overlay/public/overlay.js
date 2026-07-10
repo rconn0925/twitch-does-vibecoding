@@ -14,16 +14,55 @@
   const votePanel = document.getElementById("vote-panel");
   const queueStrip = document.getElementById("queue-strip");
 
+  // The build-status panel (PRES-02/04) reuses the vote panel's lower-left
+  // slot — VOTING_ROUND and BUILD_IN_PROGRESS are mutually exclusive modes, so
+  // the two panels never render at once. index.html ships the three Phase 2
+  // blocks; this fourth block is created here (textContent-only, never
+  // innerHTML) and appended once, so no HTML markup is authored anywhere.
+  const buildPanel = document.createElement("section");
+  buildPanel.className = "build-panel";
+  buildPanel.id = "build-panel";
+  buildPanel.hidden = true;
+  document.body.appendChild(buildPanel);
+
   /** Latest OverlayState from the ws push (full state every message). */
   let latest = null;
   /** Closed round snapshot held for the 8-second winner beat, or null. */
   let winnerBeatRound = null;
   let winnerBeatTimer = null;
+  /** The "done" BuildStatusView held for the 8-second BUILT IT beat, or null. */
+  let doneBeat = null;
+  let doneBeatTimer = null;
+  /**
+   * The last real pipeline step seen (researching/planning/building). The
+   * failed/refused stages carry no step of their own, so the stepper freezes
+   * at this remembered step rather than jumping (UI-SPEC "freeze at current").
+   */
+  let lastActiveStage = null;
 
   const VOTE_TITLE_MAX = 80;
   const QUEUE_TITLE_MAX = 60;
+  const BUILD_TITLE_MAX = 80;
   const WINNER_BEAT_MS = 8000;
   const FINAL_COUNTDOWN_MS = 10000;
+
+  // Fixed, orchestrator-authored copy — never chat-derived, so always safe.
+  const BUILD_STEPS = [
+    { key: "research", label: "Research" },
+    { key: "plan", label: "Plan" },
+    { key: "build", label: "Build" },
+  ];
+  const STAGE_STEP_INDEX = { researching: 0, planning: 1, building: 2 };
+  const STAGE_CAPTION = {
+    researching: "Digging into the idea",
+    planning: "Drafting the build plan",
+    building: "Writing the code",
+    done: "Live on screen now",
+    failed: "Regrouping…",
+    refused: "Skipping this one",
+  };
+  // failed/refused caption is amber (honest but calm) — never red on stream.
+  const AMBER_STAGES = new Set(["failed", "refused"]);
 
   // --- tiny DOM helpers (textContent-only construction, from console.js) ---
 
@@ -142,6 +181,12 @@
 
   function renderVotePanel() {
     votePanel.replaceChildren();
+    // The build panel owns the shared lower-left slot while a build is live or
+    // the BUILT IT beat runs — the vote panel yields (mutually exclusive modes).
+    if (buildPanelActive()) {
+      votePanel.hidden = true;
+      return;
+    }
     const liveRound = latest?.round?.status === "open" ? latest.round : null;
     // A newly opened round always outranks a lingering winner beat.
     const beatActive = liveRound === null && winnerBeatRound !== null;
@@ -190,12 +235,92 @@
     }, WINNER_BEAT_MS);
   }
 
+  // --- build-status panel (lower-left; reuses the vote-panel slot) ---
+
+  // Which stepper step (0..2) is active; 3 means all steps complete (done).
+  // failed/refused carry no step of their own -> freeze at the last real step.
+  function effectiveStepIndex(stage) {
+    if (stage === "done") return 3;
+    if (stage === "failed" || stage === "refused") {
+      return lastActiveStage !== null ? STAGE_STEP_INDEX[lastActiveStage] : 0;
+    }
+    const idx = STAGE_STEP_INDEX[stage];
+    return idx === undefined ? 0 : idx;
+  }
+
+  // The build panel is mounted while a non-done build is live OR the 8s BUILT
+  // IT beat runs. A "done" stage shows ONLY through the beat, never as a static
+  // panel, so a lingering done buildStatus can't pin the panel open forever.
+  function buildPanelActive() {
+    if (doneBeat !== null) return true;
+    const bs = latest?.buildStatus ?? null;
+    return bs !== null && bs.stage !== "done";
+  }
+
+  function renderBuildPanel() {
+    buildPanel.replaceChildren();
+    const beatActive = doneBeat !== null;
+    const bs = beatActive ? doneBeat : (latest?.buildStatus ?? null);
+    if (!bs || (!beatActive && bs.stage === "done")) {
+      buildPanel.hidden = true;
+      return;
+    }
+    buildPanel.hidden = false;
+
+    const header = el("div", "build-header");
+    header.appendChild(el("h1", "build-title", beatActive ? "BUILT IT" : "NOW BUILDING"));
+    buildPanel.appendChild(header);
+
+    // The ONE chat-derived string on this panel: textContent-only via el(),
+    // JS-truncated to 80 chars (CSS ellipsis is the backstop) — T-03-15.
+    buildPanel.appendChild(el("div", "build-task", truncate(bs.title, BUILD_TITLE_MAX)));
+
+    const stepper = el("div", "build-stepper");
+    const activeIndex = effectiveStepIndex(bs.stage);
+    BUILD_STEPS.forEach((step, i) => {
+      if (i > 0) stepper.appendChild(el("div", "build-connector"));
+      const stepEl = el("div", "build-step");
+      let stateClass;
+      if (activeIndex === 3 || i < activeIndex) stateClass = "step-complete";
+      else if (i === activeIndex) stateClass = "step-active";
+      else stateClass = "step-upcoming";
+      stepEl.classList.add(stateClass);
+      stepEl.appendChild(el("span", "build-step-badge"));
+      stepEl.appendChild(el("span", "build-step-label", step.label));
+      stepper.appendChild(stepEl);
+    });
+    buildPanel.appendChild(stepper);
+
+    const caption = el("div", "build-caption", STAGE_CAPTION[bs.stage] || "");
+    if (AMBER_STAGES.has(bs.stage)) caption.classList.add("build-caption-amber");
+    buildPanel.appendChild(caption);
+  }
+
+  function startDoneBeat(doneStatus) {
+    doneBeat = doneStatus;
+    if (doneBeatTimer) clearTimeout(doneBeatTimer);
+    doneBeatTimer = setTimeout(() => {
+      doneBeat = null;
+      doneBeatTimer = null;
+      // Beat over -> the build panel collapses; the vote panel may reclaim the
+      // slot on the next push (pill has already flipped to STANDBY server-side).
+      renderAll();
+    }, WINNER_BEAT_MS);
+  }
+
+  function clearDoneBeat() {
+    if (doneBeatTimer) clearTimeout(doneBeatTimer);
+    doneBeatTimer = null;
+    doneBeat = null;
+  }
+
   // --- master render + push handling ---
 
   function renderAll() {
     if (!latest) return;
     renderPill(latest);
     renderQueue(latest);
+    renderBuildPanel();
     renderVotePanel();
   }
 
@@ -203,6 +328,22 @@
     latest = state;
     if (state.round && state.round.status === "closed" && state.round.winnerOption !== null) {
       startWinnerBeat(state.round);
+    }
+    const bs = state.buildStatus;
+    if (bs) {
+      if (bs.stage === "done") {
+        // Kick off the 8s celebratory beat (mirrors the winner beat). The
+        // server may null buildStatus right after as the pill flips to STANDBY;
+        // the beat is held client-side so BUILT IT stays up the full 8s.
+        startDoneBeat(bs);
+      } else {
+        // A live (non-done) build supersedes any lingering done beat and
+        // records the last real pipeline step for the failed/refused freeze.
+        clearDoneBeat();
+        if (bs.stage === "researching" || bs.stage === "planning" || bs.stage === "building") {
+          lastActiveStage = bs.stage;
+        }
+      }
     }
     renderAll();
   }

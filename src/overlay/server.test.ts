@@ -3,9 +3,14 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { ROUND_CLOSED, ROUND_OPENED, VOTE_RECORDED } from "../shared/events.js";
-import type { RoundSnapshot } from "../shared/types.js";
+import type { BuildStatusView, RoundSnapshot } from "../shared/types.js";
 import { StreamModeMachine } from "../state-machine/stream-mode.js";
-import { type OverlayServerHandle, type OverlayState, startOverlayServer } from "./server.js";
+import {
+  BUILD_STAGE_CHANGED,
+  type OverlayServerHandle,
+  type OverlayState,
+  startOverlayServer,
+} from "./server.js";
 
 /**
  * Overlay server behavior (plan 02-05, D2-17/D2-18):
@@ -80,6 +85,29 @@ function makeFakeRound(snap: RoundSnapshot | null = null): FakeRound {
   };
 }
 
+/** Minimal build-status source satisfying the overlay's structural build dep. */
+interface FakeBuild {
+  snapshot(): BuildStatusView | null;
+  on(event: string, handler: (...args: unknown[]) => void): void;
+  /** Advance the pipeline stage: mutate the snapshot, then emit the transition. */
+  setStatus(next: BuildStatusView | null): void;
+}
+
+function makeFakeBuild(initial: BuildStatusView | null = null): FakeBuild {
+  const emitter = new EventEmitter();
+  let current = initial;
+  return {
+    snapshot: () => current,
+    on: (event, handler) => {
+      emitter.on(event, handler);
+    },
+    setStatus: (next) => {
+      current = next;
+      emitter.emit(BUILD_STAGE_CHANGED);
+    },
+  };
+}
+
 /** Yield to the event loop so socket I/O lands (setImmediate is never faked). */
 async function flushIo(turns = 20): Promise<void> {
   for (let i = 0; i < turns; i++) {
@@ -117,24 +145,27 @@ describe("overlay server (read-only broadcast surface)", () => {
     opts: {
       machine?: StreamModeMachine;
       round?: FakeRound;
+      build?: FakeBuild;
       nextUpTexts?: string[];
       debounceMs?: number;
     } = {},
   ) {
     const machine = opts.machine ?? new StreamModeMachine();
     const round = opts.round ?? makeFakeRound();
+    const build = opts.build ?? makeFakeBuild();
     const taskQueue = {
       list: () => (opts.nextUpTexts ?? []).map((text) => ({ text })),
     };
     const handle = await startOverlayServer({
       machine,
       round,
+      build,
       taskQueue,
       port: 0,
       ...(opts.debounceMs !== undefined ? { debounceMs: opts.debounceMs } : {}),
     });
     handles.push(handle);
-    return { machine, round, handle };
+    return { machine, round, build, handle };
   }
 
   /** Connect a ws client and collect every parsed push into `messages`. */
@@ -170,6 +201,59 @@ describe("overlay server (read-only broadcast surface)", () => {
     const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
     const state = (await res.json()) as OverlayState;
     expect(state.nextUp).toEqual(["one", "two", "three"]);
+  });
+
+  it("buildStatus is null on both HTTP and ws when no build is active (PRES-04)", async () => {
+    const { handle } = await start();
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.buildStatus).toBeNull();
+
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.buildStatus).toBeNull();
+  });
+
+  it("GET /api/state and the connect push both carry the current buildStatus (PRES-02/04)", async () => {
+    const build = makeFakeBuild({
+      taskId: "t1",
+      title: "build a snake game",
+      stage: "researching",
+    });
+    const { handle } = await start({ build });
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.buildStatus).toEqual({
+      taskId: "t1",
+      title: "build a snake game",
+      stage: "researching",
+    });
+    // The pill vocabulary is unchanged — the fine-grained stage rides buildStatus,
+    // not a new pill word (mode stays IDLE here, so the pill is still STANDBY).
+    expect(httpState.pill).toBe("STANDBY");
+
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.buildStatus?.stage).toBe("researching");
+  });
+
+  it("a build-stage change triggers an IMMEDIATE push (never the tally debounce)", async () => {
+    const build = makeFakeBuild({ taskId: "t1", title: "snake", stage: "researching" });
+    const { handle } = await start({ build });
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+
+    // No fake timers, no debounce advance: the push must land on its own.
+    build.setStatus({ taskId: "t1", title: "snake", stage: "planning" });
+    await until(() => messages.length >= 2, "immediate build-stage push");
+    await flushIo();
+    expect(messages).toHaveLength(2);
+    expect(messages[1]?.buildStatus?.stage).toBe("planning");
+
+    build.setStatus({ taskId: "t1", title: "snake", stage: "done" });
+    await until(() => messages.length >= 3, "immediate done push");
+    expect(messages[2]?.buildStatus?.stage).toBe("done");
   });
 
   it("ROUND_OPENED, ROUND_CLOSED and STATE_CHANGED each push immediately", async () => {
