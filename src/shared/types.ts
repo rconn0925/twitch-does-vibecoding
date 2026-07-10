@@ -198,6 +198,8 @@ export interface BuildNarrator {
   buildSkipped(title: string): void;
   /** COMP-02 rejected the plan/output — can't build that one (D3-06/D3-07). */
   comp02Rejected(title: string): void;
+  /** COMP-02 HELD the plan for streamer review — distinct from rejected (WR-03/D-08). */
+  buildHeld(title: string): void;
   /** A streamer veto aborted an in-flight build (D3-10). */
   buildVetoed(title: string): void;
 }

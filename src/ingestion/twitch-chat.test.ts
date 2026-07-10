@@ -85,6 +85,7 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     buildRetryChosen: vi.fn(),
     buildSkipped: vi.fn(),
     comp02Rejected: vi.fn(),
+    buildHeld: vi.fn(),
     buildVetoed: vi.fn(),
   };
 }

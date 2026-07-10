@@ -533,10 +533,16 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // drives BOTH the pre-write plan re-screen and the in-flight output re-screen.
       comp02: { classify: (candidate) => classify(gateDeps, candidate) },
       progress,
+      // WR-03 / D-08: routing a held plan into the console review queue is
+      // DEFERRED. Interim behavior is explicit and never silent — the build
+      // session narrates the held beat + audits it (comp02_decision:
+      // held-for-review + pipeline_stage: refused), and this hook logs an audited
+      // warning. TODO(D-08): re-queue the held plan into the streamer review flow
+      // instead of dropping it after audit+narration.
       onHeldForReview: (task) =>
         logger.warn(
           { taskId: task.id },
-          "COMP-02 held the build plan for streamer review (console review flow — narration polish 03-09)",
+          "COMP-02 held the build plan — audited + narrated; D-08 console review-queue routing deferred (TODO)",
         ),
       // Build-pipeline chat narration (BUILD-03/D3-08/D3-09); absent when no chat
       // pipeline is composed — the build still runs, just without chat beats.

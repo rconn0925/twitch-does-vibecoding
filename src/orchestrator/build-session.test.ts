@@ -169,6 +169,7 @@ function fakeNarrator(): {
     buildRetryChosen: rec("buildRetryChosen"),
     buildSkipped: rec("buildSkipped"),
     comp02Rejected: rec("comp02Rejected"),
+    buildHeld: rec("buildHeld"),
     buildVetoed: rec("buildVetoed"),
   };
   return {

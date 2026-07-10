@@ -441,6 +441,7 @@ describe("EventSub disconnect → ready reconciliation (INFRA-02, D2-14)", () =>
         buildRetryChosen() {},
         buildSkipped() {},
         comp02Rejected() {},
+        buildHeld() {},
         buildVetoed() {},
       },
       reconcile: () => {

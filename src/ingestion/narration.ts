@@ -212,6 +212,12 @@ export function createNarrator(deps: {
       );
     },
 
+    buildHeld(title: string): void {
+      void deps.sender.send(
+        `"${truncateTitle(title)}" needs a human look before it can build — held for streamer review. Next up.`,
+      );
+    },
+
     buildVetoed(title: string): void {
       void deps.sender.send(
         `Build stopped — pulling the plug on "${truncateTitle(title)}". Standing by.`,
