@@ -5,6 +5,8 @@ import type { SuggestionCandidate } from "../shared/types.js";
 import { openDb } from "./db.js";
 import {
   listAuditRecords,
+  recordChaosPick,
+  recordChaosToggled,
   recordGateDecision,
   recordHalt,
   recordPoolDropped,
@@ -12,6 +14,10 @@ import {
   recordRoundClosed,
   recordRoundOpened,
   recordVeto,
+  recordWindowDenied,
+  recordWindowExpired,
+  recordWindowOpened,
+  recordWindowRevoked,
 } from "./record.js";
 
 function candidate(overrides: Partial<SuggestionCandidate> = {}): SuggestionCandidate {
@@ -167,6 +173,92 @@ describe("audit record helpers (append-only ledger)", () => {
     db.close();
   });
 
+  it("recordWindowOpened inserts one window_opened row carrying the amount->duration mapping (PAID-04)", () => {
+    const db = openDb(":memory:");
+    recordWindowOpened(db, {
+      trigger: "donation",
+      donorIdentifier: "generous_donor",
+      amountOrCost: 500,
+      durationMs: 60_000,
+      streamMode: "FREE_REIGN_WINDOW",
+    });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "window_opened" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event_type).toBe("window_opened");
+    expect(rows[0]?.source).toBe("donation");
+    expect(rows[0]?.twitch_username).toBe("generous_donor");
+    expect(rows[0]?.stream_mode).toBe("FREE_REIGN_WINDOW");
+    // The amount->duration mapping text is present in the rationale (PAID-04).
+    expect(rows[0]?.rationale).toContain("->");
+    expect(rows[0]?.rationale).toContain("500");
+    expect(rows[0]?.rationale).toContain("60000");
+    db.close();
+  });
+
+  it("recordWindowExpired / recordWindowRevoked insert their lifecycle rows with the trigger as source", () => {
+    const db = openDb(":memory:");
+    recordWindowExpired(db, {
+      trigger: "channel_points",
+      donorIdentifier: "redeemer_1",
+      streamMode: "FREE_REIGN_WINDOW",
+    });
+    recordWindowRevoked(db, {
+      trigger: "donation",
+      donorIdentifier: "donor_2",
+      streamMode: "FREE_REIGN_WINDOW",
+    });
+    const expired = listAuditRecords(db, { limit: 10, eventType: "window_expired" });
+    expect(expired).toHaveLength(1);
+    expect(expired[0]?.source).toBe("channel_points");
+    expect(expired[0]?.twitch_username).toBe("redeemer_1");
+    const revoked = listAuditRecords(db, { limit: 10, eventType: "window_revoked" });
+    expect(revoked).toHaveLength(1);
+    expect(revoked[0]?.source).toBe("donation");
+    db.close();
+  });
+
+  it("recordWindowDenied inserts a window_denied row with the reason in category (never-silent, D-05)", () => {
+    const db = openDb(":memory:");
+    recordWindowDenied(db, {
+      trigger: "donation",
+      donorIdentifier: "donor_3",
+      reason: "cooldown",
+      streamMode: "BUILD_IN_PROGRESS",
+    });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "window_denied" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event_type).toBe("window_denied");
+    expect(rows[0]?.category).toBe("cooldown");
+    expect(rows[0]?.rationale).toContain("cooldown");
+    db.close();
+  });
+
+  it("recordChaosToggled inserts a chaos_toggled row from the operator with the enabled state", () => {
+    const db = openDb(":memory:");
+    recordChaosToggled(db, { enabled: true, streamMode: "CHAOS_MODE" });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "chaos_toggled" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.source).toBe("operator");
+    expect(rows[0]?.decision).toBe("enabled");
+    expect(rows[0]?.stream_mode).toBe("CHAOS_MODE");
+    db.close();
+  });
+
+  it("recordChaosPick inserts a chaos_pick row with source 'chaos' and the picked title/taskId", () => {
+    const db = openDb(":memory:");
+    recordChaosPick(db, {
+      taskId: "task-42",
+      title: "build a random number generator",
+      streamMode: "CHAOS_MODE",
+    });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "chaos_pick" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.source).toBe("chaos");
+    expect(rows[0]?.task_id).toBe("task-42");
+    expect(rows[0]?.suggestion_text).toBe("build a random number generator");
+    db.close();
+  });
+
   it("record.ts is structurally append-only: source contains no mutating SQL keywords", () => {
     const source = readFileSync(fileURLToPath(new URL("./record.ts", import.meta.url)), "utf8");
     // No occurrence anywhere — including comments — so the grep gate stays meaningful.
@@ -220,6 +312,28 @@ describe("audit schema migration", () => {
     expect(tables).toContain("rounds");
     expect(tables).toContain("round_candidates");
     expect(tables).toContain("round_votes");
+    db.close();
+  });
+
+  it("creates the control_windows table with the crash-safe ledger columns (PAID-04, D-06)", () => {
+    const db = openDb(":memory:");
+    const cols = db
+      .prepare("PRAGMA table_info(control_windows)")
+      .all()
+      .map((c) => (c as { name: string }).name);
+    for (const expected of [
+      "id",
+      "trigger_type",
+      "donor_identifier",
+      "amount_or_cost",
+      "duration_ms",
+      "opened_at_ms",
+      "ends_at_ms",
+      "status",
+      "closed_at_ms",
+    ]) {
+      expect(cols).toContain(expected);
+    }
     db.close();
   });
 

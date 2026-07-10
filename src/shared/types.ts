@@ -140,6 +140,38 @@ export interface RoundSnapshot {
 }
 
 /**
+ * Phase 4 paid-influence control window (PAID-01/02/03/04, D-03/D-11/D-12).
+ *
+ * ONE ControlWindow FSM backs both donation and channel-points windows; they
+ * differ only in `trigger`. A window is an OPEN sponsored slot (D-11) — any
+ * gate-compliant chatter submission during the window bypasses the vote; it is
+ * never private donor control. The window runs its FULL amount-proportional
+ * duration (D-12) — `endsAtMs` is absolute and crash-safe.
+ */
+export type WindowTrigger = "donation" | "channel_points";
+
+/** Lifecycle status of a control_windows row. 'active' → 'expired' | 'revoked'. */
+export type WindowStatus = "active" | "expired" | "revoked";
+
+/**
+ * CONSOLE-side view of an active control window (the honest, full-detail
+ * projection). `amountLabel` is the human-readable amount→duration mapping text
+ * (e.g. "$5.00 -> 1:00 window (capped at 5:00)") shown to the streamer only —
+ * it is deliberately DISTINCT from the coarse public OverlayState.controlWindow
+ * projection (04-04: donorDisplayName + endsAtMs only), so no donation amount
+ * ever reaches the broadcast wire (T-04-03 Information-Disclosure mitigation).
+ */
+export interface ControlWindowSnapshot {
+  donorDisplayName: string;
+  trigger: WindowTrigger;
+  /** Console-only honest mapping text, e.g. "$5.00 -> 1:00 window (capped at 5:00)". */
+  amountLabel: string;
+  durationMs: number;
+  /** ABSOLUTE close time (Date.now()-based) — single source of truth, crash-safe (D-06/D-12). */
+  endsAtMs: number;
+}
+
+/**
  * The small, stable public status vocabulary for the build pipeline (BUILD-02,
  * D3-08, PRES-04). This is the ONLY set of words that ever crosses from the
  * orchestrator into the overlay/console/chat/audit surfaces — raw Agent SDK
@@ -167,6 +199,15 @@ export interface BuildStatusView {
   taskId: string;
   title: string;
   stage: PipelineStage;
+  /**
+   * How the current build was selected — drives the overlay provenance chip
+   * (04-UI-SPEC, PAID-01/02/CHAOS-01). Fixed vocabulary, never free text:
+   * "vote" (normal loop), "donation"/"channel_points" (a paid/redemption control
+   * window), or "chaos" (a random pick). Optional so existing Phase 3 producers
+   * (which predate paid/chaos) stay valid; Wave 2/4 supplies it and treats an
+   * absent value as "vote".
+   */
+  source?: "vote" | "donation" | "channel_points" | "chaos";
 }
 
 /**

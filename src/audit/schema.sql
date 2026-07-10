@@ -90,3 +90,31 @@ CREATE TABLE IF NOT EXISTS round_votes (
   PRIMARY KEY (round_id, twitch_user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_round_votes_round ON round_votes(round_id);
+
+-- Phase 4 paid-influence ledger (PAID-04, D-06/D-12). The DURABILITY CONTRACT of
+-- this table: a paid/redemption control window MUST survive a mid-stream crash and
+-- MUST NEVER be silently extended.
+--   ends_at_ms is an ABSOLUTE Date.now()-based timestamp and the SINGLE SOURCE OF
+--   TRUTH for when a window closes. On crash restore, the control-window FSM (04-03)
+--   re-arms only the REMAINING time (ends_at_ms - Date.now()) — it never re-adds the
+--   full amount-proportional duration, so a large donation can never be resurrected
+--   into a fresh full-length window by a restart.
+--   amount_or_cost + duration_ms persist the D-04 amount→duration mapping that backs
+--   PAID-04's "logged with the mapping" requirement; the audit_log narration rows
+--   (recordWindow* in record.ts) carry the human-readable mapping text alongside.
+--   status is 'active' | 'expired' | 'revoked' (D-12: full-duration lifetime; a
+--   window is not closed on first build). closed_at_ms is null while active.
+--   D-11: an OPEN sponsored slot — no donor-ownership/exclusivity column exists BY
+--   DESIGN; every submission during the window is still gated + vetoable.
+CREATE TABLE IF NOT EXISTS control_windows (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  trigger_type     TEXT NOT NULL,                   -- 'donation' | 'channel_points' (D-03: one FSM, two triggers)
+  donor_identifier TEXT NOT NULL,                   -- donor display name / redeemer handle (untrusted upstream, validated at ingestion 04-02)
+  amount_or_cost   INTEGER NOT NULL,                -- tip amount (minor units) or channel-points cost — the D-04 mapping input
+  duration_ms      INTEGER NOT NULL,                -- amount→duration result (linear, floored, capped)
+  opened_at_ms     INTEGER NOT NULL,                -- Date.now() at open
+  ends_at_ms       INTEGER NOT NULL,                -- ABSOLUTE close time — single source of truth, crash-safe (D-06/D-12)
+  status           TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'expired' | 'revoked'
+  closed_at_ms     INTEGER                          -- null while active; set on expiry/revoke
+);
+CREATE INDEX IF NOT EXISTS idx_control_windows_status ON control_windows(status);
