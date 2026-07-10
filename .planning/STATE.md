@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-07-09)
 ## Current Position
 
 Phase: 05 (build-history-stream-night-dry-run) — CODE COMPLETE (closeout green). ALL phases code-side done.
-Plan: All buildable plans across Phases 1–5 merged to master. Suite **663 pass**, tsc + biome clean.
+Plan: All buildable plans across Phases 1–5 merged to master + 1 quick task (gate plan-billing). Suite **679 pass**, tsc + biome clean.
 Status: Phase 05 built (2 code waves + runbook doc) → reviewed (0 blocker, 4 warning + 4 info; all 4 warnings + IN-01/IN-03 fixed, IN-02/IN-04 accepted deferrals) → verified 1/1 code criterion PASS (3/3 criteria correctly deferred to the human dry run) → secured 13/13 threats, 0 open.
 Last activity: 2026-07-10 -- Phase 05 code-side closeout complete; v1 code-complete
 
@@ -73,6 +73,12 @@ Everything buildable is built and green. These are the human-action gates, defer
 - [ ] Kill switch vs. a GENUINELY in-progress build (HALTED instant, no false "BUILT IT", no changelog row for the killed build)
 - [ ] Audit + changelog review (zero unfiltered inputs reached an agent; every rejection got chat feedback; no donor detail / pre-gate text on the screen-shared changelog)
 - [ ] Record **GO** → v1 is cleared for the first real stream night.
+
+## Quick Tasks Completed
+
+| Date | Task | Result |
+|------|------|--------|
+| 2026-07-10 | `260710-if0` — Rework compliance-gate classifier to plan-billed Agent SDK (off API keys) | ✅ Done. Gate now bills via `claude login` plan credits (Agent SDK `query()`, tools-disabled, single-turn, Sonnet); raw metered Messages API + `@anthropic-ai/sdk` retired from `src/`. Reviewed (0 blocker, 3 warn fixed incl. WR-01 fail-closed hardening) → secured 7/7, 0 open. Both SAND-04 + single-funnel invariants stay green non-vacuously. No `ANTHROPIC_API_KEY` required anywhere now. |
 
 ## Performance Metrics
 
