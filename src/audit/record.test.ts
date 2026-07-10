@@ -1,10 +1,14 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { SuggestionCandidate } from "../shared/types.js";
 import { openDb } from "./db.js";
 import {
   listAuditRecords,
+  listBuildHistory,
+  recordBuildHistory,
   recordChaosPick,
   recordChaosToggled,
   recordGateDecision,
@@ -259,6 +263,134 @@ describe("audit record helpers (append-only ledger)", () => {
     db.close();
   });
 
+  it("recordBuildHistory inserts exactly one build_history row with the gate-approved title + provenance + result (HIST-01)", () => {
+    const db = openDb(":memory:");
+    recordBuildHistory(db, {
+      taskId: "task-100",
+      title: "build a chat leaderboard",
+      provenance: "vote",
+      result: "built",
+    });
+    const rows = listBuildHistory(db, { limit: 10 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.taskId).toBe("task-100");
+    expect(rows[0]?.title).toBe("build a chat leaderboard");
+    expect(rows[0]?.provenance).toBe("vote");
+    expect(rows[0]?.result).toBe("built");
+    expect(typeof rows[0]?.createdAtMs).toBe("number");
+    db.close();
+  });
+
+  it("recordBuildHistory preserves each provenance + result value distinctly", () => {
+    const db = openDb(":memory:");
+    recordBuildHistory(db, {
+      taskId: "t-1",
+      title: "vote build",
+      provenance: "vote",
+      result: "built",
+    });
+    recordBuildHistory(db, {
+      taskId: "t-2",
+      title: "donation build",
+      provenance: "donation",
+      result: "failed",
+    });
+    recordBuildHistory(db, {
+      taskId: "t-3",
+      title: "points build",
+      provenance: "channel_points",
+      result: "refused",
+    });
+    recordBuildHistory(db, {
+      taskId: "t-4",
+      title: "chaos build",
+      provenance: "chaos",
+      result: "built",
+    });
+    const rows = listBuildHistory(db, { limit: 10 });
+    const byTask = new Map(rows.map((r) => [r.taskId, r]));
+    expect(byTask.get("t-1")?.provenance).toBe("vote");
+    expect(byTask.get("t-2")?.provenance).toBe("donation");
+    expect(byTask.get("t-2")?.result).toBe("failed");
+    expect(byTask.get("t-3")?.provenance).toBe("channel_points");
+    expect(byTask.get("t-3")?.result).toBe("refused");
+    expect(byTask.get("t-4")?.provenance).toBe("chaos");
+    db.close();
+  });
+
+  it("listBuildHistory returns rows reverse-chronological (created_at_ms DESC, id DESC) and honors the limit", () => {
+    const db = openDb(":memory:");
+    for (let i = 0; i < 5; i += 1) {
+      recordBuildHistory(db, {
+        taskId: `task-${i}`,
+        title: `build ${i}`,
+        provenance: "vote",
+        result: "built",
+      });
+    }
+    const all = listBuildHistory(db, { limit: 10 });
+    expect(all).toHaveLength(5);
+    // Same-ms inserts: id DESC keeps a strict newest-first ordering.
+    const ids = all.map((r) => r.id);
+    expect(ids).toEqual([...ids].sort((a, b) => b - a));
+    const limited = listBuildHistory(db, { limit: 2 });
+    expect(limited).toHaveLength(2);
+    // The bounded page starts at the newest row.
+    expect(limited[0]?.id).toBe(Math.max(...ids));
+    db.close();
+  });
+
+  it("listBuildHistory honors the beforeMs pagination cursor (created_at_ms < beforeMs)", () => {
+    const db = openDb(":memory:");
+    // Seed rows directly so we control created_at_ms deterministically.
+    const insert = db.prepare(
+      `INSERT INTO build_history (task_id, title, provenance, result, created_at_ms)
+       VALUES (@taskId, @title, @provenance, @result, @createdAtMs)`,
+    );
+    insert.run({
+      taskId: "old",
+      title: "old build",
+      provenance: "vote",
+      result: "built",
+      createdAtMs: 1000,
+    });
+    insert.run({
+      taskId: "new",
+      title: "new build",
+      provenance: "vote",
+      result: "built",
+      createdAtMs: 5000,
+    });
+    const page = listBuildHistory(db, { limit: 10, beforeMs: 2000 });
+    expect(page).toHaveLength(1);
+    expect(page[0]?.taskId).toBe("old");
+    db.close();
+  });
+
+  it("build_history persists across a fresh db handle open of the same file (durability)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "build-history-"));
+    const file = join(dir, "audit.db");
+    try {
+      const db1 = openDb(file);
+      recordBuildHistory(db1, {
+        taskId: "durable-1",
+        title: "durable build",
+        provenance: "chaos",
+        result: "built",
+      });
+      db1.close();
+
+      const db2 = openDb(file);
+      const rows = listBuildHistory(db2, { limit: 10 });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.taskId).toBe("durable-1");
+      expect(rows[0]?.provenance).toBe("chaos");
+      db2.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("record.ts is structurally append-only: source contains no mutating SQL keywords", () => {
     const source = readFileSync(fileURLToPath(new URL("./record.ts", import.meta.url)), "utf8");
     // No occurrence anywhere — including comments — so the grep gate stays meaningful.
@@ -332,6 +464,18 @@ describe("audit schema migration", () => {
       "status",
       "closed_at_ms",
     ]) {
+      expect(cols).toContain(expected);
+    }
+    db.close();
+  });
+
+  it("creates the append-only build_history table with the changelog columns (HIST-01)", () => {
+    const db = openDb(":memory:");
+    const cols = db
+      .prepare("PRAGMA table_info(build_history)")
+      .all()
+      .map((c) => (c as { name: string }).name);
+    for (const expected of ["id", "task_id", "title", "provenance", "result", "created_at_ms"]) {
       expect(cols).toContain(expected);
     }
     db.close();
