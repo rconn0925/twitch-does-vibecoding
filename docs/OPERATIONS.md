@@ -200,6 +200,12 @@ Restarting the app mid-round (crash or Ctrl+C) is safe: the round restores
 from SQLite automatically at startup — same round, same tally, same remaining
 time — before the console or chat listener accepts any input. A round whose
 timer expired while the process was down closes immediately on startup and its
-winner still enqueues through the normal funnel. A round frozen by a halt
-restores frozen and waits for triage. No acknowledged vote is ever lost to a
-restart.
+winner still enqueues through the normal funnel.
+
+A round frozen by a halt does NOT survive a restart: the halt context that
+recovery triage needs is not persisted, so at startup a frozen round is
+**discarded automatically** — its candidates return to the suggestion pool,
+its row is marked `discarded`, and its acknowledged votes remain in the
+ledger (nothing is deleted, D-02). Recover from the halt as usual, then start
+a fresh round; the same candidates will be back in the pool. No acknowledged
+vote is ever lost to a restart.

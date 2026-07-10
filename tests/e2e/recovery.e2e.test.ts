@@ -22,8 +22,10 @@ import type { RoundSnapshot } from "../../src/shared/types.js";
  *     votes from BOTH lives of the process (D2-14).
  *  2. Expired-during-downtime: restore() closes the round immediately and the
  *     winner still reaches the queue via the funnel.
- *  3. Halt-freeze across restart: frozen_remaining_ms persists and the round
- *     restores frozen with the exact same remainder (D2-16 + D2-14).
+ *  3. Halt-freeze across restart: frozen_remaining_ms persists, but the halt
+ *     context (triage state) does not — so at boot the frozen round is
+ *     discarded with audit semantics: candidates repool, votes stay in the
+ *     ledger, and a fresh round is immediately startable (CR-01 fix).
  *  4. Disconnect/reconcile: an EventSub ready after a gap re-syncs the
  *     in-memory tally from the round_votes ledger — a REAL db-vs-memory
  *     comparison, proven by mutating the ledger between the events.
@@ -248,14 +250,18 @@ describe("round expired during downtime (D2-14)", () => {
   });
 });
 
-describe("halt-freeze across restart (D2-16 + D2-14)", () => {
-  it("a halted round persists its frozen remainder and restores frozen with the same remainingMs", async () => {
+describe("halt-freeze across restart (D2-16 + D2-14 + CR-01)", () => {
+  it("a halted round persists its frozen remainder; at restart it is discarded with a real exit — candidates repool, votes stay, a new round can start", async () => {
     tempDir = mkdtempSync(path.join(tmpdir(), "recovery-freeze-"));
     const dbPath = path.join(tempDir, "audit.db");
 
     const a = await startSession(dbPath);
     await poolTwoAndOpenRound(a.handle, a.chat);
     a.chat.say("501", "erin", "!vote 1");
+    await until(async () =>
+      (await getState(a.handle)).round?.totalVotes === 1 ? true : undefined,
+    );
+    const roundId = (await getState(a.handle)).round?.roundId as number;
 
     // Halt mid-round: the kill switch freezes the round synchronously (D2-16).
     const halted = await postJson(`${baseUrl(a.handle)}/api/halt`, {});
@@ -276,16 +282,39 @@ describe("halt-freeze across restart (D2-16 + D2-14)", () => {
     await a.handle.close();
     app = null;
 
-    // Restart: the round restores FROZEN with the exact same remainder and
-    // waits for recovery triage — it must NOT resume or close on its own.
+    // Restart: the halt context needed for HALTED-mode triage is NOT
+    // persisted, so the frozen round cannot be triaged after a restart.
+    // CR-01 policy: it is discarded at boot — a REAL, reachable exit —
+    // instead of restoring into an unrecoverable frozen limbo.
     const b = await startSession(dbPath);
     const restored = await getState(b.handle);
-    expect(restored.round?.status).toBe("open");
-    expect(restored.round?.frozen).toBe(true);
-    expect(restored.round?.remainingMs).toBe(frozenRemainingMs);
-    expect(restored.round?.totalVotes).toBe(1);
-    // A frozen restored round does not re-enter VOTING_ROUND (triage decides).
+    expect(restored.round).toBeNull();
     expect(restored.mode).toBe("IDLE");
+
+    // The candidates are repooled, not lost.
+    expect(restored.pool.map((p) => p.candidate.text).sort()).toEqual([
+      "build a pomodoro timer",
+      "build a snake game",
+    ]);
+
+    // The row is resolved (not deleted, D-02) and no longer strandable.
+    const row = b.handle.db
+      .prepare("SELECT status, frozen_remaining_ms FROM rounds WHERE id = ?")
+      .get(roundId) as { status: string; frozen_remaining_ms: number | null };
+    expect(row.status).toBe("discarded");
+    // The acknowledged vote stays in the ledger — nothing is deleted.
+    const votes = b.handle.db
+      .prepare("SELECT COUNT(*) AS c FROM round_votes WHERE round_id = ?")
+      .get(roundId) as { c: number };
+    expect(votes.c).toBe(1);
+
+    // The exit is real: a fresh round starts immediately over the repooled
+    // candidates — no stranded 'open' row, no orphaned state (CR-01).
+    const started = await postJson(`${baseUrl(b.handle)}/api/round/start`, {});
+    expect(started.status).toBe(200);
+    const after = await getState(b.handle);
+    expect(after.round?.status).toBe("open");
+    expect(after.round?.roundId).not.toBe(roundId);
   });
 });
 

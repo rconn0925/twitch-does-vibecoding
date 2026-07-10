@@ -46,13 +46,15 @@ import type { StreamModeMachine } from "./stream-mode.js";
 
 /** Thrown by startRound() when the show is not in a startable state. */
 export class RoundStartError extends Error {
-  readonly reason: "not-idle" | "pool-too-small";
+  readonly reason: "not-idle" | "pool-too-small" | "round-active";
 
-  constructor(reason: "not-idle" | "pool-too-small") {
+  constructor(reason: "not-idle" | "pool-too-small" | "round-active") {
     super(
-      reason === "not-idle"
-        ? "Can't start a round unless the stream is IDLE"
-        : "Can't start a round with fewer than 2 pooled candidates (D2-04)",
+      reason === "round-active"
+        ? "Can't start a round while another round is still loaded"
+        : reason === "not-idle"
+          ? "Can't start a round unless the stream is IDLE"
+          : "Can't start a round with fewer than 2 pooled candidates (D2-04)",
     );
     this.name = "RoundStartError";
     this.reason = reason;
@@ -205,6 +207,13 @@ export class RoundManager {
    * insertion order; requires at least 2 (D2-04).
    */
   startRound(): RoundSnapshot {
+    // CR-01: refuse while ANY round is still loaded — mode alone is not
+    // enough (a crash-restored frozen round sits in memory while the machine
+    // is IDLE). Overwriting #round would orphan its acknowledged votes and
+    // strand its 'open' row forever (D2-14 / D-02).
+    if (this.#round !== null) {
+      throw new RoundStartError("round-active");
+    }
     if (this.#machine.mode !== "IDLE") {
       throw new RoundStartError("not-idle");
     }
@@ -504,6 +513,19 @@ export class RoundManager {
       return;
     }
     this.#armTimer(remaining);
+  }
+
+  /**
+   * Boot-time exit for a crash-restored FROZEN round (CR-01): the halt
+   * context is never persisted, so after a restart no HALTED-mode triage
+   * exists — the frozen round would otherwise be unrecoverable (and
+   * silently corruptible). Policy: discard with the same semantics as
+   * recovery-triage discard — the row goes 'discarded', candidates repool,
+   * ROUND_CLOSED is emitted. Acknowledged votes stay in the round_votes
+   * ledger (D-02: nothing is deleted).
+   */
+  discardRestoredFrozen(): void {
+    this.#discard();
   }
 
   on(event: string, handler: (...args: unknown[]) => void): void {

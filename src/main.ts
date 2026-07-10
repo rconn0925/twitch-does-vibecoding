@@ -227,7 +227,19 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // own transition API; a frozen round stays put for recovery triage.
   {
     const restored = round.snapshot();
-    if (restored?.status === "open" && !restored.frozen && machine.mode === "IDLE") {
+    if (restored?.status === "open" && restored.frozen) {
+      // CR-01: the halt context is never persisted, so a frozen round that
+      // survives a restart has no reachable HALTED-mode triage. Give it a
+      // real exit at boot: discard with audit semantics — candidates repool,
+      // the row goes 'discarded', acknowledged votes stay in the ledger
+      // (D-02: nothing deleted). Without this, the stranded round could be
+      // silently orphaned by the next Start Round.
+      round.discardRestoredFrozen();
+      logger.warn(
+        { roundId: restored.roundId },
+        "frozen round found at boot with no persisted halt context — discarded, candidates repooled",
+      );
+    } else if (restored?.status === "open" && !restored.frozen && machine.mode === "IDLE") {
       machine.transition("VOTING_ROUND");
       logger.info(
         { roundId: restored.roundId },

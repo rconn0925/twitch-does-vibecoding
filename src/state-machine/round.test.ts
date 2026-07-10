@@ -187,6 +187,46 @@ describe("RoundManager.startRound (D2-01/D2-04)", () => {
     expect(h.pool.list()).toHaveLength(3);
     h.db.close();
   });
+
+  it("throws round-active while a restored frozen round is loaded, even though the machine is IDLE (CR-01)", () => {
+    const h = makeHarness({ candidates: 3 });
+    h.manager.startRound();
+    h.setNow(21_000);
+    h.machine.forceTransition("HALTED", haltCtx(h.machine)); // freezes + persists remainder
+
+    // "Restart": a fresh machine boots IDLE; restore() loads the frozen round.
+    const machine2 = new StreamModeMachine();
+    const pool2 = new CandidatePool();
+    pool2.add(candidate("cand-x"), approved);
+    pool2.add(candidate("cand-y"), approved);
+    const manager2 = new RoundManager({
+      db: h.db,
+      machine: machine2,
+      pool: pool2,
+      enqueueWinner: enqueueWinnerSpy(),
+      now: () => 30_000,
+    });
+    manager2.restore();
+    expect(manager2.snapshot()?.frozen).toBe(true);
+    expect(machine2.mode).toBe("IDLE");
+
+    // Mode is IDLE and the pool has 2 candidates — startRound must STILL
+    // refuse: overwriting the loaded round would orphan its acknowledged
+    // votes and strand its 'open' row (D2-14 / D-02).
+    try {
+      manager2.startRound();
+      expect.unreachable("startRound should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoundStartError);
+      expect((err as RoundStartError).reason).toBe("round-active");
+    }
+    expect(manager2.snapshot()?.frozen).toBe(true);
+    const open = h.db
+      .prepare("SELECT COUNT(*) AS n FROM rounds WHERE status = 'open'")
+      .get() as { n: number };
+    expect(open.n).toBe(1);
+    h.db.close();
+  });
 });
 
 describe("RoundManager.recordVote (CHAT-03/D2-14/D2-15)", () => {
@@ -512,6 +552,42 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
     expect(row.status).toBe("closed");
     expect(row.winner_option).toBe(1);
     expect(enqueue2).toHaveBeenCalledTimes(1);
+    expect(machine2.mode).toBe("IDLE");
+    h.db.close();
+  });
+
+  it("discardRestoredFrozen gives a restored frozen round a real exit: row discarded, candidates repooled, ROUND_CLOSED emitted (CR-01)", () => {
+    const h = makeHarness();
+    const snap = h.manager.startRound();
+    h.setNow(21_000);
+    h.machine.forceTransition("HALTED", haltCtx(h.machine));
+
+    // "Restart": fresh IDLE machine, empty pool, restore() loads frozen.
+    const machine2 = new StreamModeMachine();
+    const pool2 = new CandidatePool();
+    const manager2 = new RoundManager({
+      db: h.db,
+      machine: machine2,
+      pool: pool2,
+      enqueueWinner: enqueueWinnerSpy(),
+      now: () => 30_000,
+    });
+    manager2.restore();
+    let closed: RoundSnapshot | null = null;
+    manager2.on(ROUND_CLOSED, (s) => {
+      closed = s as RoundSnapshot;
+    });
+
+    manager2.discardRestoredFrozen();
+
+    expect(manager2.snapshot()).toBeNull();
+    const row = h.db.prepare("SELECT status, frozen_remaining_ms FROM rounds WHERE id = ?").get(
+      snap.roundId,
+    ) as { status: string; frozen_remaining_ms: number | null };
+    expect(row.status).toBe("discarded");
+    expect(row.frozen_remaining_ms).toBeNull();
+    expect(pool2.list().map((a) => a.candidate.id)).toEqual(["cand-1", "cand-2", "cand-3"]);
+    expect((closed as unknown as RoundSnapshot).status).toBe("discarded");
     expect(machine2.mode).toBe("IDLE");
     h.db.close();
   });
