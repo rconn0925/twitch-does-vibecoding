@@ -18,7 +18,7 @@
  * the operator re-authorizes at /auth/start (routes owned by plan 02-04).
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { type AccessToken, exchangeCode, RefreshingAuthProvider } from "@twurple/auth";
 import type { Logger } from "pino";
@@ -188,7 +188,14 @@ function readPersistedToken(deps: TwitchAuthDeps): PersistedToken | null {
 }
 
 /** Persist token + userId. mode 0o600 where the platform honors it; on
- * Windows this is advisory — NTFS ACLs on the user profile apply instead. */
+ * Windows this is advisory — NTFS ACLs on the user profile apply instead.
+ *
+ * WR-06: write-to-temp + rename, never an in-place rewrite. persistToken
+ * runs on EVERY refresh for the life of the process; a crash/power-loss
+ * mid-write would truncate the file, and the next boot (plausibly a
+ * frantic mid-show restart right after that crash) would come up with
+ * Twitch dead AND the old refresh token gone. rename on the same volume
+ * is atomic — the file is always either the old token or the new one. */
 function persistToken(deps: TwitchAuthDeps, userId: string, token: AccessToken): void {
   mkdirSync(path.dirname(deps.tokenPath), { recursive: true });
   const persisted: PersistedToken = {
@@ -199,5 +206,7 @@ function persistToken(deps: TwitchAuthDeps, userId: string, token: AccessToken):
     expiresIn: token.expiresIn,
     obtainmentTimestamp: token.obtainmentTimestamp,
   };
-  writeFileSync(deps.tokenPath, JSON.stringify(persisted, null, 2), { mode: 0o600 });
+  const tmp = `${deps.tokenPath}.tmp`;
+  writeFileSync(tmp, JSON.stringify(persisted, null, 2), { mode: 0o600 });
+  renameSync(tmp, deps.tokenPath);
 }

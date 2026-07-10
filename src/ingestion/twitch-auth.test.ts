@@ -241,6 +241,29 @@ describe("completeAuthorization", () => {
     expect(again).not.toBeNull();
   });
 
+  it("token writes go via temp-file + rename: no .tmp residue, and an existing file is replaced atomically (WR-06)", async () => {
+    const tokenPath = tokenPathIn();
+    const { logger } = capturingLogger();
+    const deps = (accessToken: string) => ({
+      clientId: "cid",
+      clientSecret: "csec",
+      tokenPath,
+      logger,
+      makeProvider: () => fakeProvider().provider,
+      exchange: () => Promise.resolve(sampleToken({ accessToken })),
+    });
+    await completeAuthorization(deps("first-token"), "c1", "http://localhost:4900/auth/callback");
+    expect(existsSync(`${tokenPath}.tmp`)).toBe(false);
+    expect(existsSync(tokenPath)).toBe(true);
+
+    // Second persist (the refresh path rewrites the SAME file): the rename
+    // must replace the existing file — Windows included — with no residue.
+    await completeAuthorization(deps("second-token"), "c2", "http://localhost:4900/auth/callback");
+    expect(existsSync(`${tokenPath}.tmp`)).toBe(false);
+    const onDisk = JSON.parse(readFileSync(tokenPath, "utf8")) as Record<string, unknown>;
+    expect(onDisk.accessToken).toBe("second-token");
+  });
+
   it("registers the exchanged token on the LIVE provider when one is passed — never a throwaway (CR-03)", async () => {
     const tokenPath = tokenPathIn();
     const { provider: liveProvider, captured: liveCaptured } = fakeProvider();
