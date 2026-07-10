@@ -427,3 +427,46 @@ describe("session-start hygiene (D-07 + D-17)", () => {
     expect(all.some((r) => r.suggestion_text === "ancient row")).toBe(false);
   });
 });
+
+describe("round crash restore (e2e, D2-14)", () => {
+  it("a restart mid-round restores the open round with its tally before the console serves", async () => {
+    tempDir = mkdtempSync(path.join(tmpdir(), "round-restore-"));
+    const dbPath = path.join(tempDir, "audit.db");
+
+    // Session 1: pool two approved candidates, open a round, record one vote.
+    let handle = await createApp({ dbPath, port: 0, fakeClassifier: APPROVE_ALL });
+    app = handle;
+    for (const text of ["build a snake game", "build a pomodoro timer"]) {
+      const res = await postJson(`${baseUrl(handle)}/api/dev/submit`, { username: "tester", text });
+      expect(res.status).toBe(202);
+    }
+    await until(async () => ((await getState(handle)).pool.length === 2 ? true : undefined));
+    const started = await postJson(`${baseUrl(handle)}/api/round/start`, {});
+    expect(started.status).toBe(200);
+    expect(handle.round.recordVote("100123", 1)).toBe(true);
+
+    // "Crash": stop the process mid-round — the rounds row stays 'open' in SQLite.
+    await handle.close();
+    app = null;
+
+    // Session 2: createApp calls round.restore() BEFORE the console listens
+    // (D2-14 ordering), so the very first GET /api/state shows the round.
+    handle = await createApp({ dbPath, port: 0, fakeClassifier: APPROVE_ALL });
+    app = handle;
+    const res = await fetch(`${baseUrl(handle)}/api/state`);
+    expect(res.status).toBe(200);
+    const state = (await res.json()) as {
+      round: {
+        status: string;
+        totalVotes: number;
+        endsAtMs: number;
+        candidates: Array<{ option: number; votes: number }>;
+      } | null;
+    };
+    expect(state.round?.status).toBe("open");
+    expect(state.round?.totalVotes).toBe(1);
+    expect(state.round?.candidates[0]?.votes).toBe(1);
+    // The restored countdown is live, not expired: remaining time survives the restart.
+    expect(state.round ? state.round.endsAtMs : 0).toBeGreaterThan(Date.now());
+  });
+});
