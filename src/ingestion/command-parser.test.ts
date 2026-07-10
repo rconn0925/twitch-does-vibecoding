@@ -75,7 +75,7 @@ describe("parseCommand — non-commands and hostile input", () => {
       "!vote ‮1", // RTL override before the digit
       "‮!suggest rtl prefix",
       "!suggest 🐍🔥💀".repeat(300),
-      "!suggest " + "💣".repeat(3000),
+      `!suggest ${"💣".repeat(3000)}`,
       "!vote 😀",
       "﻿!vote 1", // BOM prefix
       "!suggest\t\ttabs\there",
