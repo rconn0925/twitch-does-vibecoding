@@ -35,6 +35,44 @@ export interface Narrator extends BuildNarrator {
   roundClosed(snap: RoundSnapshot): void;
   feedback(kind: FeedbackKind, displayName: string, categoryLabel?: string): void;
   error(text: string): void;
+
+  // ── Phase 4 window/chaos beats (PAID-01/02/03, CHAOS-01 — 04-UI-SPEC copy) ──
+  // Every beat is a low-frequency transition through the SAME rate-limited sender.
+  // Trigger-appropriate wording: DONATION windows say "tipped", channel-points
+  // windows say "redeemed" — a channel-points redeemer is never mislabelled a
+  // "donor". Copy-separation invariant (hard, mirrors D-08): the paid-window copy
+  // never mentions chance/luck/odds/random/roll; the chaos copy never mentions
+  // money/tips/donations/points/paying.
+  /** A DONATION-triggered window opened. `amount` is the pre-formatted "$X.XX" string. */
+  windowOpenedDonation(donor: string, amount: string, durationMs: number): void;
+  /** A CHANNEL-POINTS-triggered window opened. `reward` is the redeemed reward title. */
+  windowOpenedChannelPoints(user: string, reward: string, durationMs: number): void;
+  /** A grant was denied because a window is already active (D-05, never silent). */
+  windowDeniedActive(donor: string): void;
+  /** A grant was denied because the donor is inside the per-donor cooldown (D-04). */
+  windowDeniedCooldown(donor: string): void;
+  /**
+   * An in-window instruction was rejected by the gate (PAID-03 — narrated, never
+   * silent; window time is NOT consumed). `categoryLabel` is a viewer-safe
+   * CATEGORY_META label — never the internal code.
+   */
+  instructionRejected(donor: string, categoryLabel?: string): void;
+  /** An in-window instruction was held for streamer review (window time unaffected). */
+  instructionHeld(donor: string): void;
+  /** An in-window instruction cleared the gate and is queued for the build. */
+  instructionAccepted(donor: string, title: string): void;
+  /** 30-seconds-remaining beat — emitted only for windows ≥ 60s. */
+  window30sLeft(donor: string): void;
+  /** The window reached its full duration and closed (D-12). */
+  windowExpired(donor: string): void;
+  /** The streamer revoked the window early (PAID-03). */
+  windowRevoked(): void;
+  /** Chaos mode turned on. */
+  chaosOn(): void;
+  /** Chaos mode turned off — the vote loop resumes. */
+  chaosOff(): void;
+  /** A uniform-random chaos pick was made and queued (CHAOS-01). */
+  chaosPick(title: string): void;
 }
 
 /** UI-SPEC: titles inside chat messages truncate to 60 chars (incl. the ellipsis). */
@@ -46,6 +84,14 @@ const DEFAULT_COOLDOWN_SECONDS = 60;
 
 function truncateTitle(text: string): string {
   return text.length > TITLE_MAX_CHARS ? `${text.slice(0, TITLE_MAX_CHARS - 1)}…` : text;
+}
+
+/** Format a millisecond duration as m:ss (60000 → "1:00", 30000 → "0:30"). */
+function formatMmss(ms: number): string {
+  const totalSeconds = Math.round(ms / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 /** "1, 2 or 3" for a 3-candidate round; "1 or 2" for two (D2-04). */
@@ -221,6 +267,83 @@ export function createNarrator(deps: {
     buildVetoed(title: string): void {
       void deps.sender.send(
         `Build stopped — pulling the plug on "${truncateTitle(title)}". Standing by.`,
+      );
+    },
+
+    // ── Phase 4 window/chaos beats (04-UI-SPEC §Bot chat narration — VERBATIM) ──
+    // Trigger-appropriate wording + the copy-separation invariant baked into the
+    // strings: paid copy carries no chance/luck/odds/random/roll words; chaos copy
+    // carries no money/tip/donation/points/pay words.
+
+    windowOpenedDonation(donor: string, amount: string, durationMs: number): void {
+      void deps.sender.send(
+        `@${donor} tipped ${amount} and takes the wheel — free reign for ${formatMmss(durationMs)}! Type !build <your instruction> to use it.`,
+      );
+    },
+
+    windowOpenedChannelPoints(user: string, reward: string, durationMs: number): void {
+      void deps.sender.send(
+        `@${user} redeemed ${reward} — direct control for ${formatMmss(durationMs)}! Type !build <your instruction> to use it.`,
+      );
+    },
+
+    windowDeniedActive(donor: string): void {
+      void deps.sender.send(
+        `Thanks @${donor} — a control window is already running, so this one can't open. One window at a time.`,
+      );
+    },
+
+    windowDeniedCooldown(donor: string): void {
+      void deps.sender.send(
+        `Thanks @${donor} — you're on cooldown from your last window. Try again in a bit.`,
+      );
+    },
+
+    instructionRejected(donor: string, categoryLabel?: string): void {
+      void deps.sender.send(
+        `Can't build that one, @${donor} — it didn't pass the safety check (${categoryLabel ?? "not allowed here"}). Your window's still open — try another idea.`,
+      );
+    },
+
+    instructionHeld(donor: string): void {
+      void deps.sender.send(
+        `That one needs a human look first, @${donor} — the streamer's checking it. Your window's still open.`,
+      );
+    },
+
+    instructionAccepted(donor: string, title: string): void {
+      void deps.sender.send(`Locked in — building @${donor}'s pick: "${truncateTitle(title)}".`);
+    },
+
+    window30sLeft(donor: string): void {
+      void deps.sender.send(`30 seconds left on @${donor}'s window.`);
+    },
+
+    windowExpired(donor: string): void {
+      void deps.sender.send(
+        `Time's up — @${donor}'s window is closed. Back to the regular show.`,
+      );
+    },
+
+    windowRevoked(): void {
+      void deps.sender.send(
+        "Streamer's call — the control window is closed early. Back to the regular show.",
+      );
+    },
+
+    chaosOn(): void {
+      void deps.sender.send(
+        "CHAOS MODE ON — the next build is a random pick from the approved pool. No votes.",
+      );
+    },
+
+    chaosOff(): void {
+      void deps.sender.send("Chaos mode off — voting is back.");
+    },
+
+    chaosPick(title: string): void {
+      void deps.sender.send(
+        `Chaos pick: "${truncateTitle(title)}" — no vote needed, building it now.`,
       );
     },
   };
