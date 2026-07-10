@@ -9,7 +9,7 @@ import { purgeOldAuditRecords } from "./audit/purge.js";
 import { recordChaosPick, recordChaosToggled, recordPoolDropped } from "./audit/record.js";
 import { pickChaos } from "./chaos/selector.js";
 import { CATEGORY_META, isLegalCategory } from "./compliance/categories.js";
-import { classifierDepsFromEnv } from "./compliance/classifier.js";
+import type { ClassifierTransport } from "./compliance/classifier.js";
 import { classify, type FakeClassifier, type GateDeps } from "./compliance/gate.js";
 import {
   ControlWindow,
@@ -117,10 +117,17 @@ export interface CreateAppOptions {
   overlayPort?: number;
   /**
    * Test-injected classifier (vitest never talks to the network). When absent,
-   * the live Sonnet classifier is wired from ANTHROPIC_API_KEY; with neither,
-   * every submission fails closed (D-11).
+   * the live plan-billed Sonnet transport (classifierTransport) is used; with
+   * neither, every submission fails closed (D-11).
    */
   fakeClassifier?: FakeClassifier;
+  /**
+   * Plan-billed classifier transport (Sonnet via the Agent SDK query() under
+   * src/orchestrator/), built by the entrypoint's guarded dynamic import. Absent
+   * in tests (a fakeClassifier is injected instead) and whenever the Agent SDK
+   * fails to load — the gate then fails closed on every submission (D-2/D-11).
+   */
+  classifierTransport?: ClassifierTransport;
   /**
    * Chat seams (plan 02-04): when BOTH are present — injected test fakes or
    * the real twurple adapters built by the entrypoint branch — createApp
@@ -311,12 +318,13 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     }
   });
 
-  // Compliance-gate deps: injected fake in tests; live Sonnet from
-  // ANTHROPIC_API_KEY otherwise; neither -> classify() fails closed (D-11).
-  const classifierDeps = opts.fakeClassifier ? null : classifierDepsFromEnv(logger);
-  if (!opts.fakeClassifier && !classifierDeps) {
+  // Compliance-gate deps: injected fake in tests; live plan-billed Sonnet
+  // transport (Agent SDK query() via `claude login`) otherwise; neither ->
+  // classify() fails closed (D-11).
+  const classifierTransport = opts.fakeClassifier ? null : (opts.classifierTransport ?? null);
+  if (!opts.fakeClassifier && !classifierTransport) {
     logger.warn(
-      "ANTHROPIC_API_KEY not set — the compliance gate will fail closed on every submission",
+      "COMPLIANCE CLASSIFIER UNAVAILABLE — no plan-billed transport wired; the gate will FAIL CLOSED on every submission until `claude login` / plan credentials are available",
     );
   }
   const gateDeps: GateDeps = {
@@ -324,7 +332,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     logger,
     streamModeProvider: () => machine.mode,
     ...(opts.fakeClassifier ? { fakeClassifier: opts.fakeClassifier } : {}),
-    ...(classifierDeps ? { classifier: classifierDeps } : {}),
+    ...(classifierTransport ? { classifier: { transport: classifierTransport, logger } } : {}),
   };
 
   // Shared re-classification path (D2-05): a stale pool winner OR a stale chaos
@@ -1367,6 +1375,28 @@ async function buildOrchestratorAdapters(logger: Logger): Promise<OrchestratorAp
 }
 
 /**
+ * Entrypoint-only classifier-transport construction (buildOrchestratorAdapters
+ * pattern): a guarded dynamic import so vitest never loads the real Agent SDK
+ * and a missing/broken SDK degrades to a LOUD log + a fail-closed gate rather
+ * than a crash. Billing is Claude-plan credits via `claude login` —
+ * ANTHROPIC_API_KEY stays UNSET on the streaming machine (CLAUDE.md "What NOT to
+ * Use"). Absent transport → the gate fails closed on every submission (D-2/D-11).
+ */
+async function buildClassifierTransport(logger: Logger): Promise<ClassifierTransport | undefined> {
+  try {
+    const { createClassifierTransport } = await import("./orchestrator/classifier-runner.js");
+    logger.info("COMPLIANCE CLASSIFIER ARMED — plan-billed Sonnet transport (Agent SDK query())");
+    return createClassifierTransport();
+  } catch (err) {
+    logger.error(
+      { err },
+      "COMPLIANCE CLASSIFIER UNAVAILABLE — Agent SDK failed to load; the gate will FAIL CLOSED on every submission until `claude login` / plan credentials are available",
+    );
+    return undefined;
+  }
+}
+
+/**
  * Entrypoint-only StreamElements donation adapter (buildTwitchAdapters pattern):
  * connectStreamElements dynamically imports socket.io-client, so vitest never
  * opens a real socket. Guarded behind STREAMELEMENTS_JWT presence — an absent
@@ -1414,8 +1444,9 @@ if (isMain) {
     buildTwitchAdapters(bootLogger),
     buildOrchestratorAdapters(bootLogger),
     buildDonationAdapter(bootLogger),
+    buildClassifierTransport(bootLogger),
   ])
-    .then(([twitchOpts, orchestratorOpts, donationSource]) =>
+    .then(([twitchOpts, orchestratorOpts, donationSource, classifierTransport]) =>
       createApp({
         dbPath,
         port,
@@ -1425,6 +1456,7 @@ if (isMain) {
         ...twitchOpts,
         ...orchestratorOpts,
         ...(donationSource ? { donationSource } : {}),
+        ...(classifierTransport ? { classifierTransport } : {}),
       }),
     )
     .then((app) =>
