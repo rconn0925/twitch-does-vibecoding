@@ -275,6 +275,7 @@ describe("overlay server (read-only broadcast surface)", () => {
     const closed = new Promise<void>((resolve) => {
       ws.on("close", () => resolve());
     });
+    handles.splice(handles.indexOf(handle), 1); // closed here, not in afterEach
     await handle.close();
     await closed;
   });
@@ -283,7 +284,8 @@ describe("overlay server (read-only broadcast surface)", () => {
     const machine = new StreamModeMachine();
     const { handle } = await start({ machine });
     const base = `http://127.0.0.1:${handle.port}`;
-    const pill = async () => ((await (await fetch(`${base}/api/state`)).json()) as OverlayState).pill;
+    const pill = async () =>
+      ((await (await fetch(`${base}/api/state`)).json()) as OverlayState).pill;
 
     expect(await pill()).toBe("STANDBY");
     machine.transition("VOTING_ROUND");
