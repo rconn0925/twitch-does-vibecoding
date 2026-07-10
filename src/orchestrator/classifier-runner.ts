@@ -10,7 +10,7 @@
  *
  * Billing: `query()` authenticates via `claude login` persisted credentials, so
  * the gate draws on Claude plan/subscription credits — NOT the metered raw
- * @anthropic-ai/sdk Messages API (CLAUDE.md "What NOT to Use": ANTHROPIC_API_KEY
+ * Anthropic Messages API (CLAUDE.md "What NOT to Use": ANTHROPIC_API_KEY
  * stays UNSET on the streaming machine). If credentials are unavailable the call
  * throws; the compliance layer's retry/backoff then fails CLOSED (never open).
  *
