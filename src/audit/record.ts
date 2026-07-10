@@ -1,5 +1,8 @@
 import type Database from "better-sqlite3";
 import type {
+  BuildHistoryRow,
+  BuildProvenance,
+  BuildResult,
   GateCategory,
   GateDecision,
   PipelineStage,
@@ -541,6 +544,83 @@ export function recordChaosPick(
     streamMode: args.streamMode,
     taskId: args.taskId,
   });
+}
+
+// ── Phase 5: build-history changelog ledger (HIST-01, D-01/D-02/D-03) ────────
+// A SEPARATE append-only table from audit_log — no VIEW over audit_log can
+// losslessly reconstruct a changelog entry (D-01 VERDICT), so build_history gets
+// its OWN INSERT/SELECT pair (NOT the audit_log-shaped insert() helper above).
+// ONE row per COMPLETED build; recordBuildHistory is called ONLY from finalize()
+// with an already gate-approved QueuedTask.text (D-03, T-05-01), never on abort
+// (CR-01). Still insert/read only — the append-only ledger discipline holds (no
+// mutating write path exists for this table at the application layer).
+
+const INSERT_BUILD_HISTORY_SQL = `
+  INSERT INTO build_history
+    (task_id, title, provenance, result, created_at_ms)
+  VALUES
+    (@taskId, @title, @provenance, @result, @createdAtMs)
+`;
+
+/**
+ * Append ONE build_history row for a completed build. `title` MUST be the
+ * gate-APPROVED QueuedTask.text (D-03) — never raw pre-gate suggestion text.
+ * `provenance` is threaded explicitly from the build-trigger site (T-05-03) and
+ * `result` is the honest terminal outcome (T-05-02). Append-only: this insert is
+ * the SOLE write path — no mutating counterpart exists.
+ */
+export function recordBuildHistory(
+  db: Database.Database,
+  args: { taskId: string; title: string; provenance: BuildProvenance; result: BuildResult },
+): void {
+  db.prepare(INSERT_BUILD_HISTORY_SQL).run({
+    taskId: args.taskId,
+    title: args.title,
+    provenance: args.provenance,
+    result: args.result,
+    createdAtMs: Date.now(),
+  });
+}
+
+interface BuildHistoryDbRow {
+  id: number;
+  task_id: string;
+  title: string;
+  provenance: string;
+  result: string;
+  created_at_ms: number;
+}
+
+/**
+ * Read the changelog newest-first (created_at_ms DESC, id DESC) with a bounded
+ * limit. `beforeMs` is the pagination cursor — only rows strictly older than it
+ * (created_at_ms < beforeMs) are returned, mirroring listAuditRecords' clause
+ * builder. The stream-night grouping is derived by the caller on read (D-02).
+ */
+export function listBuildHistory(
+  db: Database.Database,
+  args: { limit: number; beforeMs?: number },
+): BuildHistoryRow[] {
+  const clauses: string[] = [];
+  const params: Record<string, unknown> = { limit: args.limit };
+  if (args.beforeMs !== undefined) {
+    clauses.push("created_at_ms < @beforeMs");
+    params.beforeMs = args.beforeMs;
+  }
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+  const rows = db
+    .prepare(
+      `SELECT * FROM build_history ${where} ORDER BY created_at_ms DESC, id DESC LIMIT @limit`,
+    )
+    .all(params) as BuildHistoryDbRow[];
+  return rows.map((r) => ({
+    id: r.id,
+    taskId: r.task_id,
+    title: r.title,
+    provenance: r.provenance as BuildProvenance,
+    result: r.result as BuildResult,
+    createdAtMs: r.created_at_ms,
+  }));
 }
 
 /** Read the ledger newest-first with optional filters. */

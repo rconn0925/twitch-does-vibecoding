@@ -118,3 +118,30 @@ CREATE TABLE IF NOT EXISTS control_windows (
   closed_at_ms     INTEGER                          -- null while active; set on expiry/revoke
 );
 CREATE INDEX IF NOT EXISTS idx_control_windows_status ON control_windows(status);
+
+-- Phase 5 build-history changelog ledger (HIST-01, D-01/D-02/D-03). A dedicated
+-- APPEND-ONLY table — ONE row per COMPLETED build (finalize with done/failed/refused),
+-- never per abort (CR-01). It exists because no VIEW over audit_log can losslessly
+-- reconstruct a changelog entry (recordPipelineStage writes suggestion_text=null,
+-- recordGateDecision writes task_id=null — the D-01 VERDICT).
+--   title      = the gate-APPROVED QueuedTask.text ONLY (D-03) — raw pre-gate /
+--                rejected-at-intake suggestion text must NEVER reach this table.
+--                Holds by construction: recordBuildHistory is called only from
+--                finalize() with an already-branded QueuedTask (single funnel).
+--   provenance = how the build was selected: 'vote' | 'donation' | 'channel_points'
+--                | 'chaos' — threaded explicitly from each build-trigger site, never
+--                mode-inferred (T-05-03 mis-attribution mitigation).
+--   result     = the honest terminal outcome: 'built' | 'refused' | 'failed'
+--                (done->built, 1:1 with the pipeline's terminal stage; T-05-02).
+--   created_at_ms is the completion timestamp; the STREAM-NIGHT grouping key is
+--   derived on READ from it (D-02) — no session/day column exists BY DESIGN.
+-- Append-only: no UPDATE/DELETE path exists at the application layer (T-05-01).
+CREATE TABLE IF NOT EXISTS build_history (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id       TEXT NOT NULL,                    -- links to the completed QueuedTask
+  title         TEXT NOT NULL,                    -- gate-APPROVED task.text ONLY (D-03)
+  provenance    TEXT NOT NULL,                    -- 'vote' | 'donation' | 'channel_points' | 'chaos'
+  result        TEXT NOT NULL,                    -- 'built' | 'refused' | 'failed'
+  created_at_ms INTEGER NOT NULL                  -- Date.now() at completion; night grouping derived on read (D-02)
+);
+CREATE INDEX IF NOT EXISTS idx_build_history_created_at ON build_history(created_at_ms);
