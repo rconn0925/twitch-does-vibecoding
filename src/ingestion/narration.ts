@@ -52,6 +52,12 @@ export interface Narrator extends BuildNarrator {
   /** A grant was denied because the donor is inside the per-donor cooldown (D-04). */
   windowDeniedCooldown(donor: string): void;
   /**
+   * A grant was denied because the stream is NOT IDLE — a voting round or a
+   * build is mid-flight (CR-01). The HONEST reason (never "a window is already
+   * running", which would be a lie when no window is live).
+   */
+  windowDeniedNotIdle(donor: string): void;
+  /**
    * An in-window instruction was rejected by the gate (PAID-03 — narrated, never
    * silent; window time is NOT consumed). `categoryLabel` is a viewer-safe
    * CATEGORY_META label — never the internal code.
@@ -296,6 +302,12 @@ export function createNarrator(deps: {
     windowDeniedCooldown(donor: string): void {
       void deps.sender.send(
         `Thanks @${donor} — you're on cooldown from your last window. Try again in a bit.`,
+      );
+    },
+
+    windowDeniedNotIdle(donor: string): void {
+      void deps.sender.send(
+        `Thanks @${donor} — the show's mid-round or mid-build right now, so a control window can't open yet. Try again in a bit.`,
       );
     },
 

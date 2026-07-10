@@ -178,7 +178,7 @@ describe("ControlWindow.open (PAID-01/02, D-04/D-05)", () => {
     expect(h.machine.mode).toBe("FREE_REIGN_WINDOW");
   });
 
-  it("refuses opening when the stream is not IDLE (precedence): not-idle", () => {
+  it("refuses opening when the stream is not IDLE (precedence): not-idle + window_denied(not-idle)", () => {
     h = makeHarness();
     h.machine.transition("VOTING_ROUND");
     let caught: ControlWindowError | null = null;
@@ -189,6 +189,13 @@ describe("ControlWindow.open (PAID-01/02, D-04/D-05)", () => {
     }
     expect(caught?.reason).toBe("not-idle");
     expect(h.machine.mode).toBe("VOTING_ROUND");
+
+    // CR-01: a not-idle denial is NOT silent — it leaves a durable window_denied
+    // row (reason "not-idle", captured in the mode the tip arrived in).
+    const denied = listAuditRecords(h.db, { limit: 10, eventType: "window_denied" });
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.category).toBe("not-idle");
+    expect(denied[0]?.stream_mode).toBe("VOTING_ROUND");
   });
 });
 

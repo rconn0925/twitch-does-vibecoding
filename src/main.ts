@@ -483,7 +483,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       armWindowThirtyBeat(tip.displayName, snap.durationMs);
     } catch (err) {
       if (err instanceof ControlWindowError) {
+        // CR-01: narrate the TRUE reason — a not-idle denial is not a
+        // "window already running" (no window is live; a round/build is).
         if (err.reason === "cooldown") windowNarrator?.windowDeniedCooldown(tip.displayName);
+        else if (err.reason === "not-idle") windowNarrator?.windowDeniedNotIdle(tip.displayName);
         else windowNarrator?.windowDeniedActive(tip.displayName);
         return;
       }
@@ -507,7 +510,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       armWindowThirtyBeat(redemption.user_name, snap.durationMs);
     } catch (err) {
       if (err instanceof ControlWindowError) {
+        // CR-01: honest not-idle copy (see openWindowFromDonation).
         if (err.reason === "cooldown") windowNarrator?.windowDeniedCooldown(redemption.user_name);
+        else if (err.reason === "not-idle")
+          windowNarrator?.windowDeniedNotIdle(redemption.user_name);
         else windowNarrator?.windowDeniedActive(redemption.user_name);
         return;
       }

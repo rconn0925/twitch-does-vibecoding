@@ -188,6 +188,15 @@ export class ControlWindow {
       throw new ControlWindowError("window-active");
     }
     if (this.#machine.mode !== "IDLE") {
+      // CR-01: a tip arriving mid-round / mid-build (the routine, frequent case)
+      // must still leave a durable window_denied row — the compliance record of
+      // truth for real money can never go silent (never-silent doctrine).
+      recordWindowDenied(this.#db, {
+        trigger: request.trigger,
+        donorIdentifier: request.donorIdentifier,
+        reason: "not-idle",
+        streamMode: this.#machine.mode,
+      });
       this.#logger?.warn(
         { donor: request.donorIdentifier, mode: this.#machine.mode },
         "control window request denied — stream not idle",

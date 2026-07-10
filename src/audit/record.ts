@@ -474,15 +474,20 @@ export function recordWindowRevoked(
 
 /**
  * One row per window DENIAL — a donation/redemption arriving while a window is
- * already active, or inside the per-donor cooldown, is turned away NEVER silently
- * (D-05, never-silent doctrine). `reason` carries which guard fired.
+ * already active, inside the per-donor cooldown, or while the stream is NOT
+ * IDLE (a voting round / build in progress) is turned away NEVER silently
+ * (D-05/CR-01, never-silent doctrine). `reason` carries which guard fired:
+ *   - "already-active" — a control window is already live (D-05)
+ *   - "cooldown"       — the donor is inside the per-donor cooldown (D-04)
+ *   - "not-idle"       — the show is mid-round / mid-build (CR-01): a real-money
+ *                        event must leave a ledger trace even in this routine case
  */
 export function recordWindowDenied(
   db: Database.Database,
   args: {
     trigger: WindowTriggerArg;
     donorIdentifier: string;
-    reason: "already-active" | "cooldown";
+    reason: "already-active" | "cooldown" | "not-idle";
     streamMode: StreamMode;
   },
 ): void {
