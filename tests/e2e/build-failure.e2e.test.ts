@@ -299,6 +299,15 @@ describe("build-failure e2e — never silent (BUILD-03 / D3-09)", () => {
     // Capture the build's AbortController as it's registered.
     const controllerSpy = vi.spyOn(app.registry, "registerController");
 
+    // CR-01: watch every overlay build-stage the public broadcast would render.
+    const orch = app.orchestrator;
+    if (!orch) throw new Error("orchestrator was not composed");
+    const seen: PipelineStage[] = [];
+    orch.on(BUILD_STAGE_CHANGED, () => {
+      const snap = orch.snapshot();
+      if (snap) seen.push(snap.stage);
+    });
+
     drivePooledWinner(app);
     // Wait until the sandboxed build is live (`building`).
     await until(async () =>
@@ -319,9 +328,24 @@ describe("build-failure e2e — never silent (BUILD-03 / D3-09)", () => {
     expect(sandbox.terminate).toHaveBeenCalled();
     // The veto-abort was narrated on chat (D3-10).
     await until(() => sent.some((s) => s.includes("pulling the plug")));
-    // A sandbox_teardown audit row is present (from the abort path or the
-    // build session's own cleanup) — the abort is a recorded event.
 
-    gated.release(); // let the held generator unwind so the app closes cleanly
+    // Release the held build generator so the aborted pipeline unwinds to its
+    // terminal-abort finalize (CR-01), which writes the sandbox_teardown row.
+    const db = app.db;
+    gated.release();
+    await until(() =>
+      listAuditRecords(db, { limit: 50, eventType: "sandbox_teardown" }).length > 0
+        ? true
+        : undefined,
+    );
+
+    // CR-01 (THE fix): a vetoed/halted build must NEVER be reported as `done`.
+    // The public overlay never renders the "BUILT IT" celebration…
+    expect(seen).not.toContain("done");
+    // …and the compliance ledger carries NO `pipeline_stage: done` row for this
+    // build — only the terminal `sandbox_teardown` row stands in for the abort.
+    expect(
+      listAuditRecords(db, { limit: 50, eventType: "pipeline_stage", decision: "done" }),
+    ).toHaveLength(0);
   });
 });

@@ -106,6 +106,12 @@ export interface BuildSessionDeps {
    * through here so the show is never silent.
    */
   narrator?: BuildNarrator;
+  /**
+   * WR-07 per-turn watchdog bound (ms); defaults to DEFAULT_TURN_TIMEOUT_MS.
+   * Injectable so tests can drive the hung-stream path deterministically without
+   * waiting on the production-scale default.
+   */
+  turnTimeoutMs?: number;
   logger?: Logger;
 }
 
@@ -167,6 +173,24 @@ function buildPlanPrompt(
 /** Tool names whose output is re-screened in-flight (D3-07). */
 const WRITE_EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
+/**
+ * WR-07 per-turn watchdog bound. If an agent `query()` stream stalls without
+ * yielding AND without honoring the abort signal, this timeout aborts the
+ * controller and resolves the turn as `failed`, so a hung stream can never pin
+ * the pipeline open in BUILD_IN_PROGRESS live on stream (T-03-22). Generous by
+ * default (real research/build turns are minutes-scale); injectable so tests
+ * never wait on it.
+ */
+const DEFAULT_TURN_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * WR-05 bound on how long close() waits for an aborted in-flight pipeline to
+ * drain before proceeding to db.close(). Short so a stream that ignores the
+ * abort can never hang shutdown live on stream; the auditIfOpen guard covers the
+ * rare case where the pipeline resumes after this bound elapses.
+ */
+const CLOSE_DRAIN_MS = 2_000;
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
@@ -215,6 +239,11 @@ export function extractWriteEditText(message: unknown): string | null {
     if (typeof input.file_path === "string") parts.push(input.file_path);
     if (typeof input.content === "string") parts.push(input.content);
     if (typeof input.new_string === "string") parts.push(input.new_string);
+    // WR-02: NotebookEdit uses `notebook_path`/`new_source` (NOT
+    // file_path/content/new_string). Without these its written text yields no
+    // batch → the D3-07 in-flight COMP-02 re-screen would silently skip it.
+    if (typeof input.notebook_path === "string") parts.push(input.notebook_path);
+    if (typeof input.new_source === "string") parts.push(input.new_source);
     if (Array.isArray(input.edits)) {
       for (const edit of input.edits) {
         const e = asRecord(edit);
@@ -231,6 +260,12 @@ type TurnOutcome = "ok" | "refused" | "failed" | "compliance-rejected";
 interface TurnResult {
   text: string;
   outcome: TurnOutcome;
+  /**
+   * WR-07: true when the per-turn watchdog fired (a hung/stalled stream). The
+   * caller routes this as a narrated `failed` decision — NOT as a silent
+   * external abort — even though the watchdog also aborted the controller.
+   */
+  timedOut?: boolean;
 }
 
 /** Map a COMP-02 outcome disposition onto the gate decision vocabulary for audit. */
@@ -254,16 +289,38 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     null;
 
   const streamMode = () => deps.machine.mode;
+  const turnTimeoutMs = deps.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+  /**
+   * WR-05: the in-flight pipeline promise. close() aborts the controller AND
+   * awaits this so a resumed abort path can never write to a closed db.
+   */
+  let running: Promise<void> | null = null;
+
+  /**
+   * WR-05: append a ledger row ONLY while the db handle is still open. During
+   * shutdown the resumed abort path can reach here AFTER db.close(); a guarded
+   * no-op keeps teardown from throwing on a closed better-sqlite3 handle (which
+   * otherwise cascades into an unhandled rejection on the winner build path).
+   */
+  function auditIfOpen(write: () => void): void {
+    if (!deps.db.open) {
+      deps.logger?.warn("skipping audit write — db is closed (shutdown teardown, WR-05)");
+      return;
+    }
+    write();
+  }
 
   /** Emit one pipeline stage: audit row → overlay push → progress sink. */
   function emitStage(task: QueuedTask, stage: PipelineStage, summary?: string): void {
     const view: BuildStatusView = { taskId: task.id, title: task.text, stage };
-    recordPipelineStage(deps.db, {
-      taskId: task.id,
-      stage,
-      streamMode: streamMode(),
-      summary: summary ?? null,
-    });
+    auditIfOpen(() =>
+      recordPipelineStage(deps.db, {
+        taskId: task.id,
+        stage,
+        streamMode: streamMode(),
+        summary: summary ?? null,
+      }),
+    );
     current = view;
     emitter.emit(BUILD_STAGE_CHANGED);
     deps.progress.push(view);
@@ -303,6 +360,52 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   }
 
   /**
+   * CR-01 terminal-abort path for a build the streamer HALTED / vetoed / a
+   * shutdown killed. It is NEITHER a success NOR a narrated failure:
+   *   - it writes a `sandbox_teardown` audit row, NOT `pipeline_stage: done`, so
+   *     the compliance ledger never records a force-killed build as completed;
+   *   - it collapses the overlay build panel by clearing `current` and emitting
+   *     BUILD_STAGE_CHANGED WITHOUT ever pushing a `done` stage — so the public
+   *     broadcast never fires the "BUILT IT" celebration for a killed build;
+   *   - it returns to IDLE ONLY when the machine is NOT HALTED (during a halt the
+   *     kill switch owns the HALTED state — leave it there);
+   *   - it dequeues and unregisters (clean exit, never leaves BUILD_IN_PROGRESS
+   *     stuck, T-03-22).
+   * The kill-switch path (abortActiveWork) owns the actual process teardown + the
+   * buildVetoed chat beat; this only makes the terminal record honest.
+   */
+  function finalizeAborted(task: QueuedTask): void {
+    auditIfOpen(() =>
+      recordSandboxTeardown(deps.db, {
+        taskId: task.id,
+        streamMode: streamMode(),
+        rationale:
+          "build aborted (streamer halt/veto/shutdown) — terminal teardown, NOT a completion (CR-01)",
+      }),
+    );
+    // Collapse the overlay panel WITHOUT a `done` beat: null the snapshot, then
+    // emit so the overlay re-reads snapshot()=null (panel hides) — never stage=done.
+    current = null;
+    active = null;
+    emitter.emit(BUILD_STAGE_CHANGED);
+    try {
+      // Leave HALTED alone — the kill switch owns it. Only return to IDLE for a
+      // non-halt abort (e.g. shutdown), mirroring finalize()'s guarded transition.
+      if (deps.machine.mode === "BUILD_IN_PROGRESS") {
+        deps.machine.transition("IDLE");
+      }
+      deps.machine.setActiveTask(null, null);
+    } catch (err) {
+      deps.logger?.error(
+        { err, taskId: task.id },
+        "failed to return machine to IDLE after aborted build",
+      );
+    }
+    deps.registry.unregister(task.id);
+    deps.taskQueue.remove(task.id);
+  }
+
+  /**
    * Consume one agent turn's message stream: collect generated text, watch for
    * a model refusal / failure result, and (build turn only) re-screen each
    * Write/Edit output batch through COMP-02. Never throws.
@@ -315,55 +418,86 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   ): Promise<TurnResult> {
     const texts: string[] = [];
     let outcome: TurnOutcome = "ok";
-    try {
-      for await (const message of stream) {
-        if (ac.signal.aborted) break;
+    let timedOut = false;
 
-        const text = extractAssistantText(message);
-        if (text !== null) texts.push(text);
+    // WR-07: a per-turn watchdog. If the stream stalls without yielding and
+    // without honoring the abort signal, the watchdog aborts the controller and
+    // wins the race below, resolving the turn as `failed` — the pipeline can
+    // never stay pinned in BUILD_IN_PROGRESS on a hung stream.
+    let watchdog: NodeJS.Timeout | undefined;
+    const watchdogFired = new Promise<void>((resolve) => {
+      watchdog = setTimeout(() => {
+        timedOut = true;
+        ac.abort();
+        resolve();
+      }, turnTimeoutMs);
+      watchdog.unref?.();
+    });
 
-        // In-flight COMP-02 (D3-07): re-screen each Write/Edit output batch.
-        if (inFlightScreen) {
-          const batch = extractWriteEditText(message);
-          if (batch !== null) {
-            const screen = await screenOutputBatch(deps.comp02, {
-              taskId: task.id,
-              outputText: batch,
-            });
-            recordComp02Decision(deps.db, {
-              taskId: task.id,
-              decision: screen.proceed ? "approved" : comp02Decision(screen.disposition),
-              category: screen.proceed ? null : "category" in screen ? screen.category : null,
-              rationale: "COMP-02 in-flight output re-screen (D3-07)",
-              streamMode: streamMode(),
-            });
-            if (!screen.proceed) {
-              outcome = "compliance-rejected";
-              break;
+    const consume = (async (): Promise<void> => {
+      try {
+        for await (const message of stream) {
+          if (ac.signal.aborted) break;
+
+          const text = extractAssistantText(message);
+          if (text !== null) texts.push(text);
+
+          // In-flight COMP-02 (D3-07): re-screen each Write/Edit output batch.
+          if (inFlightScreen) {
+            const batch = extractWriteEditText(message);
+            if (batch !== null) {
+              const screen = await screenOutputBatch(deps.comp02, {
+                taskId: task.id,
+                outputText: batch,
+              });
+              recordComp02Decision(deps.db, {
+                taskId: task.id,
+                decision: screen.proceed ? "approved" : comp02Decision(screen.disposition),
+                category: screen.proceed ? null : "category" in screen ? screen.category : null,
+                rationale: "COMP-02 in-flight output re-screen (D3-07)",
+                streamMode: streamMode(),
+              });
+              if (!screen.proceed) {
+                outcome = "compliance-rejected";
+                break;
+              }
             }
           }
-        }
 
-        const stage = translate(message);
-        if (stage === "refused") {
-          outcome = "refused";
-          break;
+          const stage = translate(message);
+          if (stage === "refused") {
+            outcome = "refused";
+            break;
+          }
+          if (stage === "failed") {
+            outcome = "failed";
+            break;
+          }
+          if (stage === "done") {
+            // A turn-level success result ends this turn (not necessarily the
+            // whole pipeline — the caller decides what the next stage is).
+            break;
+          }
         }
-        if (stage === "failed") {
-          outcome = "failed";
-          break;
-        }
-        if (stage === "done") {
-          // A turn-level success result ends this turn (not necessarily the
-          // whole pipeline — the caller decides what the next stage is).
-          break;
-        }
+      } catch (err) {
+        deps.logger?.error({ err, taskId: task.id }, "agent turn threw — failing closed");
+        outcome = "failed";
       }
-    } catch (err) {
-      deps.logger?.error({ err, taskId: task.id }, "agent turn threw — failing closed");
+    })();
+
+    try {
+      await Promise.race([consume, watchdogFired]);
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+    }
+    if (timedOut) {
+      deps.logger?.error(
+        { taskId: task.id, turnTimeoutMs },
+        "agent turn exceeded the per-turn watchdog — aborting + failing the turn (WR-07)",
+      );
       outcome = "failed";
     }
-    return { text: texts.join("\n").trim(), outcome };
+    return { text: texts.join("\n").trim(), outcome, timedOut };
   }
 
   /** Run one agent turn via the injected runner. Never throws (fail-closed). */
@@ -487,10 +621,36 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       true,
     );
 
-    // A streamer halt/veto aborted this turn mid-stream: finalize quietly — the
-    // kill-switch path (abortActiveWork) owns teardown and the buildVetoed beat.
-    if (abortedNow(ac)) {
-      finalize(task, "done");
+    // A streamer halt/veto/shutdown aborted this turn mid-stream (NOT the WR-07
+    // watchdog): take the terminal-abort path — collapse the panel WITHOUT a
+    // `done` beat and write a teardown row, NOT a `done` completion (CR-01). The
+    // kill-switch path (abortActiveWork) owns process teardown + the buildVetoed
+    // beat.
+    if (abortedNow(ac) && !buildTurn.timedOut) {
+      finalizeAborted(task);
+      return;
+    }
+    // WR-07: a hung build stream tripped the watchdog. Tear down the sandbox so
+    // the WSL2 distro can't linger, then surface a narrated retry/skip decision
+    // (never silent, never auto-retry on the already-aborted controller).
+    if (buildTurn.timedOut) {
+      try {
+        await deps.sandboxAdapter.terminate();
+      } catch (err) {
+        deps.logger?.error(
+          { err, taskId: task.id },
+          "sandbox teardown failed after per-turn watchdog timeout",
+        );
+      }
+      auditIfOpen(() =>
+        recordSandboxTeardown(deps.db, {
+          taskId: task.id,
+          streamMode: streamMode(),
+          rationale: "per-turn watchdog timeout — hung build stream torn down (WR-07)",
+        }),
+      );
+      deps.narrator?.buildDeciding(task.text);
+      enterDecision(task, planText, "failed");
       return;
     }
 
@@ -555,7 +715,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         ac,
         false,
       );
-      if (abortedNow(ac)) return finalize(task, "done");
+      if (abortedNow(ac) && !researchTurn.timedOut) return finalizeAborted(task);
       if (researchTurn.outcome !== "ok") {
         return handleTurnFailure(task, researchTurn.outcome, null);
       }
@@ -576,7 +736,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         ac,
         false,
       );
-      if (abortedNow(ac)) return finalize(task, "done");
+      if (abortedNow(ac) && !planTurn.timedOut) return finalizeAborted(task);
       if (planTurn.outcome !== "ok") {
         return handleTurnFailure(task, planTurn.outcome, null);
       }
@@ -596,11 +756,18 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         // drop; held → route to console review (D-08). Both end cleanly WITHOUT
         // running the build query() and WITHOUT a retry/skip decision.
         if (screen.disposition === "held") {
+          // WR-03: never silent. Narrate the held outcome (distinct from a hard
+          // rejection) so chat hears why the build stopped, hand the plan to the
+          // review-routing hook, and audit it (comp02_decision: held-for-review +
+          // pipeline_stage: refused below). D-08 console review-queue *routing* is
+          // still deferred — the hook currently logs an audited warning rather
+          // than re-queuing; the drop is explicit + narrated, not a silent stub.
+          deps.narrator?.buildHeld(task.text);
           deps.onHeldForReview?.(task, planText);
           return finalize(
             task,
             "refused",
-            "COMP-02 held the build plan for streamer review (D-08)",
+            "COMP-02 held the build plan for streamer review (D-08 routing deferred; held audited + narrated)",
           );
         }
         deps.narrator?.comp02Rejected(task.text);
@@ -621,6 +788,20 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     }
   }
 
+  /**
+   * WR-05: enqueue work AND publish the resulting promise as `running` so
+   * close() can await the in-flight pipeline. Without this, an aborted pipeline
+   * resumes on a later tick (after main.ts already returned from close()) and its
+   * teardown could race db.close().
+   */
+  function track(fn: () => Promise<void>): Promise<void> {
+    const p = (queue.add(fn) as Promise<void>).finally(() => {
+      if (running === p) running = null;
+    });
+    running = p;
+    return p;
+  }
+
   return {
     startBuild(task: QueuedTask): Promise<void> {
       if (deps.machine.mode === "HALTED") {
@@ -630,7 +811,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         );
         return Promise.resolve();
       }
-      return queue.add(() => runPipeline(task)) as Promise<void>;
+      return track(() => runPipeline(task));
     },
 
     retryBuild(taskId: string): void {
@@ -646,7 +827,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       deps.narrator?.buildRetryChosen(p.task.text);
       if (p.planText === null) {
         // The failure was pre-plan — re-run the whole pipeline from research.
-        void queue.add(() => runPipeline(p.task));
+        void track(() => runPipeline(p.task));
         return;
       }
       // Re-run the build from the already-approved plan (UI-SPEC: "Retry runs the
@@ -656,7 +837,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       active = { task: p.task, ac };
       registerAbort(taskId, ac);
       const planText = p.planText;
-      void queue.add(() => {
+      void track(() => {
         deps.narrator?.stageBuilding(p.task.text);
         return runBuildAttempt(p.task, planText, ac, false);
       });
@@ -710,6 +891,22 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         }
         deps.registry.unregister(inFlight.task.id);
         active = null;
+      }
+      // WR-05: drain the aborted pipeline HERE — before main.ts calls db.close()
+      // — so its resumed teardown (finalizeAborted/finalize → recordPipelineStage)
+      // runs while the db is still open and cannot leak an unhandled rejection.
+      // Bounded so a stream that ignores the abort can never hang shutdown; the
+      // auditIfOpen guard is the belt-and-suspenders if the drain times out and
+      // the pipeline resumes after db.close().
+      const draining = running;
+      if (draining) {
+        await Promise.race([
+          draining.catch(() => {}),
+          new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, CLOSE_DRAIN_MS);
+            t.unref?.();
+          }),
+        ]);
       }
     },
   };
