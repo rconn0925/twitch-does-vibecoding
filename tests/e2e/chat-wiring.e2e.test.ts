@@ -211,7 +211,9 @@ describe("restored-round vote acceptance (02-03 flagged gap, D2-14)", () => {
     });
     chat.say("101", "alice", "!suggest build a snake game");
     chat.say("102", "bob", "!suggest build a pomodoro timer");
-    await until(async () => ((await getState(app as AppHandle)).pool.length === 2 ? true : undefined));
+    await until(async () =>
+      (await getState(app as AppHandle)).pool.length === 2 ? true : undefined,
+    );
     expect((await postJson(`${baseUrl(app)}/api/round/start`, {})).status).toBe(200);
     chat.say("103", "carol", "!vote 1");
     await until(async () =>

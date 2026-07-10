@@ -1,0 +1,256 @@
+/*
+ * Public OBS overlay — UI-SPEC Phase 2 design contract (BINDING).
+ *
+ * Palette (60/30/10 over transparent video):
+ *   Dominant  rgba(15, 23, 42, 0.88)  — every text-bearing panel/pill bg
+ *   Secondary rgba(30, 41, 59, 0.92)  — tally tracks, number badges, chips
+ *   Accent    #3B82F6 — tally fills + leading candidate's badge ONLY
+ *   Text      #F8FAFC
+ *   Urgency   #F59E0B — final-10s countdown digits + ON HOLD pill
+ *   Winner    #22C55E — winner-beat row highlight only
+ *
+ * Destructive red is DELIBERATELY absent from this file: red on the public
+ * surface reads as "the stream is broken" (D2-18). Never add it.
+ *
+ * Type scale: 20/24/32/48 at weights 600/700 only — nothing below 20px
+ * survives Twitch's video encode. tabular-nums on every ticking number.
+ */
+
+:root {
+  --dominant: rgba(15, 23, 42, 0.88);
+  --secondary: rgba(30, 41, 59, 0.92);
+  --accent: #3b82f6;
+  --text: #f8fafc;
+  --muted: #94a3b8;
+  --urgency: #f59e0b;
+  --winner: #22c55e;
+  --safe-margin: 48px; /* >= 1080p action-safe; survives OBS crop/scale */
+  --block-gap: 32px;
+  --panel-pad: 24px;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent; /* OBS browser source composites over video */
+  overflow: hidden;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+}
+
+/* ── State pill — top-right, the only permanent element ─────────────── */
+
+.state-pill {
+  position: fixed;
+  top: var(--safe-margin);
+  right: var(--safe-margin);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--dominant);
+  border-radius: 999px;
+  padding: 8px 20px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.pill-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.pill-standby .pill-dot {
+  display: none;
+}
+
+.pill-standby .pill-text {
+  color: var(--muted);
+}
+
+.pill-voting .pill-dot {
+  background: var(--winner); /* status dot, outside the 10% accent budget */
+}
+
+.pill-building .pill-dot {
+  background: var(--accent); /* status dot, outside the 10% accent budget */
+}
+
+.pill-onhold .pill-dot {
+  background: var(--urgency);
+}
+
+.pill-onhold .pill-text {
+  color: var(--urgency); /* amber, never red — honest but non-alarming */
+}
+
+/* ── Vote panel — lower-left, 560px fixed width ─────────────────────── */
+
+.vote-panel {
+  position: fixed;
+  left: var(--safe-margin);
+  bottom: var(--safe-margin);
+  width: 560px;
+  box-sizing: border-box;
+  background: var(--dominant);
+  border-radius: 12px;
+  padding: var(--panel-pad);
+}
+
+.vote-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.vote-title {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.vote-countdown {
+  font-size: 48px;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.countdown-final {
+  color: var(--urgency); /* final 10 seconds */
+}
+
+.vote-hint {
+  margin: 4px 0 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.vote-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.vote-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vote-badge {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--secondary);
+  border-radius: 8px;
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.vote-badge-leader {
+  background: var(--accent); /* the accent's ONLY other sanctioned use */
+}
+
+.vote-candidate-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.4;
+  /* CSS backstop behind the JS-side 80-char truncation */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vote-count {
+  flex: none;
+  margin-left: auto;
+  text-align: right;
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.tally-track {
+  height: 12px;
+  margin-top: 8px;
+  background: var(--secondary);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.tally-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 6px;
+  /* Debounced tally jumps read as smooth motion, not flicker (UI-SPEC). */
+  transition: width 300ms ease-out;
+}
+
+/* Winner beat (8s after close) */
+
+.vote-row-winner {
+  border-left: 6px solid var(--winner);
+  padding-left: 8px;
+}
+
+.winner-label {
+  flex: none;
+  color: var(--winner);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.vote-row-loser {
+  opacity: 0.5;
+}
+
+/* ── Queue strip — bottom-right, hidden entirely when empty ─────────── */
+
+.queue-strip {
+  position: fixed;
+  right: var(--safe-margin);
+  bottom: var(--safe-margin);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--dominant);
+  border-radius: 12px;
+  padding: 8px 16px;
+}
+
+.queue-label {
+  flex: none;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.queue-chip {
+  background: var(--secondary);
+  border-radius: 8px;
+  padding: 4px 12px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.4;
+  max-width: 380px;
+  /* CSS backstop behind the JS-side 60-char truncation */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
