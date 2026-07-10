@@ -573,6 +573,10 @@ describe("RoundManager halt-freeze (D2-16)", () => {
     expect(h.pool.list()).toHaveLength(3);
     expect(h.enqueueWinner).not.toHaveBeenCalled();
     expect((closed as unknown as RoundSnapshot).status).toBe("discarded");
+    // CR-01: a triage discard writes its own audit row (COMP-05).
+    const audit = listAuditRecords(h.db, { limit: 10, eventType: "round_closed" });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]?.decision).toBe("discarded");
     h.db.close();
   });
 });
@@ -641,13 +645,44 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
     h.db.close();
   });
 
-  it("discardRestoredFrozen gives a restored frozen round a real exit: row discarded, candidates repooled, ROUND_CLOSED emitted (CR-01)", () => {
+  it("restored-frozen triage RESUME: boot re-enters HALTED, recoverTo VOTING_ROUND re-arms the frozen remainder and accepts votes (CR-01)", () => {
+    const h = makeHarness();
+    h.manager.startRound(); // opened at 1000, ends at 61000
+    h.setNow(21_000);
+    h.machine.forceTransition("HALTED", haltCtx(h.machine)); // freezes 40s remainder
+
+    // "Restart": fresh machine, restore() loads frozen, then main.ts
+    // re-enters HALTED so the D-04 triage exits are reachable (CR-01).
+    const machine2 = new StreamModeMachine();
+    const manager2 = new RoundManager({
+      db: h.db,
+      machine: machine2,
+      pool: new CandidatePool(),
+      enqueueWinner: enqueueWinnerSpy(),
+      now: () => 500_000,
+    });
+    manager2.restore();
+    machine2.forceTransition("HALTED", haltCtx(machine2));
+    expect(manager2.snapshot()?.frozen).toBe(true);
+
+    // Triage picks Resume: the round unfreezes with endsAtMs = now + remainder.
+    machine2.recoverTo("VOTING_ROUND");
+    const resumed = manager2.snapshot();
+    expect(resumed?.frozen).toBe(false);
+    expect(resumed?.remainingMs).toBeNull();
+    expect(resumed?.endsAtMs).toBe(540_000); // 500_000 + the 40s frozen remainder
+    expect(manager2.recordVote("111", 1)).toBe(true);
+    h.db.close();
+  });
+
+  it("restored-frozen triage DISCARD: recoverTo IDLE discards with an audit row, repools candidates, keeps votes in the ledger (CR-01)", () => {
     const h = makeHarness();
     const snap = h.manager.startRound();
+    h.manager.recordVote("111", 1);
     h.setNow(21_000);
     h.machine.forceTransition("HALTED", haltCtx(h.machine));
 
-    // "Restart": fresh IDLE machine, empty pool, restore() loads frozen.
+    // "Restart": fresh machine, empty pool; boot re-enters HALTED (CR-01).
     const machine2 = new StreamModeMachine();
     const pool2 = new CandidatePool();
     const manager2 = new RoundManager({
@@ -658,12 +693,14 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
       now: () => 30_000,
     });
     manager2.restore();
+    machine2.forceTransition("HALTED", haltCtx(machine2));
     let closed: RoundSnapshot | null = null;
     manager2.on(ROUND_CLOSED, (s) => {
       closed = s as RoundSnapshot;
     });
 
-    manager2.discardRestoredFrozen();
+    // Triage picks Reset to Idle: HALTED→IDLE discards the round.
+    machine2.recoverTo("IDLE");
 
     expect(manager2.snapshot()).toBeNull();
     const row = h.db
@@ -674,6 +711,14 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
     expect(pool2.list().map((a) => a.candidate.id)).toEqual(["cand-1", "cand-2", "cand-3"]);
     expect((closed as unknown as RoundSnapshot).status).toBe("discarded");
     expect(machine2.mode).toBe("IDLE");
+    // The discard is audited (COMP-05) and the acknowledged vote survives (D-02).
+    const audit = listAuditRecords(h.db, { limit: 10, eventType: "round_closed" });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]?.decision).toBe("discarded");
+    const votes = h.db
+      .prepare("SELECT COUNT(*) AS n FROM round_votes WHERE round_id = ?")
+      .get(snap.roundId) as { n: number };
+    expect(votes.n).toBe(1);
     h.db.close();
   });
 

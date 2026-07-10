@@ -208,10 +208,15 @@ time — before the console or chat listener accepts any input. A round whose
 timer expired while the process was down closes immediately on startup and its
 winner still enqueues through the normal funnel.
 
-A round frozen by a halt does NOT survive a restart: the halt context that
-recovery triage needs is not persisted, so at startup a frozen round is
-**discarded automatically** — its candidates return to the suggestion pool,
-its row is marked `discarded`, and its acknowledged votes remain in the
-ledger (nothing is deleted, D-02). Recover from the halt as usual, then start
-a fresh round; the same candidates will be back in the pool. No acknowledged
-vote is ever lost to a restart.
+A round frozen by a halt survives a restart WITH its halt: at startup the
+frozen round restores (same tally, same frozen remainder) and the app
+**re-enters HALTED**, so the console shows the recovery triage exactly as it
+did before the crash. Pick one, same as any halt (D-04 — nothing
+auto-resumes):
+
+- **Resume** — the round continues with its exact frozen remaining time.
+- **Reset to Idle** — the round is discarded (audited): its candidates return
+  to the suggestion pool and its acknowledged votes remain in the ledger
+  (nothing is deleted, D-02). Start a fresh round whenever ready.
+
+No acknowledged vote is ever lost to a restart.

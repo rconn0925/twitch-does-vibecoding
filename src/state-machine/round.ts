@@ -538,19 +538,6 @@ export class RoundManager {
     this.#armTimer(remaining);
   }
 
-  /**
-   * Boot-time exit for a crash-restored FROZEN round (CR-01): the halt
-   * context is never persisted, so after a restart no HALTED-mode triage
-   * exists — the frozen round would otherwise be unrecoverable (and
-   * silently corruptible). Policy: discard with the same semantics as
-   * recovery-triage discard — the row goes 'discarded', candidates repool,
-   * ROUND_CLOSED is emitted. Acknowledged votes stay in the round_votes
-   * ledger (D-02: nothing is deleted).
-   */
-  discardRestoredFrozen(): void {
-    this.#discard();
-  }
-
   on(event: string, handler: (...args: unknown[]) => void): void {
     this.#emitter.on(event, handler);
   }
@@ -617,6 +604,17 @@ export class RoundManager {
     for (const option of round.options) {
       this.#pool.add(option.candidate, option.result);
     }
+    // CR-01: a triage discard is a compliance event too — the ledger records
+    // that the round was dropped, with its final tally (COMP-05, D-16).
+    recordRoundClosed(this.#db, {
+      roundId: round.roundId,
+      winnerText: null,
+      winnerOption: null,
+      tallySummary: JSON.stringify(this.#tallyObject(round)),
+      tiebreak: false,
+      streamMode: this.#machine.mode,
+      discarded: true,
+    });
     const snap = this.#buildSnapshot(round);
     this.#round = null;
     this.#logger?.info({ roundId: snap.roundId }, "frozen round discarded — candidates repooled");

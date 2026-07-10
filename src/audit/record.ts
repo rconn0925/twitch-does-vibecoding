@@ -213,6 +213,8 @@ export function recordRoundClosed(
     tallySummary: string;
     tiebreak: boolean;
     streamMode: StreamMode;
+    /** True when this close is a recovery-triage discard, not a normal close (D2-16). */
+    discarded?: boolean;
   },
 ): void {
   insert(db, {
@@ -221,7 +223,11 @@ export function recordRoundClosed(
     source: "operator",
     twitchUsername: null,
     suggestionText: args.winnerText,
-    decision: args.winnerOption === null ? "no-winner" : `winner-option-${args.winnerOption}`,
+    decision: args.discarded
+      ? "discarded"
+      : args.winnerOption === null
+        ? "no-winner"
+        : `winner-option-${args.winnerOption}`,
     category: args.tiebreak ? "tiebreak" : null,
     rationale: args.tallySummary,
     streamMode: args.streamMode,

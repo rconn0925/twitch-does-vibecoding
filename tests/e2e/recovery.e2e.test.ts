@@ -22,10 +22,10 @@ import type { RoundSnapshot } from "../../src/shared/types.js";
  *     votes from BOTH lives of the process (D2-14).
  *  2. Expired-during-downtime: restore() closes the round immediately and the
  *     winner still reaches the queue via the funnel.
- *  3. Halt-freeze across restart: frozen_remaining_ms persists, but the halt
- *     context (triage state) does not — so at boot the frozen round is
- *     discarded with audit semantics: candidates repool, votes stay in the
- *     ledger, and a fresh round is immediately startable (CR-01 fix).
+ *  3. Halt-freeze across restart: frozen_remaining_ms persists and the app
+ *     re-enters HALTED at boot, so the D-04 recovery triage stays reachable —
+ *     Resume re-arms the exact remainder, Reset-to-Idle discards with an
+ *     audit row and repools the candidates (D2-16 + CR-01 fix).
  *  4. Disconnect/reconcile: an EventSub ready after a gap re-syncs the
  *     in-memory tally from the round_votes ledger — a REAL db-vs-memory
  *     comparison, proven by mutating the ledger between the events.
@@ -251,9 +251,9 @@ describe("round expired during downtime (D2-14)", () => {
 });
 
 describe("halt-freeze across restart (D2-16 + D2-14 + CR-01)", () => {
-  it("a halted round persists its frozen remainder; at restart it is discarded with a real exit — candidates repool, votes stay, a new round can start", async () => {
-    tempDir = mkdtempSync(path.join(tmpdir(), "recovery-freeze-"));
-    const dbPath = path.join(tempDir, "audit.db");
+  /** Halt mid-round, kill the process, restart on the same db. Returns the frozen facts. */
+  async function haltThenRestart() {
+    const dbPath = path.join(tempDir as string, "audit.db");
 
     const a = await startSession(dbPath);
     await poolTwoAndOpenRound(a.handle, a.chat);
@@ -269,9 +269,8 @@ describe("halt-freeze across restart (D2-16 + D2-14 + CR-01)", () => {
     const frozenState = await getState(a.handle);
     expect(frozenState.mode).toBe("HALTED");
     expect(frozenState.round?.frozen).toBe(true);
-    const frozenRemainingMs = frozenState.round?.remainingMs;
-    expect(typeof frozenRemainingMs).toBe("number");
-    expect(frozenRemainingMs as number).toBeGreaterThan(0);
+    const frozenRemainingMs = frozenState.round?.remainingMs as number;
+    expect(frozenRemainingMs).toBeGreaterThan(0);
 
     // The remainder is PERSISTED, not just in memory.
     const persisted = a.handle.db
@@ -282,26 +281,74 @@ describe("halt-freeze across restart (D2-16 + D2-14 + CR-01)", () => {
     await a.handle.close();
     app = null;
 
-    // Restart: the halt context needed for HALTED-mode triage is NOT
-    // persisted, so the frozen round cannot be triaged after a restart.
-    // CR-01 policy: it is discarded at boot — a REAL, reachable exit —
-    // instead of restoring into an unrecoverable frozen limbo.
+    // Restart: the frozen round restores AND the app re-enters HALTED, so
+    // the D-04 recovery triage (resume vs discard) is reachable — the
+    // streamer's halt survives the restart; nothing auto-resumes (CR-01).
     const b = await startSession(dbPath);
     const restored = await getState(b.handle);
-    expect(restored.round).toBeNull();
-    expect(restored.mode).toBe("IDLE");
+    expect(restored.mode).toBe("HALTED");
+    expect(restored.round?.roundId).toBe(roundId);
+    expect(restored.round?.frozen).toBe(true);
+    expect(restored.round?.remainingMs).toBe(frozenRemainingMs);
+    expect(restored.round?.totalVotes).toBe(1);
+
+    return { b, roundId, frozenRemainingMs };
+  }
+
+  it("triage RESUME after restart: the round unfreezes with its exact remainder and keeps accepting votes", async () => {
+    tempDir = mkdtempSync(path.join(tmpdir(), "recovery-freeze-resume-"));
+    const { b, roundId } = await haltThenRestart();
+
+    // Start Round is refused while the frozen round is loaded — it can no
+    // longer be silently overwritten (CR-01 round-active guard; HALTED here).
+    const startAttempt = await postJson(`${baseUrl(b.handle)}/api/round/start`, {});
+    expect(startAttempt.status).toBe(409);
+
+    // Triage picks Resume: back to VOTING_ROUND, the frozen remainder re-arms.
+    const recovered = await postJson(`${baseUrl(b.handle)}/api/recover`, { action: "resume" });
+    expect(recovered.status).toBe(200);
+    const resumed = await getState(b.handle);
+    expect(resumed.mode).toBe("VOTING_ROUND");
+    expect(resumed.round?.roundId).toBe(roundId);
+    expect(resumed.round?.frozen).toBe(false);
+    expect(resumed.round ? resumed.round.endsAtMs : 0).toBeGreaterThan(Date.now());
+
+    // The resumed round is LIVE: pre-halt votes counted, new votes land.
+    b.chat.say("502", "frank", "!vote 2");
+    const after = await until(async () => {
+      const state = await getState(b.handle);
+      return state.round?.totalVotes === 2 ? state : undefined;
+    });
+    expect(after.round?.candidates.map((c) => c.votes)).toEqual([1, 1]);
+  });
+
+  it("triage DISCARD after restart: audited discard, candidates repool, votes stay, a fresh round starts cleanly", async () => {
+    tempDir = mkdtempSync(path.join(tmpdir(), "recovery-freeze-discard-"));
+    const { b, roundId } = await haltThenRestart();
+
+    // Triage picks Reset to Idle: HALTED→IDLE discards the frozen round.
+    const recovered = await postJson(`${baseUrl(b.handle)}/api/recover`, {
+      action: "reset-to-idle",
+    });
+    expect(recovered.status).toBe(200);
+    const state = await getState(b.handle);
+    expect(state.mode).toBe("IDLE");
+    expect(state.round).toBeNull();
 
     // The candidates are repooled, not lost.
-    expect(restored.pool.map((p) => p.candidate.text).sort()).toEqual([
+    expect(state.pool.map((p) => p.candidate.text).sort()).toEqual([
       "build a pomodoro timer",
       "build a snake game",
     ]);
 
-    // The row is resolved (not deleted, D-02) and no longer strandable.
+    // The row is resolved (not deleted, D-02) and the discard is audited.
     const row = b.handle.db
       .prepare("SELECT status, frozen_remaining_ms FROM rounds WHERE id = ?")
       .get(roundId) as { status: string; frozen_remaining_ms: number | null };
     expect(row.status).toBe("discarded");
+    const auditRes = await fetch(`${baseUrl(b.handle)}/api/audit?limit=50&eventType=round_closed`);
+    const auditRows = (await auditRes.json()) as Array<{ decision: string | null }>;
+    expect(auditRows.some((r) => r.decision === "discarded")).toBe(true);
     // The acknowledged vote stays in the ledger — nothing is deleted.
     const votes = b.handle.db
       .prepare("SELECT COUNT(*) AS c FROM round_votes WHERE round_id = ?")

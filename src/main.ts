@@ -242,16 +242,33 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   {
     const restored = round.snapshot();
     if (restored?.status === "open" && restored.frozen) {
-      // CR-01: the halt context is never persisted, so a frozen round that
-      // survives a restart has no reachable HALTED-mode triage. Give it a
-      // real exit at boot: discard with audit semantics — candidates repool,
-      // the row goes 'discarded', acknowledged votes stay in the ledger
-      // (D-02: nothing deleted). Without this, the stranded round could be
-      // silently orphaned by the next Start Round.
-      round.discardRestoredFrozen();
+      // CR-01: a frozen round means the streamer halted mid-round and the
+      // process died before triage finished. The halt context itself is not
+      // persisted, so RE-ENTER HALTED at boot with a synthesized context
+      // whose frozen.mode is VOTING_ROUND — the D-04 triage view renders and
+      // BOTH exits work exactly as they do for a live halt: Resume →
+      // HALTED→VOTING_ROUND (the frozen remainder re-arms), Reset to Idle →
+      // HALTED→IDLE (discard: row → 'discarded' with an audit row,
+      // candidates repooled, votes kept in the ledger). A restart must never
+      // silently un-halt a stream the streamer explicitly halted (D-04:
+      // nothing auto-resumes — the streamer decides).
+      const bootHaltContext: HaltContext = {
+        // The original halt's source is unknown after a restart; the console
+        // is the surface where triage happens, so it is the least-wrong tag.
+        source: "console",
+        reasonTag: null,
+        frozen: {
+          mode: "VOTING_ROUND",
+          activeTaskId: null,
+          activeTaskPid: null,
+          queuedTaskIds: [],
+          haltContext: null,
+        },
+      };
+      machine.forceTransition("HALTED", bootHaltContext);
       logger.warn(
         { roundId: restored.roundId },
-        "frozen round found at boot with no persisted halt context — discarded, candidates repooled",
+        "frozen round restored at boot — re-entering HALTED for recovery triage (resume or discard)",
       );
     } else if (restored?.status === "open" && !restored.frozen && machine.mode === "IDLE") {
       machine.transition("VOTING_ROUND");
