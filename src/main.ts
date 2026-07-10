@@ -919,7 +919,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       } catch (err) {
         logger.error({ err, taskId }, "failed to enter BUILD_IN_PROGRESS for the round winner");
       }
-      void buildSession.startBuild(task);
+      // HIST-01: a round winner's provenance is always the normal vote loop.
+      void buildSession.startBuild(task, "vote");
     };
 
     // CR-03: the paid-window build trigger. A queued paid instruction enters
@@ -941,8 +942,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         );
         return false;
       }
+      // HIST-01: the changelog provenance is the live window's trigger
+      // (donation | channel_points), read off the current snapshot BEFORE the
+      // build starts. Fall back to 'donation' only if no snapshot is present.
+      const windowProvenance = controlWindow.snapshot()?.trigger ?? "donation";
       void (async () => {
-        await buildSession.startBuild(task);
+        await buildSession.startBuild(task, windowProvenance);
         // IDLE = terminal; still BUILD_IN_PROGRESS = decision-pending (streamer
         // owns the next step); HALTED = kill switch owns it.
         if (machine.mode !== "IDLE") return;
@@ -977,7 +982,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         return false;
       }
       void (async () => {
-        await buildSession.startBuild(task);
+        // HIST-01: a chaos pick's provenance is always 'chaos'.
+        await buildSession.startBuild(task, "chaos");
         if (machine.mode !== "IDLE") return;
         if (!chaosOn) return; // chaos turned off during the build → stay IDLE
         try {

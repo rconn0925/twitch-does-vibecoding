@@ -211,6 +211,38 @@ export interface BuildStatusView {
 }
 
 /**
+ * Phase 5 build-history changelog vocabulary (HIST-01, D-01/D-03).
+ *
+ * BuildProvenance mirrors BuildStatusView.source's fixed set (the overlay
+ * provenance chip) — how a completed build was selected. It is threaded
+ * EXPLICITLY from each build-trigger site into startBuild()/finalize(), never
+ * mode-inferred (T-05-03 mis-attribution mitigation).
+ */
+export type BuildProvenance = "vote" | "donation" | "channel_points" | "chaos";
+
+/**
+ * The honest terminal outcome of a COMPLETED build, 1:1 with the pipeline's
+ * terminal stage (done->built, failed->failed, refused->refused). An aborted /
+ * vetoed build is NEITHER — it produces no build_history row at all (CR-01).
+ */
+export type BuildResult = "built" | "refused" | "failed";
+
+/**
+ * One durable, append-only changelog entry (a build_history row). `title` is the
+ * gate-APPROVED QueuedTask.text ONLY (D-03) — raw pre-gate suggestion text never
+ * reaches this shape. `createdAtMs` is the completion timestamp; the stream-night
+ * grouping key is derived from it on read (D-02), so there is no session column.
+ */
+export interface BuildHistoryRow {
+  id: number;
+  taskId: string;
+  title: string;
+  provenance: BuildProvenance;
+  result: BuildResult;
+  createdAtMs: number;
+}
+
+/**
  * Build-pipeline chat-narration surface (BUILD-03 / D3-08 / D3-09). Every method
  * is a single TRANSITION beat (one message per transition — never per-token /
  * per-file churn, which belongs to the overlay + preview), so a build failure is
