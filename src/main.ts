@@ -25,9 +25,18 @@ import {
   startConsoleServer,
   type TwitchConnectionStatus,
 } from "./operator-console/server.js";
+import { type BuildSession, createBuildSession } from "./orchestrator/index.js";
+import type {
+  AgentRunner,
+  DevServerProbe,
+  ProgressSink,
+  SandboxAdapter,
+} from "./orchestrator/types.js";
 import { type OverlayServerHandle, startOverlayServer } from "./overlay/server.js";
 import { enqueueWinner } from "./pipeline/round.js";
 import { submitCandidate } from "./pipeline/submit.js";
+import { createPreviewManager, resolvePreviewDevServerPort } from "./preview/preview-manager.js";
+import { type PreviewServerHandle, startPreviewServer } from "./preview/server.js";
 import { CandidatePool } from "./queue/pool.js";
 import { TaskQueue } from "./queue/task-queue.js";
 import { HALT_TRIGGERED, ROUND_CLOSED, ROUND_OPENED } from "./shared/events.js";
@@ -89,6 +98,25 @@ export interface CreateAppOptions {
   chatSink?: ChatMessageSink;
   /** OAuth route deps passed through to the console server (D2-10). */
   twitchAuth?: TwitchAuthRoutes;
+  /**
+   * Build-orchestrator seams (plan 03-06): when BOTH agentRunner and
+   * sandboxAdapter are present — injected test fakes or the real SDK/WSL2
+   * adapters built by the entrypoint branch — createApp composes the full build
+   * pipeline (build session → overlay build push → preview surface → winner
+   * pickup) itself. Absent = no build engine (round winners sit in the queue);
+   * the vote loop keeps running. Fakes and production adapters share one code
+   * path, so the build-flow e2e proves the production wiring without src edits.
+   */
+  agentRunner?: AgentRunner;
+  sandboxAdapter?: SandboxAdapter;
+  /** Preview reachability probe (03-08); the entrypoint injects the real one. */
+  devServerProbe?: DevServerProbe;
+  /**
+   * App-under-construction preview port (PRES-03). Defaults to 0 (ephemeral);
+   * the entrypoint passes PREVIEW_PORT (default 4902) — always a SEPARATE
+   * surface from the console + overlay (D3-12).
+   */
+  previewPort?: number;
 }
 
 export interface AppHandle {
@@ -105,6 +133,10 @@ export interface AppHandle {
   overlay: OverlayServerHandle;
   /** Phase 3's orchestrator registers agent-session PIDs/controllers here. */
   registry: AbortRegistry;
+  /** Build-session orchestrator (BUILD-01) — present only when composed (agentRunner injected). */
+  orchestrator?: BuildSession;
+  /** App-under-construction preview surface (PRES-03) — present only when the orchestrator is composed. */
+  preview?: PreviewServerHandle;
   close: () => Promise<void>;
 }
 
@@ -203,13 +235,19 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // ApprovedCandidate.addedAtMs, which is what makes the D2-05 staleness
   // branch operational in production. Stale winners re-enter submitCandidate
   // for full re-classification instead of riding their old approval.
+  // Assigned once the build orchestrator is composed below (only when an
+  // agentRunner is injected). Fired SYNCHRONOUSLY from inside closeRound while
+  // the machine is still VOTING_ROUND, so the VOTING_ROUND→BUILD_IN_PROGRESS
+  // transition is legal (IDLE→BUILD_IN_PROGRESS is not — stream-mode.ts D-02)
+  // and closeRound's own "if VOTING_ROUND → IDLE" step is skipped.
+  let onWinnerQueued: ((taskId: string) => void) | null = null;
   const round = new RoundManager({
     db,
     machine,
     pool,
     logger,
-    enqueueWinner: (candidate, result, pooledAtMs) =>
-      enqueueWinner(
+    enqueueWinner: (candidate, result, pooledAtMs) => {
+      const outcome = enqueueWinner(
         {
           taskQueue,
           db,
@@ -228,7 +266,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
           logger,
         },
         { candidate, result, addedAtMs: pooledAtMs },
-      ),
+      );
+      if (outcome.queued) onWinnerQueued?.(candidate.id);
+      return outcome;
+    },
   });
   // D2-14 ordering contract: restore persisted round state BEFORE any surface
   // (console route, chat listener) can accept input. A round that expired
@@ -443,6 +484,71 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     console_.port,
   );
 
+  // ── Build orchestrator composition (plan 03-06) ────────────────────────
+  // Composed whenever an agentRunner + sandboxAdapter pair exists (injected
+  // fakes in tests, real SDK/WSL2 adapters from the entrypoint) — both take the
+  // IDENTICAL path. The build session IS the OverlayBuildSource (snapshot +
+  // BUILD_STAGE_CHANGED), so the overlay build panel updates live.
+  let orchestrator: BuildSession | undefined;
+  let preview: PreviewServerHandle | undefined;
+  if (opts.agentRunner && opts.sandboxAdapter) {
+    // Presentational sink: the session owns overlay + audit; this narrates/logs
+    // stage transitions (full chat narration polish lands in 03-09).
+    const progress: ProgressSink = {
+      push: (view) => logger.info({ taskId: view.taskId, stage: view.stage }, "build stage"),
+    };
+    const buildSession = createBuildSession({
+      taskQueue,
+      db,
+      machine,
+      registry,
+      agentRunner: opts.agentRunner,
+      sandboxAdapter: opts.sandboxAdapter,
+      // COMP-02's classify is the SAME app gate, pre-bound to gateDeps (03-04) —
+      // drives BOTH the pre-write plan re-screen and the in-flight output re-screen.
+      comp02: { classify: (candidate) => classify(gateDeps, candidate) },
+      progress,
+      onHeldForReview: (task) =>
+        logger.warn(
+          { taskId: task.id },
+          "COMP-02 held the build plan for streamer review (console review flow — narration polish 03-09)",
+        ),
+      logger,
+    });
+    orchestrator = buildSession;
+    // The winner→build trigger (see enqueueWinner wrapper above): synchronously
+    // enter BUILD_IN_PROGRESS while still VOTING_ROUND, then start the pipeline.
+    onWinnerQueued = (taskId) => {
+      const task = taskQueue.list().find((t) => t.id === taskId);
+      if (!task) return;
+      try {
+        if (machine.mode === "VOTING_ROUND") machine.transition("BUILD_IN_PROGRESS");
+      } catch (err) {
+        logger.error({ err, taskId }, "failed to enter BUILD_IN_PROGRESS for the round winner");
+      }
+      void buildSession.startBuild(task);
+    };
+
+    // App-under-construction preview surface (PRES-03) — a THIRD isolated
+    // localhost surface. Ephemeral port 0 in tests; the entrypoint passes
+    // PREVIEW_PORT. The real probe is injected by the entrypoint; a default
+    // manager supplies the framed dev-server URL.
+    const previewManager = createPreviewManager({
+      port: resolvePreviewDevServerPort(process.env.PREVIEW_DEV_SERVER_PORT),
+    });
+    preview = await startPreviewServer({
+      probe: opts.devServerProbe ?? previewManager,
+      devServerUrl: previewManager.devServerUrl,
+      port: opts.previewPort ?? 0,
+      logger,
+    });
+    logger.info(
+      { port: preview.port },
+      "app-under-construction preview listening at http://127.0.0.1:%d — add as OBS browser source",
+      preview.port,
+    );
+  }
+
   // Public OBS overlay (PRES-01) — a physically separate read-only surface,
   // never the console's app/port (D2-17). Ephemeral port 0 by default so
   // parallel test apps never collide; the entrypoint passes OVERLAY_PORT.
@@ -451,6 +557,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     round,
     taskQueue,
     port: opts.overlayPort ?? 0,
+    ...(orchestrator ? { build: orchestrator } : {}),
     logger,
   });
   logger.info(
@@ -470,6 +577,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     round,
     overlay,
     registry,
+    ...(orchestrator ? { orchestrator } : {}),
+    ...(preview ? { preview } : {}),
     close: async () => {
       // WR-05: cancel the armed round timer FIRST — otherwise a pending
       // closeRound() could fire after db.close() below and crash the
@@ -478,6 +587,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       clearInterval(reviewSweepTimer);
       clearInterval(purgeTimer);
       chatHandle?.stop();
+      // Tear the build orchestrator down BEFORE db.close(): abort any in-flight
+      // build + unregister so no agent turn can touch a closed db (03-06).
+      await orchestrator?.close();
+      await preview?.close();
       await overlay.close();
       await console_.close();
       db.close();
@@ -657,6 +770,46 @@ async function buildTwitchAdapters(logger: Logger): Promise<TwitchAppOptions> {
   }
 }
 
+/** The build-orchestrator adapters the entrypoint branch feeds into createApp. */
+interface OrchestratorAppOptions {
+  agentRunner?: AgentRunner;
+  sandboxAdapter?: SandboxAdapter;
+  devServerProbe?: DevServerProbe;
+}
+
+/**
+ * Entrypoint-only build-orchestrator adapter construction (armPanicHotkey /
+ * buildTwitchAdapters pattern): dynamic imports inside a try/catch so vitest
+ * never loads the real SDK/WSL2 layer and a missing/broken sandbox or Agent SDK
+ * degrades to a LOUD log — console + overlay + the vote loop keep running
+ * (graceful degradation; never crash the process). Only when BOTH the real
+ * AgentRunner AND the WSL2 SandboxAdapter build does createApp compose the build
+ * engine — so a broken sandbox never runs a build unsandboxed (T-03-23).
+ */
+async function buildOrchestratorAdapters(logger: Logger): Promise<OrchestratorAppOptions> {
+  try {
+    const { createSdkAgentRunner } = await import("./orchestrator/sdk-runner.js");
+    const { createSandboxAdapter } = await import("./orchestrator/sandbox-process.js");
+    const { createPreviewManager: makePreview, openTcpConnection } = await import(
+      "./preview/preview-manager.js"
+    );
+    const agentRunner = createSdkAgentRunner();
+    const sandboxAdapter = createSandboxAdapter({ logger });
+    const devServerProbe = makePreview({
+      port: resolvePreviewDevServerPort(process.env.PREVIEW_DEV_SERVER_PORT),
+      connect: openTcpConnection,
+    });
+    logger.info("BUILD ENGINE ARMED — real SDK AgentRunner + WSL2 sandbox adapter");
+    return { agentRunner, sandboxAdapter, devServerProbe };
+  } catch (err) {
+    logger.error(
+      { err },
+      "BUILD ENGINE UNAVAILABLE — SDK/WSL2 adapter failed to load; console + overlay + vote loop keep running",
+    );
+    return {};
+  }
+}
+
 // Run-as-entrypoint branch (npm run dev): tsx executes this file directly.
 const invokedPath = process.argv[1];
 const isMain =
@@ -665,12 +818,15 @@ const isMain =
 if (isMain) {
   const port = Number(process.env.CONSOLE_PORT ?? 4900);
   const overlayPort = Number(process.env.OVERLAY_PORT ?? 4901);
+  const previewPort = Number(process.env.PREVIEW_PORT ?? 4902);
   const dbPath = process.env.AUDIT_DB_PATH ?? "./data/audit.db";
   const bootLogger = pino({ level: process.env.LOG_LEVEL ?? "info" });
-  // Entrypoint-only: build real twurple adapters (guarded dynamic imports),
-  // then hand them to createApp — which owns ALL chat composition.
-  buildTwitchAdapters(bootLogger)
-    .then((twitchOpts) => createApp({ dbPath, port, overlayPort, ...twitchOpts }))
+  // Entrypoint-only: build real twurple + build-orchestrator adapters (guarded
+  // dynamic imports), then hand them to createApp — which owns ALL composition.
+  Promise.all([buildTwitchAdapters(bootLogger), buildOrchestratorAdapters(bootLogger)])
+    .then(([twitchOpts, orchestratorOpts]) =>
+      createApp({ dbPath, port, overlayPort, previewPort, ...twitchOpts, ...orchestratorOpts }),
+    )
     .then((app) =>
       // Entrypoint-only: this is the sole call path that loads the native
       // uiohook module. Test runs (vitest) never reach this branch.
