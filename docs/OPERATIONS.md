@@ -230,10 +230,12 @@ screen-share**.
 
 ### 7.1 Opening It
 
-- Served at <http://127.0.0.1:4900/history> (same `CONSOLE_PORT` host process;
-  loopback-bound, non-loopback Host headers get 403 — it never leaves the
-  machine in v1).
-- It is **read-only**: `GET /history` (page) and `GET /api/history` (data) only.
+- Served at <http://127.0.0.1:4903/> on its OWN surface — a separate server on
+  `HISTORY_PORT` (default **4903**), distinct from the console (4900), overlay
+  (4901), and preview (4902). Loopback-bound; non-loopback Host headers get 403,
+  so it never leaves the machine in v1. Point a browser tab or OBS source at the
+  bare origin — the changelog page is served at `/`.
+- It is **read-only**: `GET /` (page) and `GET /api/history` (data) only.
   There are no mutating routes, no WebSocket, and no `express.json` body parser —
   nothing on this surface can change state.
 - Full history loads on open and paginates by night (10 nights per page, a

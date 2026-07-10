@@ -35,7 +35,7 @@ The dry run exercises the two deferred human gates end-to-end, so they must be c
 ## Section 2 — Test-channel setup (human-action)
 
 - [ ] A **low-stakes test channel / account** (NOT the main channel) is live.
-- [ ] The app is running; open all four surfaces: the **operator console** (private), the **overlay** (add as an OBS browser source), the **app-under-construction preview**, and the new **/history changelog** page.
+- [ ] The app is running; open all four surfaces: the **operator console** (private, <http://127.0.0.1:4900>), the **overlay** (add as an OBS browser source, :4901), the **app-under-construction preview** (:4902), and the new **build-history changelog** on its own surface at <http://127.0.0.1:4903/> (:4903, `HISTORY_PORT`).
 - [ ] Host `ANTHROPIC_API_KEY` confirmed UNSET (plan-credit billing) unless the Wave-0 A1 result dictated the sandbox-scoped key fallback.
 - [ ] A **small real tip** is ready to send through the donation platform, and the custom channel-points reward is redeemable.
 

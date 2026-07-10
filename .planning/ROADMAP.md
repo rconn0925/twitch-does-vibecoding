@@ -203,15 +203,15 @@ Research flag: RESOLVED by the Phase 4 research pass (04-RESEARCH.md) — Stream
 Plans:
 **Wave 1** *(foundation/seam)*
 
-- [ ] 05-01-PLAN.md — build_history table + record/list + provenance threaded through startBuild→finalize (HIST-01 persistence) (wave 1)
+- [x] 05-01-PLAN.md — build_history table + record/list + provenance threaded through startBuild→finalize (HIST-01 persistence) (wave 1)
 
 **Wave 2** *(blocked on 05-01)*
 
-- [ ] 05-02-PLAN.md — Read-only /history changelog surface: night-grouped paginated GET + textContent-only page + e2e slice (HIST-01 page) (wave 2)
+- [x] 05-02-PLAN.md — Read-only /history changelog surface: night-grouped paginated GET + textContent-only page + e2e slice (HIST-01 page) (wave 2)
 
 **Wave 3** *(blocked on 05-02 — batched human gate)*
 
-- [ ] 05-03-PLAN.md — Stream-night dry-run runbook: consolidates Phase 3 Wave 0 + Phase 4 live gates, full-loop + kill-switch + audit review, GO/NO-GO (autonomous:false) (wave 3)
+- [x] 05-03-PLAN.md — Stream-night dry-run runbook authored (`05-DRY-RUN.md`, GO/NO-GO PENDING, autonomous:false); the live rehearsal itself is the deferred human gate (wave 3)
 
 **UI hint**: yes
 
@@ -226,7 +226,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 2. Chat Vote Loop | 6/6 | Complete   | 2026-07-10 |
 | 3. Sandboxed Build Engine & Live Show | 8/9 | Code complete (review/verify/secure green); Wave 0 WSL2 go/no-go pending | - |
 | 4. Paid Influence & Chaos Mode | 7/8 | Code complete (review/verify/secure green); 04-08 live gate + CR-03 human-check pending | - |
-| 5. Build History & Stream Night Dry Run | 0/3 | Planned | - |
+| 5. Build History & Stream Night Dry Run | 3/3 | Code complete (review 0-blocker/verify 1-of-1/secure 13/13 green); stream-night dry run pending | - |
 
 ## Coverage
 

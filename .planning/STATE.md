@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 4 code-side closeout COMPLETE (built→reviewed→fixed→verified→secured); chaining to Phase 5
-last_updated: "2026-07-10T09:00:00.000Z"
-last_activity: 2026-07-10 -- Phase 04 code-side closeout complete
+stopped_at: ALL 5 phases code-side COMPLETE (built→reviewed→fixed→verified→secured). Only end-batch human gates remain.
+last_updated: "2026-07-10T08:00:00.000Z"
+last_activity: 2026-07-10 -- Phase 05 code-side closeout complete; v1 code-complete
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 28
-  completed_plans: 26
-  percent: 72
+  total_plans: 29
+  completed_plans: 29
+  percent: 95
 ---
 
 # Project State
@@ -21,20 +21,58 @@ progress:
 See: .planning/PROJECT.md (updated 2026-07-09)
 
 **Core value:** Chat genuinely controls what gets built — safely. The suggest → filter → vote → build loop must work live on stream, and nothing chat requests can ever put the channel at risk of violating Twitch ToS or Community Guidelines.
-**Current focus:** Phase 04 code-side complete → chaining to Phase 05 (build-history + stream-night dry run)
+**Current focus:** v1 is CODE-COMPLETE across all 5 phases. Only the consolidated end-batch of human-action gates remains before the first real stream night.
 
 ## Current Position
 
-Phase: 04 (paid-influence-chaos-mode) — CODE COMPLETE (closeout green); 05 next
-Plan: Phase 3 = 8/9 (Wave 0 pending); Phase 4 = 7/8 buildable plans merged (04-08 live gate deferred). Suite 630 pass, tsc+biome clean.
-Status: Phase 04 built (4 waves) → reviewed (3 blockers + 8 findings, ALL fixed) → verified 5/5 vs fakes → secured 19/19. Chaining to Phase 05.
-Last activity: 2026-07-10 -- Phase 04 code-side closeout complete
+Phase: 05 (build-history-stream-night-dry-run) — CODE COMPLETE (closeout green). ALL phases code-side done.
+Plan: All buildable plans across Phases 1–5 merged to master. Suite **663 pass**, tsc + biome clean.
+Status: Phase 05 built (2 code waves + runbook doc) → reviewed (0 blocker, 4 warning + 4 info; all 4 warnings + IN-01/IN-03 fixed, IN-02/IN-04 accepted deferrals) → verified 1/1 code criterion PASS (3/3 criteria correctly deferred to the human dry run) → secured 13/13 threats, 0 open.
+Last activity: 2026-07-10 -- Phase 05 code-side closeout complete; v1 code-complete
 
-Progress: [███████░░░] 72%
+Progress: [█████████▓] 95% (code-complete; remaining 5% = human-action gates)
 
-**Two phase-completion gates remain, both deliberately deferred to the end human-gate batch (user directive: build everything, batch human gates):**
+**All remaining work is the consolidated end human-gate batch (user directive: build everything against fakes, batch human gates). Nothing more is buildable without live credentials / the streaming PC. The full checklist is below under "v1 Go-Live Human-Gate Batch".** Headline gates:
 - **Phase 3 — Wave 0 WSL2 go/no-go** (`03-.../SANDBOX-SETUP.md` ⏳ PENDING): filesystem-escape, dev-server-exposure, wsl --terminate veto, A1 billing, latency. NO real build until GO.
 - **Phase 4 — Live gate 04-08 + CR-03 human-check** (AR-04-01/02): StreamElements account/JWT, `channel:read:redemptions` broadcaster re-auth, real tip/redemption smoke test, Bits AUP/chargeback manual re-read, and CR-03 build-loop under a real WSL2 build engine.
+- **Phase 5 — Stream-night dry run** (`05-DRY-RUN.md` ⏳ PENDING GO/NO-GO): the end-to-end test-channel rehearsal that exercises and depends on the two gates above.
+
+## v1 Go-Live Human-Gate Batch
+
+Everything buildable is built and green. These are the human-action gates, deferred by directive into one batch. Recommended order is top-to-bottom — the Phase 5 dry run exercises and depends on all the ones above it. The dry run's runbook (`05-DRY-RUN.md`) is the single consolidated driver; this list is the inventory.
+
+**A. Phase 1 — kill switch & console (streaming PC)**
+- [ ] Physical panic-hotkey test on the streaming PC (armed-log + double-tap → HALTED; single-tap no-op); log any anomaly in `docs/OPERATIONS.md` §5 (`01-HUMAN-UAT.md`).
+- [ ] Operator-console browser walkthrough (Halt / triage / recover).
+- [ ] Live Sonnet `gate:eval` pass (needs `ANTHROPIC_API_KEY` for the eval only — NOT in the streaming machine's runtime env).
+
+**B. Phase 2 — live Twitch loop**
+- [ ] Live Twitch OAuth bootstrap + one real-channel vote round (`02-HUMAN-UAT.md`; runbook `docs/OPERATIONS.md` §6).
+- [ ] OBS overlay browser-source check (renders, reconnects on scene switch).
+
+**C. Phase 3 — Wave 0 WSL2 go/no-go** (`SANDBOX-SETUP.md`, ⏳ PENDING — hard blocker before ANY real build)
+- [ ] (a) filesystem-escape isolation (SAND-01)
+- [ ] (b) dev-server-only exposure on 127.0.0.1:5555 (SAND-02)
+- [ ] (c) `wsl.exe --terminate` kills a hung build tree (BUILD-04)
+- [ ] (d) A1 billing recorded (plan credits vs metered)
+- [ ] (e) cold/warm launch latency acceptable
+- [ ] Phase 3 UAT judgment items: CR-01 real-veto terminal state; WR-05 shutdown-drain; WR-07 watchdog bounds (5min turn / 2s drain) suit live timing.
+
+**D. Phase 4 — live gate 04-08 + CR-03** (`04-LIVE-GATE.md` / `04-08-PLAN.md`, AR-04-01/02)
+- [ ] StreamElements account + JWT bound (JWT never logged)
+- [ ] `channel:read:redemptions` broadcaster RE-AUTH (Phase 2 token lacks it)
+- [ ] A custom channel-points reward created + a real tip + a real redemption smoke-tested
+- [ ] Manual re-read of the MEDIUM-confidence Bits AUP + chargeback claims
+- [ ] CR-03: paid-window drain + chaos re-pick under a REAL WSL2 build engine
+
+**E. Phase 5 — stream-night dry run** (`05-DRY-RUN.md`, ⏳ PENDING GO/NO-GO — the finish line)
+- [ ] Preconditions C + D read GO first (the runbook blocks otherwise)
+- [ ] Full loop on a test channel: suggest→filter→vote→build→preview
+- [ ] Real small donation free-reign window + channel-points window (donor name + countdown ONLY on broadcast)
+- [ ] Chaos round (random pick, no vote; no payment↔chance coupling)
+- [ ] Kill switch vs. a GENUINELY in-progress build (HALTED instant, no false "BUILT IT", no changelog row for the killed build)
+- [ ] Audit + changelog review (zero unfiltered inputs reached an agent; every rejection got chat feedback; no donor detail / pre-gate text on the screen-shared changelog)
+- [ ] Record **GO** → v1 is cleared for the first real stream night.
 
 ## Performance Metrics
 
