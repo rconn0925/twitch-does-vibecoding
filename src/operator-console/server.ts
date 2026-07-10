@@ -53,8 +53,10 @@ export interface ConsoleServerDeps {
   abortActiveWork?: (frozen: StateSnapshot) => Promise<void>;
   /**
    * OAuth bootstrap (D2-10, INFRA-01): GET /auth/start builds the authorize
-   * redirect; GET /auth/callback completes the code exchange. Absent when
-   * TWITCH_CLIENT_ID/SECRET are not configured — the routes answer 503.
+   * redirect via buildAuthorizeUrl; GET /auth/callback calls complete(),
+   * which is twitch-auth.ts's completeAuthorization pre-bound in main.ts.
+   * Absent when TWITCH_CLIENT_ID/SECRET are not configured — the routes
+   * answer 503.
    */
   twitchAuth?: {
     authorizeUrl(state: string): string;
