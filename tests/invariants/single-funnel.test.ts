@@ -17,8 +17,9 @@ import { describe, expect, it } from "vitest";
  *       console, or state-machine module feeds the build queue directly
  *   (c) only src/compliance/ imports "@anthropic-ai/sdk" (the classifier
  *       boundary: nothing else talks to the model)
- *   (d) `toQueuedTask` is referenced outside gate.ts only by
- *       src/pipeline/submit.ts
+ *   (d) `toQueuedTask` is referenced outside gate.ts only by the two
+ *       sanctioned funnel entry points under src/pipeline/: submit.ts
+ *       (new-candidate intake) and round.ts (round-winner promotion)
  *   (e) src/audit/purge.ts holds the codebase's only "DELETE FROM" (D-17
  *       append-only exception; T-01-20)
  *
@@ -177,8 +178,12 @@ describe("COMP-01 single-funnel invariants (source scan)", () => {
     ).toHaveLength(0);
   });
 
-  it("(d) toQueuedTask is referenced outside gate.ts only by src/pipeline/submit.ts", () => {
-    const allowed = new Set(["src/compliance/gate.ts", "src/pipeline/submit.ts"]);
+  it("(d) toQueuedTask is referenced outside gate.ts only by src/pipeline/{submit,round}.ts", () => {
+    const allowed = new Set([
+      "src/compliance/gate.ts",
+      "src/pipeline/submit.ts",
+      "src/pipeline/round.ts",
+    ]);
     const hits = allMatches(/toQueuedTask/);
     const offenders = [...hits.entries()]
       .filter(([rel]) => !allowed.has(rel))

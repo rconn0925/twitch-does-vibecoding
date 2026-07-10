@@ -29,6 +29,7 @@
   const devUsername = document.getElementById("dev-username");
   const devText = document.getElementById("dev-text");
   const devFeedback = document.getElementById("dev-feedback");
+  const roundPanel = document.getElementById("round-panel");
 
   /** Latest ConsoleState snapshot from the ws push. */
   let latest = null;
@@ -122,6 +123,119 @@
       pill.classList.toggle("active", isActive);
     }
   }
+
+  // --- Round panel (D2-01: streamer-triggered rounds, UI-SPEC copy verbatim) ---
+
+  /** m:ss from a millisecond remainder, floored at 0:00. */
+  function formatRemaining(ms) {
+    const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = String(totalSeconds % 60).padStart(2, "0");
+    return `${minutes}:${seconds}`;
+  }
+
+  /** Remaining ms for a round: frozen remainder while frozen, else clock math. */
+  function roundRemainingMs(round) {
+    if (round.frozen && round.remainingMs !== null) return round.remainingMs;
+    return round.endsAtMs - Date.now();
+  }
+
+  /** UI-SPEC disabled-reason copy, or null when Start Round is allowed. */
+  function roundDisabledReason(snapshot) {
+    if (snapshot.round && snapshot.round.status === "open") {
+      return `Round in progress — ${formatRemaining(roundRemainingMs(snapshot.round))} left.`;
+    }
+    if (snapshot.mode !== "IDLE") {
+      return `Rounds can only start from Standby (current mode: ${snapshot.mode}).`;
+    }
+    if (snapshot.pool.length < 2) {
+      return `Need at least 2 approved candidates to start a round (have ${snapshot.pool.length}).`;
+    }
+    return null;
+  }
+
+  /** Transient message from a rejected POST /api/round/start (cleared on next render). */
+  let roundStartError = null;
+
+  async function startRound() {
+    const { res, data } = await postJson("/api/round/start", {});
+    if (!res.ok) {
+      // The server's terse 409 copy ("Can't start a round …") — never a stack trace.
+      roundStartError = data?.error ? data.error : "Round could not start.";
+      renderAll();
+    }
+    // Success needs no handling here: the ws push triggered by ROUND_OPENED
+    // re-renders the whole panel with the live round.
+  }
+
+  function renderRound(snapshot) {
+    roundPanel.replaceChildren();
+    const round = snapshot.round;
+
+    if (round && round.status === "open") {
+      // Countdown is computed CLIENT-side from endsAtMs (resynced on every ws
+      // push); the server never streams per-second timer frames.
+      const remaining = roundRemainingMs(round);
+      roundPanel.appendChild(
+        el(
+          "h2",
+          "section-title round-countdown",
+          `Round open — ${formatRemaining(remaining)} left`,
+        ),
+      );
+      const list = el("ol", "round-candidates");
+      for (const entry of round.candidates) {
+        const item = el("li", "round-candidate");
+        item.appendChild(el("span", "round-candidate-text", entry.candidate.text));
+        item.appendChild(el("span", "round-votes", `${entry.votes} votes`));
+        list.appendChild(item);
+      }
+      roundPanel.appendChild(list);
+    } else if (snapshot.pool.length === 0) {
+      roundPanel.appendChild(
+        emptyState(
+          "Candidate pool is empty",
+          "Waiting for !suggest ideas from chat. Approved ideas appear here.",
+        ),
+      );
+    } else {
+      roundPanel.appendChild(
+        emptyState(
+          "No round running",
+          `${snapshot.pool.length} candidates ready. Start a round when the show's ready for one.`,
+        ),
+      );
+    }
+
+    // Single click, no modal — round start is not destructive (UI-SPEC).
+    const reason = roundDisabledReason(snapshot);
+    const start = button("Start Round", "button-accent", () => {
+      void startRound();
+    });
+    start.disabled = Boolean(reason);
+    roundPanel.appendChild(start);
+    if (reason) {
+      roundPanel.appendChild(el("p", "round-reason", reason));
+    }
+    if (roundStartError) {
+      roundPanel.appendChild(el("p", "round-reason", roundStartError));
+      roundStartError = null;
+    }
+  }
+
+  // 1s countdown tick: re-render the round panel while a round is live so the
+  // heading and disabled-reason clock stay honest between ws pushes.
+  setInterval(() => {
+    if (
+      latest &&
+      latest.mode !== "HALTED" &&
+      latest.round &&
+      latest.round.status === "open" &&
+      !latest.round.frozen
+    ) {
+      renderRound(latest);
+    }
+  }, 1000);
 
   // --- Needs Review (D-05: per-item approve/reject, no interruption) ---
 
@@ -278,6 +392,17 @@
       el("p", "panel-body", "Everything is frozen. Nothing resumes until you pick an action."),
     );
 
+    // D2-16: a halt froze the round mid-flight — show what Resume/Discard mean for it.
+    if (snapshot.round?.frozen) {
+      triageView.appendChild(
+        el(
+          "p",
+          "panel-body round-frozen-line",
+          `Round frozen at ${formatRemaining(snapshot.round.remainingMs || 0)} remaining — ${snapshot.round.totalVotes} votes recorded. Resume continues the round; Discard cancels it and returns candidates to the pool.`,
+        ),
+      );
+    }
+
     const groups = el("div", "triage-groups");
     const inflight = triageGroup("In-flight task");
     inflight.appendChild(el("p", "card-text", frozen?.activeTaskId ? frozen.activeTaskId : "None"));
@@ -422,6 +547,7 @@
     haltedBanner.hidden = !halted;
     tabs.hidden = halted;
     triageView.hidden = !halted;
+    roundPanel.hidden = halted;
     for (const name of Object.keys(views)) {
       views[name].hidden = halted || name !== activeTab;
     }
@@ -429,6 +555,7 @@
       renderTriage(latest);
       return;
     }
+    renderRound(latest);
     if (activeTab === "review") renderReview(latest);
     if (activeTab === "queue") renderQueue(latest);
     if (activeTab === "audit") void renderAudit();

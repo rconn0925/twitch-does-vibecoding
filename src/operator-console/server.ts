@@ -16,8 +16,13 @@ import {
 import { submitCandidate } from "../pipeline/submit.js";
 import type { CandidatePool } from "../queue/pool.js";
 import type { TaskQueue } from "../queue/task-queue.js";
-import { STATE_CHANGED } from "../shared/events.js";
-import type { GateResult, StateSnapshot, SuggestionCandidate } from "../shared/types.js";
+import { ROUND_CLOSED, ROUND_OPENED, STATE_CHANGED, VOTE_RECORDED } from "../shared/events.js";
+import type {
+  GateResult,
+  RoundSnapshot,
+  StateSnapshot,
+  SuggestionCandidate,
+} from "../shared/types.js";
 import { recover, triggerHalt } from "../state-machine/halt.js";
 import {
   approve,
@@ -26,6 +31,7 @@ import {
   type ReviewItem,
   reject,
 } from "../state-machine/review-queue.js";
+import { type RoundManager, RoundStartError } from "../state-machine/round.js";
 import { InvalidTransitionError, type StreamModeMachine } from "../state-machine/stream-mode.js";
 
 export interface ConsoleServerDeps {
@@ -34,6 +40,8 @@ export interface ConsoleServerDeps {
   port: number;
   pool: CandidatePool;
   taskQueue: TaskQueue;
+  /** Voting-round lifecycle — POST /api/round/start is its only console-side caller (D2-01). */
+  round: RoundManager;
   /** The compliance gate, pre-bound with its own deps (COMP-01 single funnel). */
   classify: (candidate: SuggestionCandidate) => Promise<GateResult>;
   /**
@@ -58,6 +66,8 @@ export interface ConsoleState extends StateSnapshot {
   queue: SuggestionCandidate[];
   pendingReviewCount: number;
   review: ReviewItem[];
+  /** Current voting round, or null when none is open (plan 02-03). */
+  round: RoundSnapshot | null;
 }
 
 // zod v4 validation at every untrusted boundary (ASVS V5): terse 400s, never stack traces.
@@ -77,6 +87,9 @@ const RecoverBodySchema = z
 const ReviewIdParamsSchema = z.object({ id: z.coerce.number().int().positive() });
 
 const TaskIdParamsSchema = z.object({ id: z.string().min(1).max(200) });
+
+// Round start carries no parameters — a strict empty object rejects smuggled keys.
+const RoundStartBodySchema = z.object({}).strict();
 
 const DevSubmitBodySchema = z
   .object({
@@ -157,6 +170,7 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       queue: taskQueue.list(),
       pendingReviewCount: review.length,
       review,
+      round: deps.round.snapshot(),
     };
   }
 
@@ -193,6 +207,14 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
   machine.on(STATE_CHANGED, () => {
     pushState();
   });
+  // Round lifecycle pushes stay synchronous per-event: this is an
+  // operator-frequency surface, not the overlay — the 300ms vote-tally
+  // debounce is the overlay's concern (plan 02-05).
+  for (const roundEvent of [ROUND_OPENED, ROUND_CLOSED, VOTE_RECORDED]) {
+    deps.round.on(roundEvent, () => {
+      pushState();
+    });
+  }
 
   /**
    * Wrap the gate so a ws snapshot lands AFTER background routing settles:
@@ -243,6 +265,29 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       reasonTag,
     );
     res.json(frozen);
+  });
+
+  // D2-01 streamer-triggered rounds: the console Start Round button is the
+  // ONLY round-open path. Preconditions (IDLE + pool >= 2) live in
+  // RoundManager.startRound(); RoundStartError maps to a terse 409 with a
+  // machine-readable reason — never a stack trace (T-01-03 discipline).
+  app.post("/api/round/start", (req, res) => {
+    const parsed = RoundStartBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid round start request body" });
+      return;
+    }
+    try {
+      const snap = deps.round.startRound();
+      pushState();
+      res.json(snap);
+    } catch (err) {
+      if (err instanceof RoundStartError) {
+        res.status(409).json({ error: err.message, reason: err.reason });
+        return;
+      }
+      throw err;
+    }
   });
 
   // D-04 triage-then-choose: exactly three recovery actions, streamer-picked.

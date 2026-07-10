@@ -15,12 +15,15 @@ import {
   startHotkeyListener,
 } from "./kill-switch/hotkey.js";
 import { type ConsoleServerHandle, startConsoleServer } from "./operator-console/server.js";
+import { enqueueWinner } from "./pipeline/round.js";
+import { submitCandidate } from "./pipeline/submit.js";
 import { CandidatePool } from "./queue/pool.js";
 import { TaskQueue } from "./queue/task-queue.js";
 import { HALT_TRIGGERED } from "./shared/events.js";
 import type { HaltContext } from "./shared/types.js";
 import { type HaltDeps, triggerHalt } from "./state-machine/halt.js";
 import { expireAllPending, expireStale, reviewTtlMs } from "./state-machine/review-queue.js";
+import { RoundManager } from "./state-machine/round.js";
 import { StreamModeMachine } from "./state-machine/stream-mode.js";
 
 export interface CreateAppOptions {
@@ -42,6 +45,8 @@ export interface AppHandle {
   logger: Logger;
   pool: CandidatePool;
   taskQueue: TaskQueue;
+  /** Voting-round lifecycle manager (plans 02-04/02-05 and the e2e suite need it). */
+  round: RoundManager;
   /** Phase 3's orchestrator registers agent-session PIDs/controllers here. */
   registry: AbortRegistry;
   close: () => Promise<void>;
@@ -113,12 +118,51 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     ...(classifierDeps ? { classifier: classifierDeps } : {}),
   };
 
+  // Voting rounds (CHAT-02). The injected wrapper is RoundManager's ONLY
+  // bridge to the build queue (COMP-01): it maps the manager's third callback
+  // argument — the winner's PERSISTED round_candidates.pooled_at_ms — onto
+  // ApprovedCandidate.addedAtMs, which is what makes the D2-05 staleness
+  // branch operational in production. Stale winners re-enter submitCandidate
+  // for full re-classification instead of riding their old approval.
+  const round = new RoundManager({
+    db,
+    machine,
+    pool,
+    logger,
+    enqueueWinner: (candidate, result, pooledAtMs) =>
+      enqueueWinner(
+        {
+          taskQueue,
+          db,
+          mode: () => machine.mode,
+          resubmit: (c) =>
+            submitCandidate(
+              {
+                db,
+                mode: () => machine.mode,
+                pool,
+                classify: (cand) => classify(gateDeps, cand),
+                logger,
+              },
+              c,
+            ),
+          logger,
+        },
+        { candidate, result, addedAtMs: pooledAtMs },
+      ),
+  });
+  // D2-14 ordering contract: restore persisted round state BEFORE any surface
+  // (console route, future chat listener) can accept input. A round that
+  // expired during downtime closes here; a frozen round waits for triage.
+  round.restore();
+
   const console_ = await startConsoleServer({
     machine,
     db,
     port: opts.port,
     pool,
     taskQueue,
+    round,
     classify: (candidate) => classify(gateDeps, candidate),
     // WR-02: the console Halt button gets the SAME abort hook as the panic
     // hotkey — both kill paths must be genuinely equivalent (D-01), so a
@@ -140,6 +184,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     logger,
     pool,
     taskQueue,
+    round,
     registry,
     close: async () => {
       clearInterval(reviewSweepTimer);

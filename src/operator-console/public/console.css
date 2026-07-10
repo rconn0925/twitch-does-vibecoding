@@ -438,6 +438,48 @@ body {
   max-width: 320px;
 }
 
+/* Round panel (Phase 2, D2-01) — Start Round is the ONE new accent control
+   (extends the Phase 1 accent reserved-for list by exactly one element). */
+.round-countdown {
+  font-variant-numeric: tabular-nums; /* ticking digits must not jitter */
+}
+
+.round-candidates {
+  margin: 0 0 var(--space-md);
+  padding-left: var(--space-lg);
+}
+
+.round-candidate {
+  margin-bottom: var(--space-sm);
+  font-size: 16px;
+}
+
+.round-candidate-text {
+  overflow-wrap: anywhere;
+}
+
+.round-votes {
+  margin-left: var(--space-sm);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Disabled-reason text — Label 14/600 muted (UI-SPEC) */
+.round-reason {
+  margin: var(--space-sm) 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.button-accent:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* HALTED triage takeover (D-04) */
 .triage-groups {
   display: flex;
