@@ -55,6 +55,7 @@ function sampleRound(overrides: Partial<RoundSnapshot> = {}): RoundSnapshot {
     winnerOption: null,
     tiebreak: false,
     totalVotes: 3,
+    winnerQueued: false,
     ...overrides,
   };
 }

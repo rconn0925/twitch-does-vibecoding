@@ -122,12 +122,18 @@ export function createNarrator(deps: {
       const winner = snap.candidates[snap.winnerOption - 1];
       if (!winner) return;
       const title = truncateTitle(winner.candidate.text);
+      // WR-02 broadcast honesty (D2-18): only announce "Queued for the
+      // build" when the funnel actually queued the winner. A refused winner
+      // (halted, or stale → re-classification) gets the honest variant.
+      const disposition = snap.winnerQueued
+        ? "Queued for the build."
+        : "It's being re-checked before the build.";
       if (snap.tiebreak) {
-        void deps.sender.send(`Dead heat! Coin flip says… "${title}". Queued for the build.`);
+        void deps.sender.send(`Dead heat! Coin flip says… "${title}". ${disposition}`);
         return;
       }
       void deps.sender.send(
-        `Round over — "${title}" wins with ${winner.votes} votes. Queued for the build.`,
+        `Round over — "${title}" wins with ${winner.votes} votes. ${disposition}`,
       );
     },
 

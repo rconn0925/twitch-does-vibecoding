@@ -119,6 +119,8 @@ interface ActiveRound {
   frozenRemainingMs: number | null;
   winnerOption: number | null;
   tiebreak: boolean;
+  /** Set at close time from the funnel's EnqueueWinnerResult (WR-02). */
+  winnerQueued: boolean;
   options: StoredOption[];
   votesByUser: Map<string, number>;
 }
@@ -280,6 +282,7 @@ export class RoundManager {
       frozenRemainingMs: null,
       winnerOption: null,
       tiebreak: false,
+      winnerQueued: false,
       options,
       votesByUser: new Map(),
     };
@@ -404,6 +407,10 @@ export class RoundManager {
           .get(round.roundId, winnerOption) as { pooled_at_ms: number } | undefined;
         const pooledAtMs = persisted?.pooled_at_ms ?? winner.pooledAtMs;
         const outcome = this.#enqueueWinner(winner.candidate, winner.result, pooledAtMs);
+        // WR-02 broadcast honesty: the ROUND_CLOSED snapshot must carry the
+        // real enqueue outcome so narration never announces a queued build
+        // that never happened.
+        round.winnerQueued = outcome.queued;
         if (!outcome.queued) {
           this.#logger?.warn(
             { roundId: round.roundId, reason: outcome.reason },
@@ -506,6 +513,7 @@ export class RoundManager {
       frozenRemainingMs: row.frozen_remaining_ms,
       winnerOption: null,
       tiebreak: false,
+      winnerQueued: false,
       options,
       votesByUser,
     };
@@ -638,6 +646,7 @@ export class RoundManager {
       winnerOption: round.winnerOption,
       tiebreak: round.tiebreak,
       totalVotes: round.options.reduce((sum, o) => sum + o.votes, 0),
+      winnerQueued: round.winnerQueued,
     };
   }
 }

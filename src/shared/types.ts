@@ -115,4 +115,12 @@ export interface RoundSnapshot {
   winnerOption: number | null;
   tiebreak: boolean;
   totalVotes: number;
+  /**
+   * True only when a closed round's winner actually reached the build queue
+   * (WR-02 broadcast honesty, D2-18): the funnel can refuse a winner
+   * (halted, or stale → re-classification), and narration must not announce
+   * "Queued for the build" for a build that never queued. Always false
+   * while the round is open.
+   */
+  winnerQueued: boolean;
 }

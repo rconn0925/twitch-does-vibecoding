@@ -51,6 +51,7 @@ function snapshot(overrides: Partial<RoundSnapshot> = {}): RoundSnapshot {
     winnerOption: null,
     tiebreak: false,
     totalVotes: 0,
+    winnerQueued: false,
     ...overrides,
   };
 }
@@ -96,6 +97,7 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         status: "closed",
         winnerOption: 2,
         totalVotes: 8,
+        winnerQueued: true,
         candidates: [
           roundCandidate(1, "Title A", 3),
           roundCandidate(2, "Title B", 5),
@@ -104,6 +106,27 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       }),
     );
     expect(sent).toEqual(['Round over — "Title B" wins with 5 votes. Queued for the build.']);
+  });
+
+  it("roundClosed with an UN-queued winner never says 'Queued for the build' (WR-02 honesty)", () => {
+    const { sent, sender } = capturingSender();
+    const narrator = createNarrator({ sender });
+    narrator.roundClosed(
+      snapshot({
+        status: "closed",
+        winnerOption: 2,
+        totalVotes: 8,
+        winnerQueued: false, // funnel refused: halted or stale → re-check
+        candidates: [
+          roundCandidate(1, "Title A", 3),
+          roundCandidate(2, "Title B", 5),
+          roundCandidate(3, "Title C", 0),
+        ],
+      }),
+    );
+    expect(sent).toEqual([
+      'Round over — "Title B" wins with 5 votes. It\'s being re-checked before the build.',
+    ]);
   });
 
   it("roundClosed with a tiebreak uses the dead-heat template", () => {
@@ -115,10 +138,29 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         winnerOption: 1,
         tiebreak: true,
         totalVotes: 6,
+        winnerQueued: true,
         candidates: [roundCandidate(1, "Title A", 3), roundCandidate(2, "Title B", 3)],
       }),
     );
     expect(sent).toEqual(['Dead heat! Coin flip says… "Title A". Queued for the build.']);
+  });
+
+  it("a tiebreak with an UN-queued winner also gets the honest re-check variant (WR-02)", () => {
+    const { sent, sender } = capturingSender();
+    const narrator = createNarrator({ sender });
+    narrator.roundClosed(
+      snapshot({
+        status: "closed",
+        winnerOption: 1,
+        tiebreak: true,
+        totalVotes: 6,
+        winnerQueued: false,
+        candidates: [roundCandidate(1, "Title A", 3), roundCandidate(2, "Title B", 3)],
+      }),
+    );
+    expect(sent).toEqual([
+      'Dead heat! Coin flip says… "Title A". It\'s being re-checked before the build.',
+    ]);
   });
 
   it("roundClosed with zero votes uses the run-it-back template", () => {
