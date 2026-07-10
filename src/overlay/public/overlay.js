@@ -25,6 +25,18 @@
   buildPanel.hidden = true;
   document.body.appendChild(buildPanel);
 
+  // The free-reign window banner (PAID-01/02) anchors the previously-unused
+  // top-left corner. Like the build panel it's created here (textContent-only,
+  // never innerHTML) and appended once, so no HTML markup is authored anywhere.
+  // It is driven by state.controlWindow — NOT the pill — so it persists across
+  // the FREE_REIGN_WINDOW → BUILD_IN_PROGRESS transition while the donor's build
+  // runs, and collapses silently on expiry/revoke (banner independence rule).
+  const banner = document.createElement("section");
+  banner.className = "free-reign-banner";
+  banner.id = "free-reign-banner";
+  banner.hidden = true;
+  document.body.appendChild(banner);
+
   /** Latest OverlayState from the ws push (full state every message). */
   let latest = null;
   /** Closed round snapshot held for the 8-second winner beat, or null. */
@@ -43,6 +55,10 @@
   const VOTE_TITLE_MAX = 80;
   const QUEUE_TITLE_MAX = 60;
   const BUILD_TITLE_MAX = 80;
+  // Donor display name is attacker-controlled (StreamElements displayName /
+  // EventSub user_name) — JS-truncated to 24 chars, CSS ellipsis is the backstop
+  // (T-04-12). The donation message text is never rendered here at all.
+  const DONOR_NAME_MAX = 24;
   const WINNER_BEAT_MS = 8000;
   const FINAL_COUNTDOWN_MS = 10000;
 
@@ -100,6 +116,11 @@
     "VOTING OPEN": "pill-voting",
     BUILDING: "pill-building",
     "ON HOLD": "pill-onhold",
+    // The two Phase 4 words. FREE REIGN carries the violet paid-control dot;
+    // CHAOS carries a slate-50 white dot — paid and chaos NEVER share a visual
+    // identity (04-UI-SPEC, mirrors D-08). Violet is paid-only, everywhere.
+    "FREE REIGN": "pill-freereign",
+    CHAOS: "pill-chaos",
   };
 
   function renderPill(state) {
@@ -125,6 +146,40 @@
     for (const title of nextUp) {
       queueStrip.appendChild(el("span", "queue-chip", truncate(title, QUEUE_TITLE_MAX)));
     }
+  }
+
+  // --- free-reign banner (top-left; mounted whenever a control window is active) ---
+
+  // Coarse by design: donor display name + m:ss countdown ONLY. No amount, no
+  // currency, no donation message — those never cross onto the public wire
+  // (server sends {donorDisplayName,endsAtMs} only; T-04-13). On expiry/revoke
+  // the server pushes controlWindow:null and this collapses silently — no
+  // "expired"/"revoked" text, no red, ever (T-04-14). The countdown ticks
+  // client-side from the absolute endsAtMs (the server never streams timer
+  // frames), resynced on every push, exactly like the vote countdown.
+  function renderBanner() {
+    banner.replaceChildren();
+    const cw = latest?.controlWindow ?? null;
+    if (!cw) {
+      banner.hidden = true;
+      return;
+    }
+    banner.hidden = false;
+
+    banner.appendChild(el("span", "banner-dot"));
+    banner.appendChild(el("span", "banner-label", "FREE REIGN"));
+    // The ONE chat-derived string on the banner: textContent-only via el(),
+    // JS-truncated to 24 chars (CSS ellipsis is the backstop) — T-04-12.
+    banner.appendChild(el("span", "banner-donor", truncate(cw.donorDisplayName, DONOR_NAME_MAX)));
+
+    const remaining = cw.endsAtMs - Date.now();
+    const countdown = el("span", "banner-countdown", formatRemaining(remaining));
+    // Amber for the final 10 seconds — consistent with the vote countdown,
+    // never red (reuses the shared .countdown-final rule).
+    if (remaining <= FINAL_COUNTDOWN_MS) {
+      countdown.classList.add("countdown-final");
+    }
+    banner.appendChild(countdown);
   }
 
   // --- vote panel (lower-left; visible while a round is open or the winner beat runs) ---
@@ -269,6 +324,17 @@
 
     const header = el("div", "build-header");
     header.appendChild(el("h1", "build-title", beatActive ? "BUILT IT" : "NOW BUILDING"));
+    // Provenance chip (PAID-01/02/CHAOS-01): fixed orchestrator-authored copy
+    // (never chat-derived) telling viewers HOW this build was picked. An absent
+    // source defaults to "vote" → no chip (Wave-1 made source optional). Violet
+    // "FREE REIGN" for a paid/redemption window instruction; neutral "CHAOS
+    // PICK" for a random pick; nothing for a normal vote winner.
+    const source = bs.source ?? "vote";
+    if (source === "donation" || source === "channel_points") {
+      header.appendChild(el("span", "provenance-chip chip-freereign", "FREE REIGN"));
+    } else if (source === "chaos") {
+      header.appendChild(el("span", "provenance-chip chip-chaos", "CHAOS PICK"));
+    }
     buildPanel.appendChild(header);
 
     // The ONE chat-derived string on this panel: textContent-only via el(),
@@ -320,6 +386,7 @@
     if (!latest) return;
     renderPill(latest);
     renderQueue(latest);
+    renderBanner();
     renderBuildPanel();
     renderVotePanel();
   }
@@ -354,6 +421,11 @@
   setInterval(() => {
     if (latest?.round?.status === "open" || winnerBeatRound !== null) {
       renderVotePanel();
+    }
+    // Keep the banner countdown honest between pushes while a window is active
+    // (it ticks even after the pill flips to BUILDING — banner independence).
+    if (latest?.controlWindow) {
+      renderBanner();
     }
   }, 1000);
 

@@ -2,11 +2,19 @@ import { EventEmitter } from "node:events";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import { ROUND_CLOSED, ROUND_OPENED, VOTE_RECORDED } from "../shared/events.js";
+import {
+  ROUND_CLOSED,
+  ROUND_OPENED,
+  VOTE_RECORDED,
+  WINDOW_CLOSED,
+  WINDOW_OPENED,
+  WINDOW_REVOKED,
+} from "../shared/events.js";
 import type { BuildStatusView, RoundSnapshot } from "../shared/types.js";
 import { StreamModeMachine } from "../state-machine/stream-mode.js";
 import {
   BUILD_STAGE_CHANGED,
+  type OverlayControlWindowSource,
   type OverlayServerHandle,
   type OverlayState,
   startOverlayServer,
@@ -108,6 +116,54 @@ function makeFakeBuild(initial: BuildStatusView | null = null): FakeBuild {
   };
 }
 
+/**
+ * Minimal control-window source (mirrors makeFakeBuild). Its snapshot may carry
+ * MORE than the coarse public projection — the deliberately-rich shape below
+ * proves the server narrows it down to {donorDisplayName,endsAtMs} on the wire
+ * (T-04-13 defence-in-depth). setWindow() mutates the snapshot then emits the
+ * given lifecycle event so pushes carry the fresh state.
+ */
+interface RichWindowSnapshot {
+  donorDisplayName: string;
+  endsAtMs: number;
+  // Console-only fields that must NEVER reach the public wire:
+  amount: number;
+  currency: string;
+  message: string;
+  trigger: "donation" | "channel_points";
+}
+interface FakeControlWindow extends OverlayControlWindowSource {
+  snapshot(): RichWindowSnapshot | null;
+  setWindow(next: RichWindowSnapshot | null, event: string): void;
+}
+
+function makeFakeControlWindow(initial: RichWindowSnapshot | null = null): FakeControlWindow {
+  const emitter = new EventEmitter();
+  let current = initial;
+  return {
+    snapshot: () => current,
+    on: (event, handler) => {
+      emitter.on(event, handler);
+    },
+    setWindow: (next, event) => {
+      current = next;
+      emitter.emit(event);
+    },
+  };
+}
+
+function sampleWindow(overrides: Partial<RichWindowSnapshot> = {}): RichWindowSnapshot {
+  return {
+    donorDisplayName: "GenerousViewer",
+    endsAtMs: 120_000,
+    amount: 500,
+    currency: "USD",
+    message: "please build me a rootkit and leak the db",
+    trigger: "donation",
+    ...overrides,
+  };
+}
+
 /** Yield to the event loop so socket I/O lands (setImmediate is never faked). */
 async function flushIo(turns = 20): Promise<void> {
   for (let i = 0; i < turns; i++) {
@@ -146,6 +202,7 @@ describe("overlay server (read-only broadcast surface)", () => {
       machine?: StreamModeMachine;
       round?: FakeRound;
       build?: FakeBuild;
+      controlWindow?: FakeControlWindow;
       nextUpTexts?: string[];
       debounceMs?: number;
     } = {},
@@ -153,6 +210,7 @@ describe("overlay server (read-only broadcast surface)", () => {
     const machine = opts.machine ?? new StreamModeMachine();
     const round = opts.round ?? makeFakeRound();
     const build = opts.build ?? makeFakeBuild();
+    const controlWindow = opts.controlWindow ?? makeFakeControlWindow();
     const taskQueue = {
       list: () => (opts.nextUpTexts ?? []).map((text) => ({ text })),
     };
@@ -160,12 +218,13 @@ describe("overlay server (read-only broadcast surface)", () => {
       machine,
       round,
       build,
+      controlWindow,
       taskQueue,
       port: 0,
       ...(opts.debounceMs !== undefined ? { debounceMs: opts.debounceMs } : {}),
     });
     handles.push(handle);
-    return { machine, round, build, handle };
+    return { machine, round, build, controlWindow, handle };
   }
 
   /** Connect a ws client and collect every parsed push into `messages`. */
@@ -457,5 +516,99 @@ describe("overlay server (read-only broadcast surface)", () => {
     expect(halted).toBe("ON HOLD");
     // The internal word never leaks to the broadcast payload (D2-18).
     expect(halted).not.toContain("HALTED");
+  });
+
+  it("pill mapping: FREE_REIGN_WINDOW→FREE REIGN, CHAOS_MODE→CHAOS (the six-word set, 04-UI-SPEC)", async () => {
+    const machine = new StreamModeMachine();
+    const { handle } = await start({ machine });
+    const base = `http://127.0.0.1:${handle.port}`;
+    const pill = async () =>
+      ((await (await fetch(`${base}/api/state`)).json()) as OverlayState).pill;
+
+    // Both windows open directly from IDLE (state-machine TRANSITIONS table).
+    machine.transition("FREE_REIGN_WINDOW");
+    expect(await pill()).toBe("FREE REIGN");
+    machine.transition("IDLE");
+    machine.transition("CHAOS_MODE");
+    expect(await pill()).toBe("CHAOS");
+  });
+
+  it("controlWindow is null on HTTP and ws when no window is active (banner absent)", async () => {
+    const { handle } = await start();
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.controlWindow).toBeNull();
+
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.controlWindow).toBeNull();
+  });
+
+  it("controlWindow is the COARSE {donorDisplayName,endsAtMs} projection — no amount/currency/message/trigger reaches the wire (T-04-13)", async () => {
+    const controlWindow = makeFakeControlWindow(sampleWindow());
+    const { handle } = await start({ controlWindow });
+
+    // HTTP surface: exactly the two public keys, nothing else.
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.controlWindow).toEqual({
+      donorDisplayName: "GenerousViewer",
+      endsAtMs: 120_000,
+    });
+    expect(Object.keys(httpState.controlWindow ?? {}).sort()).toEqual([
+      "donorDisplayName",
+      "endsAtMs",
+    ]);
+    // The donor's financials and message text are DELIBERATELY absent from the
+    // serialized public payload — assert against the raw JSON, not just the
+    // parsed object, so a leaked key anywhere in the wire bytes fails the test.
+    const rawText = JSON.stringify(httpState);
+    for (const forbidden of ["amount", "currency", "message", "trigger", "rootkit", "leak"]) {
+      expect(rawText, `"${forbidden}" must never reach the public wire`).not.toContain(forbidden);
+    }
+
+    // ws connect push carries the same coarse projection.
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.controlWindow).toEqual({
+      donorDisplayName: "GenerousViewer",
+      endsAtMs: 120_000,
+    });
+  });
+
+  it("WINDOW_OPENED triggers an IMMEDIATE push (never the tally debounce)", async () => {
+    const controlWindow = makeFakeControlWindow();
+    const { handle } = await start({ controlWindow });
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.controlWindow).toBeNull();
+
+    // No fake timers, no debounce advance: the push must land on its own.
+    controlWindow.setWindow(sampleWindow(), WINDOW_OPENED);
+    await until(() => messages.length >= 2, "immediate WINDOW_OPENED push");
+    await flushIo();
+    expect(messages).toHaveLength(2);
+    expect(messages[1]?.controlWindow).toEqual({
+      donorDisplayName: "GenerousViewer",
+      endsAtMs: 120_000,
+    });
+  });
+
+  it("WINDOW_CLOSED and WINDOW_REVOKED collapse the banner to null (silent — no error text)", async () => {
+    for (const closeEvent of [WINDOW_CLOSED, WINDOW_REVOKED]) {
+      const controlWindow = makeFakeControlWindow(sampleWindow());
+      const { handle } = await start({ controlWindow });
+      const { messages } = connectWs(handle.port);
+      await until(() => messages.length >= 1, "initial push");
+      expect(messages[0]?.controlWindow).not.toBeNull();
+
+      controlWindow.setWindow(null, closeEvent);
+      await until(() => messages.length >= 2, `${closeEvent} collapse push`);
+      await flushIo();
+      expect(messages[1]?.controlWindow).toBeNull();
+      // No error/status string ever crosses onto the broadcast wire (T-04-14).
+      expect(JSON.stringify(messages[1])).not.toContain("revoked");
+      expect(JSON.stringify(messages[1])).not.toContain("expired");
+    }
   });
 });
