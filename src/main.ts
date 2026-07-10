@@ -41,6 +41,7 @@ import { CandidatePool } from "./queue/pool.js";
 import { TaskQueue } from "./queue/task-queue.js";
 import { HALT_TRIGGERED, ROUND_CLOSED, ROUND_OPENED } from "./shared/events.js";
 import type {
+  BuildNarrator,
   GateResult,
   HaltContext,
   RoundSnapshot,
@@ -205,12 +206,29 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   }, PURGE_INTERVAL_MS);
   purgeTimer.unref();
 
+  // Build-orchestrator handles, declared early so the HALT_TRIGGERED handler and
+  // the console-server late-binding closures below can capture them before the
+  // orchestrator is composed further down (only when an agentRunner is injected).
+  let orchestrator: BuildSession | undefined;
+  let preview: PreviewServerHandle | undefined;
+  // The build-event narrator, assigned inside the chat-pipeline block below (only
+  // when a chatSource/chatSink pair exists). Absent → build beats are silent-safe.
+  let buildNarrator: BuildNarrator | undefined;
+
   machine.on(HALT_TRIGGERED, (...args) => {
     const ctx = args[0] as HaltContext;
     logger.warn(
       { source: ctx.source, priorMode: ctx.frozen.mode, reasonTag: ctx.reasonTag },
       "HALT triggered",
     );
+    // D3-10: a halt that froze an in-flight build is a veto-abort — narrate it on
+    // chat (the honest word stays on the console; the overlay stays coarse/amber).
+    // The abortActiveWork fan-out (registered controller + sandboxTeardown) runs
+    // decoupled from this line; HALTED is already reached (Phase 1 D-02).
+    if (ctx.frozen.mode === "BUILD_IN_PROGRESS") {
+      const building = orchestrator?.snapshot();
+      if (building) buildNarrator?.buildVetoed(building.title);
+    }
   });
 
   // Compliance-gate deps: injected fake in tests; live Sonnet from
@@ -339,8 +357,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       intervalCap: envPositive(process.env.CHAT_SEND_INTERVAL_CAP, DEFAULT_CHAT_SEND_INTERVAL_CAP),
       intervalMs: envPositive(process.env.CHAT_SEND_INTERVAL_MS, DEFAULT_CHAT_SEND_INTERVAL_MS),
     });
-    // (2) Show narration in exact UI-SPEC copy (CHAT-05).
+    // (2) Show narration in exact UI-SPEC copy (CHAT-05). The same narrator
+    // carries the build-pipeline beats (BUILD-03/D3-08/D3-09) — expose it to the
+    // orchestrator + the veto-abort handler above via buildNarrator.
     const narrator = createNarrator({ sender, logger, cooldownSeconds: intakeCooldownSeconds });
+    buildNarrator = narrator;
     // (3) Chat hears transitions only: round open + close/winner (D2-07).
     round.on(ROUND_OPENED, (...args) => {
       narrator.roundOpened(args[0] as RoundSnapshot);
@@ -476,6 +497,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     abortActiveWork: (frozen) => abortActiveWork(registry, frozen, logger),
     ...(opts.twitchAuth ? { twitchAuth: opts.twitchAuth } : {}),
     twitchStatus: () => twitchStatus,
+    // BUILD-03 / D3-09 build-decision hooks + status source. Late-binding
+    // closures over `orchestrator` (composed below only when an agentRunner is
+    // injected) — a no-op / null until then, mirroring twitchStatus's pattern.
+    retryBuild: (taskId) => orchestrator?.retryBuild(taskId),
+    skipTask: (taskId, reasonTag) => orchestrator?.skipTask(taskId, reasonTag),
+    buildStatus: () => orchestrator?.snapshot() ?? null,
     logger,
   });
   logger.info(
@@ -489,8 +516,6 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // fakes in tests, real SDK/WSL2 adapters from the entrypoint) — both take the
   // IDENTICAL path. The build session IS the OverlayBuildSource (snapshot +
   // BUILD_STAGE_CHANGED), so the overlay build panel updates live.
-  let orchestrator: BuildSession | undefined;
-  let preview: PreviewServerHandle | undefined;
   if (opts.agentRunner && opts.sandboxAdapter) {
     // Presentational sink: the session owns overlay + audit; this narrates/logs
     // stage transitions (full chat narration polish lands in 03-09).
@@ -513,6 +538,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
           { taskId: task.id },
           "COMP-02 held the build plan for streamer review (console review flow — narration polish 03-09)",
         ),
+      // Build-pipeline chat narration (BUILD-03/D3-08/D3-09); absent when no chat
+      // pipeline is composed — the build still runs, just without chat beats.
+      ...(buildNarrator ? { narrator: buildNarrator } : {}),
       logger,
     });
     orchestrator = buildSession;

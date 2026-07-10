@@ -19,3 +19,13 @@ CRLF/formatting only (no logic), likely from a Windows checkout with `autocrlf`.
 untouched to avoid churning unrelated files; a repo-wide `biome check --write` (or an
 `.gitattributes` `* text=auto eol=lf` normalization pass) should resolve them in a
 dedicated chore, not inside a feature plan.
+
+## 03-09 executor — out-of-scope discoveries
+
+- **Pre-existing biome CRLF formatting errors (5)** in files this plan did not touch:
+  `src/audit/db.ts`, `src/compliance/categories.ts`,
+  `src/compliance/fixtures/feasibility.fixtures.ts`,
+  `src/compliance/fixtures/taxonomy.fixtures.ts`, `src/state-machine/stream-mode.ts`.
+  These are `\r` (CRLF) line-ending artifacts from the Windows worktree checkout
+  (git autocrlf), unchanged from base 87b6f56. All 13 files changed by 03-09 are
+  biome-clean. Left untouched (scope boundary: no unrelated-file fixes).

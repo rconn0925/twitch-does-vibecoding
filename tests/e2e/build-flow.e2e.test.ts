@@ -243,8 +243,8 @@ describe("build-flow e2e (MVP happy path) — 03-06 GREEN", () => {
   });
 });
 
-describe("build-flow e2e (refusal) — never silent (BUILD-03, 03-09 preview)", () => {
-  it("a refused build narrates `refused` and returns the machine to IDLE, never silent", async () => {
+describe("build-flow e2e (refusal) — never silent, freezes a decision (BUILD-03 / D3-09)", () => {
+  it("a refused build emits `refused`, freezes a streamer decision (BUILD_IN_PROGRESS), and skip returns to IDLE", async () => {
     const app = await createApp({
       dbPath: ":memory:",
       port: 0,
@@ -262,14 +262,21 @@ describe("build-flow e2e (refusal) — never silent (BUILD-03, 03-09 preview)", 
     });
 
     drivePooledWinner(app);
-    await waitUntil(() => app.machine.mode === "IDLE" && seen.includes("refused"));
+    // D3-09: a refusal is NEVER a silent auto-IDLE — it freezes a retry/skip
+    // decision with the machine still BUILD_IN_PROGRESS.
+    await waitUntil(() => seen.includes("refused"));
 
     expect(seen.at(-1)).toBe("refused");
     expect(seen).not.toContain("done");
-    expect(app.machine.mode).toBe("IDLE");
+    expect(app.machine.mode).toBe("BUILD_IN_PROGRESS");
     // Audit: the refusal is a first-class recorded event (D3-08), never silent.
     const rows = listAuditRecords(app.db, { limit: 20, eventType: "build_refused" });
     expect(rows.length).toBeGreaterThan(0);
+
+    // The streamer resolves the frozen build via skip → clean return to IDLE.
+    orch.skipTask(orch.snapshot()?.taskId ?? "");
+    await waitUntil(() => app.machine.mode === "IDLE");
+    expect(orch.snapshot()).toBeNull();
 
     await app.close();
   });
