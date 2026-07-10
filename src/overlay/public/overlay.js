@@ -134,8 +134,7 @@
     const track = el("div", "tally-track");
     const fill = el("div", "tally-fill");
     // 0 total votes -> every bar empty (never divide by zero).
-    fill.style.width =
-      round.totalVotes > 0 ? `${(entry.votes / round.totalVotes) * 100}%` : "0%";
+    fill.style.width = round.totalVotes > 0 ? `${(entry.votes / round.totalVotes) * 100}%` : "0%";
     track.appendChild(fill);
     row.appendChild(track);
     return row;
@@ -143,8 +142,7 @@
 
   function renderVotePanel() {
     votePanel.replaceChildren();
-    const liveRound =
-      latest && latest.round && latest.round.status === "open" ? latest.round : null;
+    const liveRound = latest?.round?.status === "open" ? latest.round : null;
     // A newly opened round always outranks a lingering winner beat.
     const beatActive = liveRound === null && winnerBeatRound !== null;
     const round = liveRound || winnerBeatRound;
@@ -213,7 +211,7 @@
   // clock stays honest between pushes. A frozen round re-renders to the same
   // held remainingMs — the display simply stops moving (D2-16 honesty).
   setInterval(() => {
-    if ((latest && latest.round && latest.round.status === "open") || winnerBeatRound !== null) {
+    if (latest?.round?.status === "open" || winnerBeatRound !== null) {
       renderVotePanel();
     }
   }, 1000);

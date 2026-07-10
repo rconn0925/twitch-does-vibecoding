@@ -221,9 +221,9 @@ describe("RoundManager.startRound (D2-01/D2-04)", () => {
       expect((err as RoundStartError).reason).toBe("round-active");
     }
     expect(manager2.snapshot()?.frozen).toBe(true);
-    const open = h.db
-      .prepare("SELECT COUNT(*) AS n FROM rounds WHERE status = 'open'")
-      .get() as { n: number };
+    const open = h.db.prepare("SELECT COUNT(*) AS n FROM rounds WHERE status = 'open'").get() as {
+      n: number;
+    };
     expect(open.n).toBe(1);
     h.db.close();
   });
@@ -666,9 +666,9 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
     manager2.discardRestoredFrozen();
 
     expect(manager2.snapshot()).toBeNull();
-    const row = h.db.prepare("SELECT status, frozen_remaining_ms FROM rounds WHERE id = ?").get(
-      snap.roundId,
-    ) as { status: string; frozen_remaining_ms: number | null };
+    const row = h.db
+      .prepare("SELECT status, frozen_remaining_ms FROM rounds WHERE id = ?")
+      .get(snap.roundId) as { status: string; frozen_remaining_ms: number | null };
     expect(row.status).toBe("discarded");
     expect(row.frozen_remaining_ms).toBeNull();
     expect(pool2.list().map((a) => a.candidate.id)).toEqual(["cand-1", "cand-2", "cand-3"]);

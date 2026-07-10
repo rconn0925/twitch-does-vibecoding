@@ -160,52 +160,48 @@ describe("full chat-vote loop e2e (suggest → filter → vote → winner → qu
     expect(classifierCalls).toBe(3);
   });
 
-  it(
-    "(2)+(3) a banned suggestion gets label-only feedback; an immediate retry hits the cooldown WITHOUT a second classifier call",
-    async () => {
-      // (2) dave's suggestion is rejected by the gate (category: harassment).
-      chat.say("104", "dave", `!suggest ${BANNED_TEXT}`);
-      await until(async () => (classifierCalls === 4 ? true : undefined));
+  it("(2)+(3) a banned suggestion gets label-only feedback; an immediate retry hits the cooldown WITHOUT a second classifier call", async () => {
+    // (2) dave's suggestion is rejected by the gate (category: harassment).
+    chat.say("104", "dave", `!suggest ${BANNED_TEXT}`);
+    await until(async () => (classifierCalls === 4 ? true : undefined));
 
-      // (3) same viewer immediately suggests again: the synchronous intake
-      // cooldown (charged by the accepted first submission) blocks it BEFORE
-      // classification — D2-11's whole point (closes T-01-11).
-      chat.say("104", "dave", "!suggest a totally different idea");
+    // (3) same viewer immediately suggests again: the synchronous intake
+    // cooldown (charged by the accepted first submission) blocks it BEFORE
+    // classification — D2-11's whole point (closes T-01-11).
+    chat.say("104", "dave", "!suggest a totally different idea");
 
-      // Pool unchanged: rejection routes to audit only, retry never enters.
-      const state = await getState();
-      expect(state.pool).toHaveLength(3);
+    // Pool unchanged: rejection routes to audit only, retry never enters.
+    const state = await getState();
+    expect(state.pool).toHaveLength(3);
 
-      // Both feedback lines ride the narrator's 3s coalesce window — wait for
-      // the flush, then assert on everything captured by the sink.
-      await until(
-        async () =>
-          sent.some((m) => m.includes("can't run on stream")) &&
-          sent.some((m) => m.includes("one suggestion per"))
-            ? true
-            : undefined,
-        8_000,
-      );
+    // Both feedback lines ride the narrator's 3s coalesce window — wait for
+    // the flush, then assert on everything captured by the sink.
+    await until(
+      async () =>
+        sent.some((m) => m.includes("can't run on stream")) &&
+        sent.some((m) => m.includes("one suggestion per"))
+          ? true
+          : undefined,
+      8_000,
+    );
 
-      const rejection = sent.find((m) => m.includes("can't run on stream"));
-      expect(rejection).toBeDefined();
-      // Viewer-safe CATEGORY_META label only — never the suggestion text (T-02-17).
-      expect(rejection).toContain("@dave");
-      expect(rejection).toContain("Harassment");
-      for (const message of sent) {
-        expect(message).not.toContain("banword");
-      }
+    const rejection = sent.find((m) => m.includes("can't run on stream"));
+    expect(rejection).toBeDefined();
+    // Viewer-safe CATEGORY_META label only — never the suggestion text (T-02-17).
+    expect(rejection).toContain("@dave");
+    expect(rejection).toContain("Harassment");
+    for (const message of sent) {
+      expect(message).not.toContain("banword");
+    }
 
-      const cooldown = sent.find((m) => m.includes("one suggestion per"));
-      expect(cooldown).toContain("@dave");
-      expect(cooldown).toContain("easy there — one suggestion per 60s.");
+    const cooldown = sent.find((m) => m.includes("one suggestion per"));
+    expect(cooldown).toContain("@dave");
+    expect(cooldown).toContain("easy there — one suggestion per 60s.");
 
-      // The classifier ran exactly once for the flooding user: call 4 was the
-      // banned text; the retry died at intake, so the count never reached 5.
-      expect(classifierCalls).toBe(4);
-    },
-    15_000,
-  );
+    // The classifier ran exactly once for the flooding user: call 4 was the
+    // banned text; the retry died at intake, so the count never reached 5.
+    expect(classifierCalls).toBe(4);
+  }, 15_000);
 
   it("(4) POST /api/round/start opens the round and chat hears the UI-SPEC beat", async () => {
     const res = await postJson("/api/round/start", {});
