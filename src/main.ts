@@ -418,6 +418,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     logger,
   });
   controlWindow.restore();
+  // IN-01: a window restored LIVE on boot needs its "30 seconds left" beat
+  // re-armed. The narrator isn't composed until the chat block below, so capture
+  // the restored window here and arm the beat there once windowNarrator exists.
+  const restoredWindow = controlWindow.snapshot();
 
   // The show narrator is composed inside the chat block below (only when a
   // chatSource/chatSink pair exists). Window/chaos beats route through it when
@@ -591,6 +595,20 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     buildNarrator = narrator;
     // Expose the same narrator to the window/chaos beats composed above.
     windowNarrator = narrator;
+    // IN-01: re-arm the "30s left" beat for a window restored live on boot, using
+    // the REMAINING time (never the full duration). Only when >30s actually
+    // remain — a window already inside its final 30s missed the beat honestly.
+    if (restoredWindow) {
+      const remaining = restoredWindow.endsAtMs - Date.now();
+      if (remaining > 30_000) {
+        clearWindowThirtyBeat();
+        windowThirtyTimer = setTimeout(() => {
+          windowThirtyTimer = null;
+          narrator.window30sLeft(restoredWindow.donorDisplayName);
+        }, remaining - 30_000);
+        windowThirtyTimer.unref();
+      }
+    }
     // (3) Chat hears transitions only: round open + close/winner (D2-07).
     round.on(ROUND_OPENED, (...args) => {
       narrator.roundOpened(args[0] as RoundSnapshot);
