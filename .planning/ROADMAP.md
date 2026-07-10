@@ -108,14 +108,40 @@ Plans:
 
   1. A queued task drives the full pipeline — Sonnet agents research, Fable plans and builds — with the plan re-screened by a second compliance pass before any code is written, and mid-build model refusals surfaced as first-class narrated events
   2. The build executes entirely inside the sandbox (WSL2 or Docker): the agent cannot read/write host files outside its workspace, cannot control host applications, and has zero access to secrets or personal data
-  3. Chat-derived text reaches agents only as data — an injection-style suggestion ("ignore your instructions and...") cannot alter agent behavior
+  3. Chat-derived text reaches agents only as data — an injection-style suggestion cannot alter agent behavior
   4. The overlay shows the suggestion queue, current build status, and pipeline stage (researching → planning → building) in real time, and viewers watch the app under construction via a browser view of the sandboxed dev server
   5. A build failure is narrated in chat/overlay with retry/skip options (never silent dead air), and the streamer veto cleanly aborts an in-flight agent session
 
-**Plans**: TBD
+**Plans**: 9 plans
+
+Plans:
+**Wave 0** *(mandatory human go/no-go — gates the whole phase)*
+
+- [ ] 03-01-PLAN.md — WSL2 sandbox install + isolation/veto/billing/latency human validation (SAND-01, SAND-02) (wave 0)
+
+**Wave 1** *(blocked on Wave 0 GO verdict)*
+
+- [ ] 03-02-PLAN.md — Contracts, SDK install, PipelineStage vocabulary + progress-events translation, audit records, failing e2e (BUILD-02) (wave 1)
+
+**Wave 2** *(blocked on 03-02)*
+
+- [ ] 03-03-PLAN.md — Prompt-injection boundary: zero-interpolation delimited prompts + adversarial-fixture suite (SAND-04) (wave 2)
+- [ ] 03-04-PLAN.md — COMP-02 second pass: direct classify() re-screen of the build plan (COMP-02) (wave 2)
+- [ ] 03-05-PLAN.md — Sandbox adapter (env allowlist) + secrets-isolation invariant + wsl --terminate veto teardown (SAND-03, BUILD-04) (wave 2)
+- [ ] 03-07-PLAN.md — Overlay build panel: queue + build status + pipeline stepper (PRES-02, PRES-04) (wave 2)
+- [ ] 03-08-PLAN.md — App-under-construction preview surface: iframe to sandboxed dev server, auto-refresh (PRES-03) (wave 2)
+
+**Wave 3** *(blocked on 03-02..03-05 + 03-07 + 03-08)*
+
+- [ ] 03-06-PLAN.md — Build-session orchestrator: research→plan→comp02→sandboxed build→done, main.ts composition, happy-path e2e (BUILD-01) (wave 3)
+
+**Wave 4** *(blocked on 03-06)*
+
+- [ ] 03-09-PLAN.md — Graceful failure: narrated retry/skip, first-class refusals, console controls, full failure/veto e2e (BUILD-03) (wave 4)
+
 **UI hint**: yes
 
-Research flag: Windows sandboxing approach (WSL2 vs. Docker) is unvalidated — run the spike at the start of this phase (`/gsd:plan-phase --research-phase 3`), per research SUMMARY.
+Research flag: RESOLVED by the Phase 3 sandbox spike (03-RESEARCH.md) — WSL2 (dedicated distro, automount off, dedicated unprivileged user, NAT networking, spawnClaudeCodeProcess) with a mandatory Wave 0 human go/no-go before any orchestrator code is trusted.
 
 ### Phase 4: Paid Influence & Chaos Mode
 
@@ -160,7 +186,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Compliance Gate & Kill Switch | 5/5 | Complete   | 2026-07-09 |
 | 2. Chat Vote Loop | 6/6 | Complete   | 2026-07-10 |
-| 3. Sandboxed Build Engine & Live Show | 0/TBD | Not started | - |
+| 3. Sandboxed Build Engine & Live Show | 0/9 | Not started | - |
 | 4. Paid Influence & Chaos Mode | 0/TBD | Not started | - |
 | 5. Build History & Stream Night Dry Run | 0/TBD | Not started | - |
 
