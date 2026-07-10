@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>App Under Construction — Twitch Does Vibecoding</title>
+    <link rel="stylesheet" href="/preview.css" />
+  </head>
+  <body>
+    <!--
+      App-under-construction preview surface (PRES-03 / D3-12) — a SEPARATE OBS
+      browser source, NOT the overlay and NOT the console. Strictly isolated:
+      it holds zero orchestrator connection and renders zero chat-derived text.
+      Its only dynamic input is whether the sandboxed dev server is reachable
+      (GET /api/reachable on THIS surface's own server). An unreachable server
+      reads as a calm amber "STANDING BY" — never a browser error page, never
+      red. Every text node below is authored via textContent in preview.js.
+    -->
+    <header id="status-bar" class="status-bar">
+      <span id="status-title" class="status-title"></span>
+      <span id="reachability" class="reachability">
+        <span id="status-dot" class="status-dot"></span>
+        <span id="status-label" class="status-label"></span>
+      </span>
+    </header>
+
+    <main class="stage">
+      <!-- Visible frame + a hidden double-buffer frame for flash-free reloads. -->
+      <iframe
+        id="app-frame"
+        class="app-frame"
+        title="App under construction"
+        sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+      ></iframe>
+      <iframe
+        id="app-frame-buffer"
+        class="app-frame app-frame-buffer"
+        title="App under construction (loading)"
+        sandbox="allow-scripts allow-forms allow-same-origin allow-popups"
+        aria-hidden="true"
+      ></iframe>
+
+      <!-- Calm waiting card, shown only while the dev server is unreachable. -->
+      <section id="placeholder" class="placeholder" hidden>
+        <h1 id="placeholder-headline" class="placeholder-headline">Setting the stage…</h1>
+        <p id="placeholder-subline" class="placeholder-subline">
+          The build environment is starting up.
+        </p>
+      </section>
+    </main>
+
+    <script src="/preview.js"></script>
+  </body>
+</html>
