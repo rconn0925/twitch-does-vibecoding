@@ -30,6 +30,7 @@
   const devText = document.getElementById("dev-text");
   const devFeedback = document.getElementById("dev-feedback");
   const roundPanel = document.getElementById("round-panel");
+  const buildPanel = document.getElementById("build-panel");
   const twitchPill = document.getElementById("twitch-pill");
   const twitchError = document.getElementById("twitch-error");
 
@@ -92,6 +93,10 @@
     }
     if (context.kind === "veto" && context.targetId) {
       await postJson(`/api/tasks/${encodeURIComponent(context.targetId)}/veto`, { reasonTag: tag });
+      return;
+    }
+    if (context.kind === "skip" && context.targetId) {
+      await postJson(`/api/tasks/${encodeURIComponent(context.targetId)}/skip`, { reasonTag: tag });
       return;
     }
     if (context.kind === "reject" && context.targetId) {
@@ -280,6 +285,96 @@
     }
   }, 1000);
 
+  // --- Build awareness + failed/refused decision surface (BUILD-03 / D3-09) ---
+  //
+  // The console shows the honest word ("Build failed" / "declined") — the public
+  // overlay stays coarse (amber only, T-03-16). Retry = accent (recovery action);
+  // Skip = neutral secondary (a routine pacing decision, NEVER destructive-red).
+
+  async function retryBuild(id) {
+    await postJson(`/api/tasks/${encodeURIComponent(id)}/retry`, {});
+    // Success re-animates via the next ws push (BUILD_STAGE_CHANGED → state push).
+  }
+
+  async function skipTask(id) {
+    await postJson(`/api/tasks/${encodeURIComponent(id)}/skip`, {});
+    // Optional one-tap reason tag (reuses the D-18 reason-row), never blocking.
+    showReasonRow({ kind: "skip", targetId: id });
+  }
+
+  const BUILD_STAGES = [
+    ["researching", "Researching"],
+    ["planning", "Planning"],
+    ["building", "Building"],
+  ];
+
+  function renderBuildProgress(build) {
+    buildPanel.appendChild(el("h2", "section-title", `Building: ${build.title}`));
+    const activeIndex = BUILD_STAGES.findIndex(([key]) => key === build.stage);
+    const row = el("div", "build-stages");
+    BUILD_STAGES.forEach(([, label], i) => {
+      const item = el("span", "build-stage");
+      const dot = el("span", "build-dot");
+      if (i < activeIndex) dot.classList.add("build-dot-done");
+      else if (i === activeIndex) dot.classList.add("build-dot-active");
+      item.appendChild(dot);
+      item.appendChild(el("span", "build-stage-label", label));
+      row.appendChild(item);
+    });
+    buildPanel.appendChild(row);
+  }
+
+  function renderBuildDecision(build) {
+    const refused = build.stage === "refused";
+    // "Needs a decision" amber pill — reuses the held-for-review amber, distinct
+    // from the destructive-red reject/veto (a failed build is not a ToS incident).
+    buildPanel.appendChild(el("span", "status-pill status-held", "Needs a decision"));
+    buildPanel.appendChild(
+      el(
+        "h2",
+        "section-title build-decision-heading",
+        refused ? "Build agent declined this one" : "Build failed — retry or skip?",
+      ),
+    );
+    buildPanel.appendChild(
+      el(
+        "p",
+        "panel-body",
+        refused
+          ? "The model wouldn't build this task. Retry rarely helps here; Skip moves on to the next."
+          : "Automatic retry already used. Retry runs the build again from the plan; Skip drops this task and moves on.",
+      ),
+    );
+    buildPanel.appendChild(el("p", "card-text", build.title));
+    const actions = el("div", "card-actions");
+    actions.appendChild(
+      button("Retry Build", "button-accent", () => {
+        void retryBuild(build.taskId);
+      }),
+    );
+    actions.appendChild(
+      button("Skip Task", "button-neutral", () => {
+        void skipTask(build.taskId);
+      }),
+    );
+    buildPanel.appendChild(actions);
+  }
+
+  function renderBuild(snapshot) {
+    buildPanel.replaceChildren();
+    const build = snapshot.build;
+    if (!build) {
+      buildPanel.hidden = true;
+      return;
+    }
+    buildPanel.hidden = false;
+    if (build.decisionPending) {
+      renderBuildDecision(build);
+    } else {
+      renderBuildProgress(build);
+    }
+  }
+
   // --- Needs Review (D-05: per-item approve/reject, no interruption) ---
 
   async function resolveReview(id, action) {
@@ -434,6 +529,19 @@
     triageView.appendChild(
       el("p", "panel-body", "Everything is frozen. Nothing resumes until you pick an action."),
     );
+
+    // D3-10 veto-abort confirmation: a halt during a build aborted the in-flight
+    // sandboxed agent session. The state already flipped to HALTED (decoupled
+    // from teardown, D-02); this line reports best-effort teardown, never blocks.
+    if (frozen?.mode === "BUILD_IN_PROGRESS") {
+      triageView.appendChild(
+        el(
+          "p",
+          "panel-body build-abort-line",
+          "Build aborted — tearing down the sandbox. Sandbox stopped. Safe to continue.",
+        ),
+      );
+    }
 
     // D2-16: a halt froze the round mid-flight — show what Resume/Discard mean for it.
     if (snapshot.round?.frozen) {
@@ -592,6 +700,7 @@
     tabs.hidden = halted;
     triageView.hidden = !halted;
     roundPanel.hidden = halted;
+    buildPanel.hidden = halted;
     for (const name of Object.keys(views)) {
       views[name].hidden = halted || name !== activeTab;
     }
@@ -599,6 +708,7 @@
       renderTriage(latest);
       return;
     }
+    renderBuild(latest);
     renderRound(latest);
     if (activeTab === "review") renderReview(latest);
     if (activeTab === "queue") renderQueue(latest);
