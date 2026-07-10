@@ -35,6 +35,7 @@ import type Database from "better-sqlite3";
 import PQueue from "p-queue";
 import type { Logger } from "pino";
 import {
+  recordBuildHistory,
   recordBuildRefusal,
   recordBuildRetry,
   recordBuildSkip,
@@ -47,6 +48,8 @@ import { BUILD_STAGE_CHANGED } from "../overlay/server.js";
 import type { TaskQueue } from "../queue/task-queue.js";
 import type {
   BuildNarrator,
+  BuildProvenance,
+  BuildResult,
   BuildStatusView,
   GateDecision,
   PipelineStage,
@@ -122,8 +125,13 @@ export interface BuildSession {
    * build reaches a terminal stage (done) OR a decision-pending freeze
    * (failed/refused awaiting the streamer's retry/skip); NEVER rejects — a
    * failure is a stage event, not a thrown error (fail-closed).
+   *
+   * `provenance` (HIST-01) records HOW this build was selected — threaded from
+   * the trigger site (vote | donation | channel_points | chaos) and stored on the
+   * active session so finalize() persists it to build_history. Defaults to
+   * 'vote' (the normal loop), matching overlay.js's `bs.source ?? "vote"`.
    */
-  startBuild(task: QueuedTask): Promise<void>;
+  startBuild(task: QueuedTask, provenance?: BuildProvenance): Promise<void>;
   /**
    * BUILD-03 / D3-09: the streamer chose RETRY for a failed/refused build. Re-runs
    * the build from the approved plan (or the whole pipeline if the failure was
@@ -280,6 +288,15 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   let current: BuildStatusView | null = null;
   let active: { task: QueuedTask; ac: AbortController } | null = null;
   /**
+   * HIST-01: how the ACTIVE build was selected (vote | donation | channel_points
+   * | chaos). Threaded in via startBuild() and read at finalize() to tag the
+   * build_history row. A single slot is safe: builds are strictly sequential
+   * under BUILD_IN_PROGRESS (concurrency-1), incl. D-12 multi-build windows, so
+   * only one build is ever active. A streamer retry keeps the original value
+   * (never reset except at the start of a fresh pipeline).
+   */
+  let currentProvenance: BuildProvenance = "vote";
+  /**
    * A build frozen on a `failed`/`refused` decision awaiting the streamer's
    * retry/skip (D3-09). While set, the machine stays BUILD_IN_PROGRESS, the task
    * stays queued, and the overlay renders the frozen (amber) stage. `planText` is
@@ -335,6 +352,14 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   }
 
   /**
+   * Map a terminal pipeline stage onto the honest build_history result vocabulary
+   * (HIST-01, T-05-02): done→built, and failed/refused pass through 1:1.
+   */
+  function mapStageToResult(stage: "done" | "failed" | "refused"): BuildResult {
+    return stage === "done" ? "built" : stage;
+  }
+
+  /**
    * Terminal exit: emit the terminal stage, drop the overlay snapshot, return to
    * IDLE, unregister, and DEQUEUE the finished task. Legal BUILD_IN_PROGRESS→IDLE
    * transition; never leaves the machine stuck (T-03-22).
@@ -345,6 +370,20 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     summary?: string,
   ): void {
     emitStage(task, stage, summary);
+    // HIST-01: a COMPLETED build persists exactly ONE append-only changelog row,
+    // carrying the gate-APPROVED task.text (D-03), the stored provenance, and the
+    // honest terminal result. Read currentProvenance BEFORE `active = null` and
+    // guard with auditIfOpen (same shutdown-drain guard as the pipeline_stage
+    // write). NOTE: finalizeAborted() deliberately does NOT do this — an abort is
+    // neither a success nor a narrated failure and must never become a row (CR-01).
+    auditIfOpen(() =>
+      recordBuildHistory(deps.db, {
+        taskId: task.id,
+        title: task.text,
+        provenance: currentProvenance,
+        result: mapStageToResult(stage),
+      }),
+    );
     current = null;
     active = null;
     try {
@@ -692,7 +731,11 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   }
 
   /** The full per-task pipeline. Wrapped so it can never throw out of the p-queue. */
-  async function runPipeline(task: QueuedTask): Promise<void> {
+  async function runPipeline(task: QueuedTask, provenance: BuildProvenance): Promise<void> {
+    // HIST-01: pin the provenance for this build so finalize() records it. Set
+    // here (inside the concurrency-1 pipeline) rather than in startBuild so a
+    // second queued startBuild can never overwrite the running build's value.
+    currentProvenance = provenance;
     const ac = new AbortController();
     active = { task, ac };
     try {
@@ -803,7 +846,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   }
 
   return {
-    startBuild(task: QueuedTask): Promise<void> {
+    startBuild(task: QueuedTask, provenance: BuildProvenance = "vote"): Promise<void> {
       if (deps.machine.mode === "HALTED") {
         deps.logger?.warn(
           { taskId: task.id },
@@ -811,7 +854,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         );
         return Promise.resolve();
       }
-      return track(() => runPipeline(task));
+      return track(() => runPipeline(task, provenance));
     },
 
     retryBuild(taskId: string): void {
@@ -827,7 +870,8 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       deps.narrator?.buildRetryChosen(p.task.text);
       if (p.planText === null) {
         // The failure was pre-plan — re-run the whole pipeline from research.
-        void track(() => runPipeline(p.task));
+        // Preserve the original provenance across the streamer's retry (HIST-01).
+        void track(() => runPipeline(p.task, currentProvenance));
         return;
       }
       // Re-run the build from the already-approved plan (UI-SPEC: "Retry runs the
