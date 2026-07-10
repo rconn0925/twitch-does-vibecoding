@@ -28,16 +28,16 @@ afterEach(async () => {
   db = null;
 });
 
-function fakeTwitchAuth() {
+function fakeTwitchAuth(opts: { chatLive?: boolean } = {}) {
   const completed: string[] = [];
   return {
     completed,
     auth: {
       authorizeUrl: (state: string) =>
         `https://id.twitch.tv/oauth2/authorize?client_id=x&state=${state}`,
-      complete: (code: string): Promise<void> => {
+      complete: (code: string): Promise<{ chatLive: boolean }> => {
         completed.push(code);
-        return Promise.resolve();
+        return Promise.resolve({ chatLive: opts.chatLive ?? false });
       },
     },
   };
@@ -92,14 +92,29 @@ describe("OAuth bootstrap routes (GET /auth/start, GET /auth/callback)", () => {
     expect(callback.status).toBe(503);
   });
 
-  it("happy path: start redirects with a nonce; callback with that nonce completes", async () => {
-    const { auth, completed } = fakeTwitchAuth();
+  it("happy path (bootstrap): callback completes and the page HONESTLY says a restart is needed (CR-03)", async () => {
+    const { auth, completed } = fakeTwitchAuth({ chatLive: false });
     const server = await startServer({ twitchAuth: auth });
     const nonce = await startAuth(server);
 
     const res = await fetch(`${base(server)}/auth/callback?code=the-code&state=${nonce}`);
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Twitch authorized — you can close this tab");
+    const body = await res.text();
+    expect(body).toContain("Twitch authorized — now RESTART the app to connect chat");
+    expect(body).not.toContain("chat is reconnecting");
+    expect(completed).toEqual(["the-code"]);
+  });
+
+  it("happy path (live re-auth): when the token lands on the running pipeline the page says chat is reconnecting (CR-03)", async () => {
+    const { auth, completed } = fakeTwitchAuth({ chatLive: true });
+    const server = await startServer({ twitchAuth: auth });
+    const nonce = await startAuth(server);
+
+    const res = await fetch(`${base(server)}/auth/callback?code=the-code&state=${nonce}`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Twitch authorized — chat is reconnecting");
+    expect(body).not.toContain("RESTART");
     expect(completed).toEqual(["the-code"]);
   });
 

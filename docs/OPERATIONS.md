@@ -152,7 +152,10 @@ and the console shows the red "unauthorized" Twitch pill.
 3. Visit <http://127.0.0.1:4900/auth/start> and approve. The app requests
    exactly two scopes: `user:read:chat` and `user:write:chat` — nothing else
    (channel-points scopes come later, in Phase 4).
-4. Expect the "Twitch authorized" page, then a console log line confirming the
+4. Expect the "Twitch authorized — now RESTART the app" page. **First-time
+   authorization requires one restart:** the chat pipeline is composed at
+   boot, and it could not compose without a token. Restart the app
+   (`npm run dev` again), then confirm the console log line that the
    EventSub listener started and the console pill turning green.
 
 The token persists at `TWITCH_TOKEN_PATH` (default `./data/twitch-token.json`)
@@ -164,8 +167,11 @@ like a password: it grants chat read/write as the broadcaster.
 If the console shows **"Twitch login expired"** (or the pill goes red after a
 password change / disconnection of the app in Twitch settings): visit
 <http://127.0.0.1:4900/auth/start> again while logged into the broadcaster
-account. Same flow, any time, while the app is running. No other state needs
-resetting.
+account. Because the app booted with a working token, the fresh token
+registers directly on the **running** chat pipeline — same flow, any time,
+while the app is running, no restart needed (the success page says "chat is
+reconnecting"). Only the first-ever authorization — when the app booted with
+no token at all — needs the one restart described in 6.2.
 
 ### 6.4 Chat Rate Budget
 

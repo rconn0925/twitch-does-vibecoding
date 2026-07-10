@@ -42,10 +42,24 @@ import { expireAllPending, expireStale, reviewTtlMs } from "./state-machine/revi
 import { RoundManager } from "./state-machine/round.js";
 import { StreamModeMachine } from "./state-machine/stream-mode.js";
 
+/**
+ * Outcome of a completed OAuth code exchange (CR-03): the console callback
+ * page must be HONEST about whether chat is now live or a restart is needed.
+ */
+export interface TwitchAuthCompletion {
+  /**
+   * True when the fresh token was registered on the RUNNING chat pipeline's
+   * auth provider (mid-session re-auth) — no restart needed. False =
+   * first-time bootstrap: the token is persisted, but the chat pipeline is
+   * composed at boot, so a restart is required to connect chat.
+   */
+  chatLive: boolean;
+}
+
 /** Console-facing OAuth seam — main.ts wires the twitch-auth module behind it. */
 export interface TwitchAuthRoutes {
   authorizeUrl(state: string): string;
-  complete(code: string): Promise<void>;
+  complete(code: string): Promise<TwitchAuthCompletion>;
 }
 
 export interface CreateAppOptions {
@@ -529,9 +543,32 @@ async function buildTwitchAdapters(logger: Logger): Promise<TwitchAppOptions> {
   try {
     const auth = await import("./ingestion/twitch-auth.js");
     const authDeps = { clientId, clientSecret, tokenPath, logger };
+
+    // CR-03: the auth-complete path must reach the LIVE provider once the
+    // chat pipeline composes — otherwise a mid-session re-auth registers
+    // the fresh token on a throwaway provider and chat stays dead until a
+    // restart. Set when (and only when) the full adapters are returned.
+    let liveChatProvider: ReturnType<typeof auth.createAuthProvider> = null;
     const twitchAuth: TwitchAuthRoutes = {
       authorizeUrl: (state) => auth.buildAuthorizeUrl({ clientId, redirectUri, state }),
-      complete: (code) => auth.completeAuthorization(authDeps, code, redirectUri),
+      complete: async (code) => {
+        await auth.completeAuthorization(
+          authDeps,
+          code,
+          redirectUri,
+          liveChatProvider ?? undefined,
+        );
+        if (liveChatProvider) {
+          logger.info(
+            "Twitch re-authorization registered on the running chat pipeline — no restart needed",
+          );
+          return { chatLive: true };
+        }
+        logger.warn(
+          "Twitch authorized and token persisted — RESTART the app to connect chat (the pipeline composes at boot)",
+        );
+        return { chatLive: false };
+      },
     };
 
     const provider = auth.createAuthProvider(authDeps);
@@ -574,6 +611,9 @@ async function buildTwitchAdapters(logger: Logger): Promise<TwitchAppOptions> {
     // ApiClient.chat structurally satisfies ChatMessageSink — passing it
     // directly keeps the sanctioned send call inside chat-sender.ts only.
     const chatSink: ChatMessageSink = apiClient.chat;
+    // The chat pipeline will compose over THIS provider — a later
+    // /auth/callback registers its fresh token here, live (CR-03).
+    liveChatProvider = provider;
     return { chatSource, chatSink, twitchAuth };
   } catch (err) {
     logger.error(

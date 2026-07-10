@@ -186,7 +186,7 @@ describe("createApp chat composition (fake source + capturing sink)", () => {
       fakeClassifier: APPROVE_ALL,
       twitchAuth: {
         authorizeUrl: (state) => `https://id.twitch.tv/oauth2/authorize?state=${state}`,
-        complete: () => Promise.resolve(),
+        complete: () => Promise.resolve({ chatLive: false }),
       },
     });
     const res = await fetch(`${baseUrl(app)}/auth/start`, { redirect: "manual" });

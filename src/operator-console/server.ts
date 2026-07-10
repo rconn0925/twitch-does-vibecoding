@@ -61,7 +61,12 @@ export interface ConsoleServerDeps {
    */
   twitchAuth?: {
     authorizeUrl(state: string): string;
-    complete(code: string): Promise<void>;
+    /**
+     * Resolves with whether the fresh token landed on the RUNNING chat
+     * pipeline (CR-03) — the callback page copy must be honest about
+     * whether a restart is still required.
+     */
+    complete(code: string): Promise<{ chatLive: boolean }>;
   };
   /** Live Twitch connection health for the console pill; absent = unauthorized. */
   twitchStatus?: () => TwitchConnectionStatus;
@@ -324,19 +329,27 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       return;
     }
     authStateSlot = null; // single use — a matched nonce is burned before the exchange
+    let completion: { chatLive: boolean };
     try {
-      await twitchAuth.complete(parsed.data.code);
+      completion = await twitchAuth.complete(parsed.data.code);
     } catch (err) {
       logger?.error({ err }, "Twitch authorization code exchange failed");
       res.status(400).json({ error: "authorization failed" });
       return;
     }
-    logger?.info({}, "Twitch authorization complete — token persisted");
-    // Static string only — nothing user-controlled is interpolated into HTML.
+    logger?.info(
+      { chatLive: completion.chatLive },
+      "Twitch authorization complete — token persisted",
+    );
+    // CR-03 honesty: never tell the operator "you can close this tab" when
+    // chat is NOT going to connect. Two fixed static strings only — nothing
+    // user-controlled is interpolated into HTML.
     res
       .type("html")
       .send(
-        "<!doctype html><html><body><p>Twitch authorized — you can close this tab.</p></body></html>",
+        completion.chatLive
+          ? "<!doctype html><html><body><p>Twitch authorized — chat is reconnecting. You can close this tab.</p></body></html>"
+          : "<!doctype html><html><body><p>Twitch authorized — now RESTART the app to connect chat, then close this tab.</p></body></html>",
       );
   });
 

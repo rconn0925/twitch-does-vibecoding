@@ -240,6 +240,35 @@ describe("completeAuthorization", () => {
     });
     expect(again).not.toBeNull();
   });
+
+  it("registers the exchanged token on the LIVE provider when one is passed — never a throwaway (CR-03)", async () => {
+    const tokenPath = tokenPathIn();
+    const { provider: liveProvider, captured: liveCaptured } = fakeProvider();
+    const { provider: throwaway, captured: throwawayCaptured } = fakeProvider();
+    const { logger } = capturingLogger();
+    await completeAuthorization(
+      {
+        clientId: "cid",
+        clientSecret: "csec",
+        tokenPath,
+        logger,
+        // If completeAuthorization built its own provider, it would use this one.
+        makeProvider: () => throwaway,
+        exchange: () => Promise.resolve(sampleToken()),
+      },
+      "auth-code-2",
+      "http://localhost:4900/auth/callback",
+      liveProvider,
+    );
+    // The RUNNING pipeline's provider got the fresh token — mid-session
+    // re-auth takes effect without a restart.
+    expect(liveCaptured.addUserForTokenCalls).toHaveLength(1);
+    expect(liveCaptured.addUserForTokenCalls[0]?.intents).toEqual(["chat"]);
+    expect(throwawayCaptured.addUserForTokenCalls).toHaveLength(0);
+    // Still persisted for the next boot.
+    const onDisk = JSON.parse(readFileSync(tokenPath, "utf8")) as Record<string, unknown>;
+    expect(onDisk.userId).toBe("user-777");
+  });
 });
 
 describe("token hygiene (T-02-07)", () => {

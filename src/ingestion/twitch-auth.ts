@@ -105,19 +105,32 @@ export function buildAuthorizeUrl(args: {
  * Exchange the authorization code, register the user on a refresh-wired
  * provider, and persist the token + userId to tokenPath. After this
  * resolves, createAuthProvider returns non-null on every restart.
+ *
+ * CR-03: when the app booted with a token, the RUNNING chat pipeline holds
+ * the boot-time provider — pass it as `liveProvider` so the fresh token is
+ * registered THERE (addUserForToken replaces the user's token data in
+ * place) and a mid-session re-auth takes effect without a restart. Without
+ * it, the exchanged token lands on a throwaway provider nothing references
+ * and only the persisted file survives (a restart is then required).
  */
 export async function completeAuthorization(
   deps: TwitchAuthDeps,
   code: string,
   redirectUri: string,
+  liveProvider?: RefreshingAuthProvider,
 ): Promise<void> {
   const exchange = deps.exchange ?? exchangeCode;
   const tokenData = await exchange(deps.clientId, deps.clientSecret, code, redirectUri);
-  const provider = makeProviderWithPersistence(deps);
+  const provider = liveProvider ?? makeProviderWithPersistence(deps);
   const userId = await provider.addUserForToken(tokenData, ["chat"]);
   persistToken(deps, userId, tokenData);
   deps.logger?.info(
-    { userId, scope: tokenData.scope, obtainmentTimestamp: tokenData.obtainmentTimestamp },
+    {
+      userId,
+      scope: tokenData.scope,
+      obtainmentTimestamp: tokenData.obtainmentTimestamp,
+      registeredOnLiveProvider: liveProvider !== undefined,
+    },
     "Twitch authorization complete — token persisted",
   );
 }
