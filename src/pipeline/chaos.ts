@@ -50,8 +50,7 @@ const DEFAULT_CHAOS_STALENESS_MINUTES = 360;
 function chaosStalenessMs(): number {
   const raw = process.env.CHAOS_STALENESS_MINUTES;
   const parsed = raw === undefined ? Number.NaN : Number.parseFloat(raw);
-  const minutes =
-    Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CHAOS_STALENESS_MINUTES;
+  const minutes = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_CHAOS_STALENESS_MINUTES;
   return minutes * 60_000;
 }
 

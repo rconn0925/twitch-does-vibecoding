@@ -19,7 +19,10 @@ const REJECTED: GateResult = { decision: "rejected", category: "tos-risk", ratio
 const HELD: GateResult = { decision: "held-for-review", category: "gut-feeling", rationale: "hmm" };
 
 function deps(
-  over: Partial<PaidWindowFunnelDeps> & { result?: GateResult; mode?: StreamMode } = {},
+  over: Omit<Partial<PaidWindowFunnelDeps>, "mode"> & {
+    result?: GateResult;
+    mode?: StreamMode;
+  } = {},
 ): { deps: PaidWindowFunnelDeps; queue: TaskQueue; classify: ReturnType<typeof vi.fn> } {
   const queue = new TaskQueue();
   const classify = vi.fn(async () => over.result ?? APPROVED);

@@ -21,9 +21,7 @@ function pooled(id = "c1", addedAtMs = Date.now()): ApprovedCandidate {
   return { candidate: candidate(id), result: APPROVED, addedAtMs };
 }
 
-function deps(
-  over: Partial<SubmitChaosPickDeps> & { mode?: StreamMode } = {},
-): {
+function deps(over: Omit<Partial<SubmitChaosPickDeps>, "mode"> & { mode?: StreamMode } = {}): {
   deps: SubmitChaosPickDeps;
   queue: TaskQueue;
   resubmit: ReturnType<typeof vi.fn>;

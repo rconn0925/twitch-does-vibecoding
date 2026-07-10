@@ -77,7 +77,10 @@ describe("CHAOS-02 paid<->chaos separation invariant (source scan)", () => {
       { rel: "src/control-window/rogue.ts", stripped: "const pick = Math.random();\n" },
       { rel: "src/pipeline/paid-window-rogue.ts", stripped: "const n = randomInt(0, 10);\n" },
       { rel: "src/chaos/rogue.ts", stripped: "socket.on('tip', () => pickChaos());\n" },
-      { rel: "src/pipeline/chaos-rogue.ts", stripped: "import { onRedemption } from '../redemption.js';\n" },
+      {
+        rel: "src/pipeline/chaos-rogue.ts",
+        stripped: "import { onRedemption } from '../redemption.js';\n",
+      },
       // Innocent substrings — must NOT be flagged (word-anchor proof).
       { rel: "src/chaos/clean.ts", stripped: "const many = pickMultiple(); // description\n" },
       { rel: "src/control-window/clean.ts", stripped: "const label = formatMmss(durationMs);\n" },
