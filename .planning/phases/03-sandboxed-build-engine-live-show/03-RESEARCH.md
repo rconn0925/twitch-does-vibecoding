@@ -551,27 +551,31 @@ for await (const message of buildResult) {
 | A3 | The `Options.sandbox.filesystem`/`network` sub-fields are functionally honored by the installed SDK version despite the JSDoc comment on `Options.sandbox` suggesting restrictions come from "permission rules, not these sandbox settings" | Sandbox Recommendation §(e) | If the JSDoc's older guidance is actually authoritative and the sub-fields are unused/ignored, the network allowlist wouldn't actually restrict anything — a silent, dangerous gap. Must be smoke-tested (a disallowed-domain fetch attempt) before the plan relies on it as a control, not just documented as a config option. |
 | A4 | `CandidateSource` can safely carry `"operator"` (or a new value) for a COMP-02 build-plan re-screen without breaking any existing invariant or audit query | Architecture Patterns §Pattern 1 | Low risk — `audit_log.source` has no CHECK constraint (verified in `schema.sql`), so this is schema-safe either way; only risk is a slightly confusing audit trail if `"operator"` is reused rather than adding a distinct value. Flagged as an open question for the planner, not a blocking risk. |
 
-## Open Questions (with recommended resolutions)
+## Open Questions (RESOLVED)
 
 1. **Should the research agent (Sonnet) also run inside the WSL2 sandbox, or stay host-side (native Windows, using the SDK's default spawn)?**
    - What we know: the SDK ships a native `@anthropic-ai/claude-agent-sdk-win32-x64` optional dependency (verified in the installed package's `package.json`), confirming host-side native execution is fully supported for agents that don't need sandboxed Bash execution. Research, as scoped in the code example above (`tools: ["WebSearch", "WebFetch", "Read"]`, no `Bash`/`Write`), doesn't need filesystem/process isolation in the same way the build agent does.
    - What's unclear: whether a prompt-injected research agent could still be steered into an SSRF/exfiltration-flavored misuse of `WebFetch` even without Bash/Write access, making sandboxing valuable there too for defense-in-depth, at the cost of extra WSL2 round-trip latency on every research phase.
    - Recommendation: default to host-side (native Windows) for research, restricted to a narrow read-only tool allowlist, for latency; give the planner discretion to move it into the sandbox too if the injection-fixture testing (D3-05) finds a concrete WebFetch-based risk that a narrow tool allowlist alone doesn't close.
+   - **Operationalized in:** 03-06 Task 1 — research runs host-side (native Windows, Sonnet) under a read-only tool allowlist; sandbox-escalation left to planner discretion only if injection fixtures surface a concrete WebFetch risk.
 
 2. **Which `CandidateSource` value should COMP-02's build-plan re-screen use?**
    - What we know: no schema/invariant blocks reusing `"operator"`, and no CHECK constraint exists on `audit_log.source`.
    - What's unclear: whether reusing `"operator"` will read confusingly in the audit ledger next to genuine operator-console-originated events (halts, vetoes), versus adding a new, clearer `CandidateSource` value (e.g., `"orchestrator"`) that's a small, low-risk type change.
    - Recommendation: add a new `CandidateSource` value distinctly for this (e.g., `"orchestrator"`), since it's a one-line type change and materially improves audit-trail clarity for the streamer reviewing what happened after a stream.
+   - **Operationalized in:** 03-02 — `"orchestrator"` added to `CandidateSource` in src/shared/types.ts; COMP-02 (03-04) builds its plan-re-screen candidate with `source: "orchestrator"`.
 
 3. **Exact COMP-02 in-flight (D3-07) re-screen cadence.**
    - What we know: the SDK exposes `PostToolUse` as a hook event, giving a natural instrumentation point to batch N tool calls (or specifically `Write`/`Edit` calls) before triggering a re-screen.
    - What's unclear: the right N (or time-based alternative) that balances catching compliant-plan-but-non-compliant-output drift against live-pacing latency (D3-07 explicitly calls this a Claude's-discretion tradeoff).
    - Recommendation: start with "re-screen on every batch of Write/Edit tool calls since the last check, OR every 60s of active building, whichever comes first" — cheap to tune later since it's a pure cadence knob, not an architectural decision.
+   - **Operationalized in:** 03-06 Task 1 — the build loop invokes `screenOutputBatch` (03-04) on each Write/Edit output batch during the `building` stage; the exact cadence stays a Claude's-discretion knob, but the invocation is test-gated.
 
 4. **Whether the Docker escalation path is ever needed at all.**
    - What we know: WSL2 + the built-in sandbox appears to satisfy every locked requirement (SAND-01..04) once the (a)/(d)/(g) configuration steps are done, based on official docs and package inspection.
    - What's unclear: this has NOT been hands-on validated on the real machine (WSL2 isn't even installed yet) — an escape-attempt test could still surface a gap the built-in sandbox doesn't close.
    - Recommendation: the plan's first wave should be exactly the human-verification checklist in this document (install WSL2, configure automount-disable + dedicated user, run the escape-attempt test, run the veto-abort test, measure latency) — treat it as a genuine go/no-go checkpoint before building the rest of the orchestrator against the WSL2 assumption, not a footnote to verify later.
+   - **Operationalized in:** 03-01 — the WSL2 install + escape-attempt/veto-abort/latency human-verification checkpoint is the go/no-go before the orchestrator is built against the WSL2 assumption; Docker escalation only if that checkpoint fails.
 
 ## Environment Availability
 
