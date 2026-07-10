@@ -69,21 +69,26 @@ Recent decisions affecting current work:
 - Phase 1: halt-first/audit-best-effort ordering in triggerHalt — halt is never blocked by a ledger failure (failure logged loudly); endorsed by verifier
 - Phase 1: uniform CSRF policy on all state-changing console routes (Origin+Content-Type enforcement, 403) + ws Origin check — console stays localhost/no-auth
 - Phase 1: single-funnel invariant machine-enforced (tests/invariants/single-funnel.test.ts) — one `as QueuedTask` in gate.ts, sole DELETE in purge.ts, zero innerHTML in console.js
+- Phase 3: sandbox mechanism locked to WSL2 (spawnClaudeCodeProcess + sandbox options), built against injected fakes; real isolation proven only at the Wave 0 hands-on gate. All agent turns confined — build turn sandboxed; host research/plan turns stripped of network egress + write/exec tools (CR-02 fix)
+- Phase 3: abort/veto/halt builds route through finalizeAborted() — never emit stage `done` (no false "BUILT IT" on the broadcast overlay, no `pipeline_stage: done` audit row for a killed build) (CR-01 fix)
+- Phase 3: COMP-02 is a two-point gate — plan re-screened BEFORE the build (screenBuildPlan) AND each Write/Edit/NotebookEdit output batch re-screened DURING the build (screenOutputBatch); a rejected batch aborts down the narrated compliance-failure path
 
 ### Pending Todos
 
+- **[Phase 3 — BLOCKING before any live/real build] Wave 0 WSL2 go/no-go** (`03-.../SANDBOX-SETUP.md`, verdict ⏳ PENDING): hands-on proofs a) filesystem-escape isolation (SAND-01), b) dev-server-only exposure (SAND-02), c) `wsl.exe --terminate` kills a hung tree (BUILD-04), d) A1 billing (plan credits vs metered), e) cold/warm launch latency. NO real chat-derived build may execute until this reads GO.
+- [Phase 3] Human UAT / judgment items from review-fix: CR-01 terminal-state on a real veto; WR-05 shutdown-drain race (fix present, no dedicated automated test); WR-07 watchdog bounds — confirm DEFAULT_TURN_TIMEOUT_MS=5min / CLOSE_DRAIN_MS=2s suit the live-show timing envelope.
+- [Phase 3 — deferred ticket] COMP-02 `held` plans are narrated + audited but DROPPED, not routed to a console review queue — `main.ts` onHeldForReview carries a documented `TODO(D-08)`; implement review-queue routing (WR-03).
 - Human UAT (01-HUMAN-UAT.md): physical panic-hotkey test, live Sonnet gate:eval (needs ANTHROPIC_API_KEY), console browser run-through
 - Human UAT (02-HUMAN-UAT.md): live Twitch smoke test (OAuth bootstrap + real-channel round, deferred 02-06 checkpoint; runbook docs/OPERATIONS.md §6), OBS overlay browser-source check
 - Stale `TODO(01-02)` at src/shared/types.ts:43 — GateCategory never narrowed to the categories.ts union (type-looseness only)
 - Review Info findings IN-02..IN-08 in 02-REVIEW.md remain open by scope decision (non-blocking)
 - [Phase 3] Overlay state JSON forwards full GateResult (classifier rationale) to local clients of the public surface — trim RoundSnapshot to display fields (02-SECURITY.md residual, non-blocking)
-- [Phase 3] Re-open T-02-18 (chat text as agent instructions) when builds start executing chat-derived tasks — accepted in Phase 2 explicitly as Phase 3 scope
 
-*Closed this phase: T-01-11 per-user intake rate limiting (src/ingestion/suggest-intake.ts, pre-classification); DNS-rebinding Host-allowlist hardening (src/shared/loopback.ts, CR-02 fix, both servers).*
+*Closed this phase: T-02-18 (chat text as agent instructions) — mitigated by the prompt-injection boundary (SAND-04) + sandboxed build turn; T-01-11 per-user intake rate limiting; DNS-rebinding Host-allowlist hardening. Phase 3 code review 2 blockers + 8 findings all fixed; 27/27 threats secured; 12/12 requirements verified against fakes.*
 
 ### Blockers/Concerns
 
-- [Phase 3] Windows sandboxing approach (WSL2 vs. Docker) unvalidated — dedicated spike required at start of Phase 3 (research flag)
+- **[Phase 3] Wave 0 WSL2 real-environment validation is the single gate before live use** — code isolation is present + fake-tested; accepted risks AR-03-1/2/3 (03-SECURITY.md) hold the real filesystem-escape / loopback-exposure / teardown / billing proofs open until the streamer records GO on SANDBOX-SETUP.md. A NO-GO on isolation or veto escalates to the Docker path (03-RESEARCH.md §Alternatives).
 - [Phase 4] Donation platform choice (StreamElements vs. Streamlabs) and verbatim Bits/Channel Points AUP text need re-verification before implementation (research flag)
 
 ## Deferred Items
@@ -96,6 +101,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-10T03:14:33.858Z
-Stopped at: Phase 3 context gathered — sandbox spike required next
-Resume file: .planning/phases/03-sandboxed-build-engine-live-show/03-CONTEXT.md
+Last session: 2026-07-10
+Stopped at: Phase 3 code-side closeout COMPLETE (8 plans merged, review→fix→verify→secure all green: 524 pass, 27/27 threats secured, 12/12 verified). Phase held short of "complete" pending the Wave 0 WSL2 go/no-go (SANDBOX-SETUP.md ⏳ PENDING) — the one human gate before live/real builds.
+Resume file: .planning/phases/03-sandboxed-build-engine-live-show/SANDBOX-SETUP.md (present the Wave 0 hands-on checklist; on GO, phase can transition and Phase 4 planning begins)
