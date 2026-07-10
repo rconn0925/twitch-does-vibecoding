@@ -14,8 +14,22 @@ export type StreamMode =
   | "CHAOS_MODE"
   | "HALTED";
 
-/** Where a candidate instruction originated. All sources funnel through ONE gate (COMP-01). */
-export type CandidateSource = "chat" | "channel_points" | "donation" | "chaos" | "operator";
+/**
+ * Where a candidate instruction originated. All sources funnel through ONE gate (COMP-01).
+ *
+ * "orchestrator" (Phase 3, 03-RESEARCH.md Open Question 2 / D3-06) is the source
+ * for COMP-02's build-plan re-screen: the build agent's OWN generated plan text
+ * routed back through classify() before any code is written. It's a distinct,
+ * clearer audit-trail value than reusing "operator" — audit_log.source has no
+ * CHECK constraint, so adding it is schema-safe.
+ */
+export type CandidateSource =
+  | "chat"
+  | "channel_points"
+  | "donation"
+  | "chaos"
+  | "operator"
+  | "orchestrator";
 
 /**
  * D-15: "project-switch" is a first-class instruction type, distinct from a normal
@@ -123,4 +137,34 @@ export interface RoundSnapshot {
    * while the round is open.
    */
   winnerQueued: boolean;
+}
+
+/**
+ * The small, stable public status vocabulary for the build pipeline (BUILD-02,
+ * D3-08, PRES-04). This is the ONLY set of words that ever crosses from the
+ * orchestrator into the overlay/console/chat/audit surfaces — raw Agent SDK
+ * message/hook types never leak past src/orchestrator/progress-events.ts, the
+ * fixed translation table (the PILL_BY_MODE analog).
+ *
+ * "refused" is a first-class narrated event (a mid-build model refusal), NOT an
+ * error — kept distinct from "failed" so the show narrates it honestly (D3-08).
+ */
+export type PipelineStage =
+  | "queued"
+  | "researching"
+  | "planning"
+  | "building"
+  | "done"
+  | "failed"
+  | "refused";
+
+/**
+ * Overlay/console-facing view of a build's current status (PRES-02/04). `title`
+ * is the chat-derived task text; it is rendered textContent-only downstream
+ * (dom-safety invariant) and never interpolated into any instruction.
+ */
+export interface BuildStatusView {
+  taskId: string;
+  title: string;
+  stage: PipelineStage;
 }
