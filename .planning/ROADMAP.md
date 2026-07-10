@@ -157,9 +157,33 @@ Research flag: RESOLVED by the Phase 3 sandbox spike (03-RESEARCH.md) — WSL2 (
   4. Streamer can toggle chaos mode, and the system randomly picks the next task from the already-filtered pool instead of running a vote
   5. Paid control (guaranteed) and chaos mode (random) share no code path that attaches chance to payment — verified in the architecture, not just convention
 
-**Plans**: TBD
+**Plans**: 8 plans
 
-Research flag: donation platform choice (StreamElements vs. Streamlabs), verbatim Bits AUP re-verification, and chargeback/refund handling carry MEDIUM confidence — research before implementation (`/gsd:plan-phase --research-phase 4`), per research SUMMARY.
+Plans:
+**Wave 1** *(foundation/seam — disjoint files)*
+
+- [ ] 04-01-PLAN.md — Shared contracts + events + control_windows ledger schema + audit records (wave 1)
+- [ ] 04-02-PLAN.md — Ingestion seams: StreamElements donation source + EventSub redemption source + channel:read:redemptions scope (wave 1)
+
+**Wave 2** *(blocked on 04-01)*
+
+- [ ] 04-03-PLAN.md — ControlWindow FSM: linear+capped duration, cooldown, one-at-a-time, absolute-timestamp crash-safe restore, halt-aware, injected funnel (wave 2)
+- [ ] 04-04-PLAN.md — Overlay: free-reign banner + FREE REIGN/CHAOS pills + provenance chip (coarse public projection) (wave 2)
+- [ ] 04-05-PLAN.md — Console: window panel + Revoke + chaos toggle + donations/missing-scope pills + audit filters (wave 2)
+
+**Wave 3** *(blocked on 04-03)*
+
+- [ ] 04-06-PLAN.md — Chaos selector + single-funnel re-entry (paid-window.ts + chaos.ts) + paid↔chaos separation invariant + single-funnel allowlist (wave 3)
+
+**Wave 4** *(blocked on 04-02..04-06)*
+
+- [ ] 04-07-PLAN.md — Composition: main.ts wiring + window/chaos chat narration + paid-window & chaos end-to-end tests (wave 4)
+
+**Wave 5** *(blocked on 04-07 — batched live human gates)*
+
+- [ ] 04-08-PLAN.md — Live gate: StreamElements account/JWT + broadcaster re-auth + real tip/redemption smoke test + AUP re-read (wave 5)
+
+Research flag: RESOLVED by the Phase 4 research pass (04-RESEARCH.md) — StreamElements LOCKED (D-01), Bits rejected with verbatim AUP citation, chargeback out of scope for MVP, channel:read:redemptions scope correction folded into 04-02. Live-platform binding is the deferred human gate (04-08).
 
 ### Phase 5: Build History & Stream Night Dry Run
 
@@ -187,7 +211,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | 1. Compliance Gate & Kill Switch | 5/5 | Complete   | 2026-07-09 |
 | 2. Chat Vote Loop | 6/6 | Complete   | 2026-07-10 |
 | 3. Sandboxed Build Engine & Live Show | 0/9 | Not started | - |
-| 4. Paid Influence & Chaos Mode | 0/TBD | Not started | - |
+| 4. Paid Influence & Chaos Mode | 0/8 | Not started | - |
 | 5. Build History & Stream Night Dry Run | 0/TBD | Not started | - |
 
 ## Coverage
