@@ -219,6 +219,118 @@ body {
   opacity: 0.5;
 }
 
+/* ── Build-status panel — lower-left, reuses the vote-panel slot ─────── */
+/*
+ * PRES-02/04: mounted only while BUILD_IN_PROGRESS (or the 8s BUILT IT beat).
+ * Same anchor/width/background as the vote panel (they never co-render). The
+ * single active stepper badge is the panel's ONLY accent use (10% budget);
+ * failed/refused use amber, never red (destructive red stays absent, D2-18).
+ */
+
+.build-panel {
+  position: fixed;
+  left: var(--safe-margin);
+  bottom: var(--safe-margin);
+  width: 560px;
+  box-sizing: border-box;
+  background: var(--dominant);
+  border-radius: 12px;
+  padding: var(--panel-pad);
+}
+
+.build-header {
+  display: flex;
+  align-items: baseline;
+}
+
+.build-title {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.build-task {
+  margin-top: 8px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.4;
+  /* CSS backstop behind the JS-side 80-char truncation */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.build-stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.build-step {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.build-step-badge {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--secondary);
+  /* Stage advances read as a deliberate beat, not a flicker (UI-SPEC). */
+  transition: background-color 300ms ease-out;
+}
+
+.build-step-label {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.build-connector {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--secondary);
+}
+
+/* Completed step: green badge + full-strength label. */
+.build-step.step-complete .build-step-badge {
+  background: var(--winner);
+}
+
+.build-step.step-complete .build-step-label {
+  color: var(--text);
+}
+
+/* Active step: the accent's ONLY use on this panel. */
+.build-step.step-active .build-step-badge {
+  background: var(--accent);
+}
+
+.build-step.step-active .build-step-label {
+  color: var(--text);
+}
+
+/* Upcoming step keeps the default Secondary badge + muted label. */
+
+.build-caption {
+  margin-top: 16px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.build-caption-amber {
+  color: var(--urgency); /* honest but calm — amber, never red */
+}
+
 /* ── Queue strip — bottom-right, hidden entirely when empty ─────────── */
 
 .queue-strip {

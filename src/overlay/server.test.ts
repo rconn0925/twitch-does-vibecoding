@@ -215,7 +215,11 @@ describe("overlay server (read-only broadcast surface)", () => {
   });
 
   it("GET /api/state and the connect push both carry the current buildStatus (PRES-02/04)", async () => {
-    const build = makeFakeBuild({ taskId: "t1", title: "build a snake game", stage: "researching" });
+    const build = makeFakeBuild({
+      taskId: "t1",
+      title: "build a snake game",
+      stage: "researching",
+    });
     const { handle } = await start({ build });
 
     const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
