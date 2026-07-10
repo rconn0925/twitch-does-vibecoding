@@ -172,3 +172,9 @@ No gaps. Every automated must-have — 5 roadmap success criteria, 28 plan-front
 
 _Verified: 2026-07-09T21:10:00Z_
 _Verifier: Claude (gsd-verifier)_
+
+---
+
+## Addendum (2026-07-10, post-verification)
+
+The CR-01 behavior verified above (boot-discard of restored frozen rounds) was superseded the same day by commit `46733a2`: boot now **re-enters HALTED** with a synthesized halt context, making the full D-04 triage (resume with exact frozen remainder / reset-to-idle discard) reachable after a restart — stronger alignment with D2-16 than the discard-at-boot behavior this report reviewed. Both triage exits across restart are proven in `tests/e2e/recovery.e2e.test.ts`; discards (live or restored) write a `round_closed` audit row with decision `discarded`. Suite at the superseding commit: 380/380.
