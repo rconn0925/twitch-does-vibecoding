@@ -700,3 +700,20 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
     h.db.close();
   });
 });
+
+describe("RoundManager.dispose (WR-05 shutdown safety)", () => {
+  it("cancels the armed round timer so a pending closeRound never fires against a closed db", () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness();
+      h.manager.startRound();
+      h.manager.dispose();
+      h.db.close(); // AppHandle.close() order: dispose first, THEN db.close()
+      // The round deadline elapsing must NOT run closeRound against the
+      // closed database (it would throw inside the setTimeout callback).
+      expect(() => vi.advanceTimersByTime(roundDurationMs() + 1_000)).not.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

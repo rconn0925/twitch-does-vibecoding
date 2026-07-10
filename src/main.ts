@@ -454,6 +454,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     overlay,
     registry,
     close: async () => {
+      // WR-05: cancel the armed round timer FIRST — otherwise a pending
+      // closeRound() could fire after db.close() below and crash the
+      // process from inside a setTimeout callback.
+      round.dispose();
       clearInterval(reviewSweepTimer);
       clearInterval(purgeTimer);
       chatHandle?.stop();

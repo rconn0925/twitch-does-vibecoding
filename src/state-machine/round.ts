@@ -555,6 +555,18 @@ export class RoundManager {
     this.#emitter.on(event, handler);
   }
 
+  /**
+   * Shutdown hook (WR-05): cancel the armed round timer so a pending
+   * closeRound() can never fire against a closed database — an uncaught
+   * "database connection is closed" inside a setTimeout callback would
+   * kill the process during what was meant to be a graceful shutdown.
+   * The round's persisted state is untouched; restore() picks it up on
+   * the next boot.
+   */
+  dispose(): void {
+    this.#clearTimer();
+  }
+
   /** D2-16: cancel the timer and persist the frozen remainder, synchronously. */
   #freeze(): void {
     const round = this.#round;
