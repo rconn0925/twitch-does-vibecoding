@@ -575,3 +575,24 @@ body {
 .build-decision-heading {
   margin-top: var(--space-sm);
 }
+
+/* Control-window panel (PAID-04) — the honest amount→duration ledger the overlay
+   hides. Revoke reuses .button-destructive (red inventory: Halt/Veto/Reject/Revoke
+   Window); the chaos toggle reuses .button-accent. No new color (console is violet-free). */
+.window-donor {
+  margin: 0 0 var(--space-sm);
+  font-size: 16px;
+  overflow-wrap: anywhere; /* donor name shown in full — the console is private */
+}
+
+.window-mapping {
+  margin: 0 0 var(--space-md);
+  font-size: 16px;
+  color: var(--text-muted); /* the honest PAID-04 math, muted like a ledger line */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Chaos-on body line — same muted body voice as the other panel copy */
+.chaos-on-line {
+  margin-top: var(--space-md);
+}

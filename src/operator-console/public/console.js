@@ -31,8 +31,11 @@
   const devFeedback = document.getElementById("dev-feedback");
   const roundPanel = document.getElementById("round-panel");
   const buildPanel = document.getElementById("build-panel");
+  const windowPanel = document.getElementById("window-panel");
   const twitchPill = document.getElementById("twitch-pill");
   const twitchError = document.getElementById("twitch-error");
+  const donationsPill = document.getElementById("donations-pill");
+  const donationsError = document.getElementById("donations-error");
 
   /** Latest ConsoleState snapshot from the ws push. */
   let latest = null;
@@ -99,6 +102,12 @@
       await postJson(`/api/tasks/${encodeURIComponent(context.targetId)}/skip`, { reasonTag: tag });
       return;
     }
+    if (context.kind === "revoke-window") {
+      // The window already closed on the first click; this appends the tag,
+      // never blocking (the server acknowledges it after the window is gone).
+      await postJson("/api/control-window/revoke", { reasonTag: tag });
+      return;
+    }
     if (context.kind === "reject" && context.targetId) {
       await postJson(`/api/review/${encodeURIComponent(context.targetId)}/reject`, {
         reasonTag: tag,
@@ -141,6 +150,11 @@
     } else if (status === "disconnected") {
       twitchPill.textContent = "Twitch: reconnecting";
       twitchPill.className = "status-pill status-held";
+    } else if (status === "missing-scope") {
+      // 04-02 degraded state: the token lacks channel:read:redemptions, so
+      // channel-points windows can't subscribe — amber, loud, never silent.
+      twitchPill.textContent = "Twitch: missing channel-points scope";
+      twitchPill.className = "status-pill status-held";
     } else {
       twitchPill.textContent = "Twitch: not authorized";
       twitchPill.className = "status-pill status-rejected";
@@ -157,6 +171,18 @@
         ),
       );
       twitchError.hidden = false;
+    } else if (status === "missing-scope") {
+      twitchError.appendChild(
+        el("h2", "error-heading", "Channel-points windows need a re-authorization"),
+      );
+      twitchError.appendChild(
+        el(
+          "p",
+          "error-body",
+          "Visit /auth/start to grant the new permission. Chat, voting, and builds still work.",
+        ),
+      );
+      twitchError.hidden = false;
     } else if (status === "unauthorized") {
       twitchError.appendChild(el("h2", "error-heading", "Twitch login expired"));
       twitchError.appendChild(
@@ -169,6 +195,40 @@
       twitchError.hidden = false;
     } else {
       twitchError.hidden = true;
+    }
+  }
+
+  // --- Donation-feed indicator (04-RESEARCH OQ1: never a silent tip-feed loss) ---
+
+  function renderDonations(snapshot) {
+    const status = snapshot.donations || "unconfigured";
+    if (status === "connected") {
+      donationsPill.textContent = "Donations: connected";
+      donationsPill.className = "status-pill status-approved";
+    } else if (status === "reconnecting") {
+      donationsPill.textContent = "Donations: reconnecting";
+      donationsPill.className = "status-pill status-held";
+    } else {
+      // "not configured" is an expected pre-setup state — amber, not red; the
+      // show runs fine without a donation feed (channel points still work).
+      donationsPill.textContent = "Donations: not configured";
+      donationsPill.className = "status-pill status-held";
+    }
+
+    donationsError.replaceChildren();
+    if (status === "reconnecting") {
+      donationsError.appendChild(el("h2", "error-heading", "Donation feed disconnected"));
+      donationsError.appendChild(
+        el(
+          "p",
+          "error-body",
+          "Reconnecting automatically. Tips sent during the gap can't open windows retroactively — check StreamElements if this persists. Voting and builds are unaffected.",
+        ),
+      );
+      donationsError.hidden = false;
+    } else {
+      // 'not configured' shows the pill only — no error box (expected pre-setup).
+      donationsError.hidden = true;
     }
   }
 
@@ -193,6 +253,11 @@
     if (snapshot.round && snapshot.round.status === "open") {
       return `Round in progress — ${formatRemaining(roundRemainingMs(snapshot.round))} left.`;
     }
+    // D-05 precedence: no vote runs while chaos mode is on (checked before the
+    // generic non-IDLE reason so the copy names chaos, not "current mode: CHAOS_MODE").
+    if (snapshot.chaos) {
+      return "Voting is off while chaos mode is on.";
+    }
     if (snapshot.mode !== "IDLE") {
       return `Rounds can only start from Standby (current mode: ${snapshot.mode}).`;
     }
@@ -202,7 +267,7 @@
     return null;
   }
 
-  /** Transient message from a rejected POST /api/round/start (cleared on next render). */
+  /** Transient message from a rejected round-start / chaos-toggle (cleared on next render). */
   let roundStartError = null;
 
   async function startRound() {
@@ -214,6 +279,30 @@
     }
     // Success needs no handling here: the ws push triggered by ROUND_OPENED
     // re-renders the whole panel with the live round.
+  }
+
+  /** CHAOS-01 / D-05 chaos-toggle disabled reason, or null when the toggle is allowed. */
+  function chaosDisabledReason(snapshot) {
+    // Chaos-on can ALWAYS be turned off — the toggle is the same mode-change control.
+    if (snapshot.chaos) return null;
+    // D-05 precedence order: a live window outranks chaos; chaos only starts from IDLE.
+    if (snapshot.controlWindow) {
+      return "A free-reign window is active — it takes precedence.";
+    }
+    if (snapshot.mode !== "IDLE") {
+      return `Chaos can only start from Standby (current mode: ${snapshot.mode}).`;
+    }
+    return null;
+  }
+
+  async function toggleChaos() {
+    const { res, data } = await postJson("/api/chaos/toggle", {});
+    if (!res.ok) {
+      // Precedence backstop: the server's terse 409 (the button is also disabled).
+      roundStartError = data?.error ? data.error : "Chaos mode couldn't toggle.";
+      renderAll();
+    }
+    // Success re-renders via the ws push (CHAOS_TOGGLED → state push).
   }
 
   function renderRound(snapshot) {
@@ -265,6 +354,33 @@
     if (reason) {
       roundPanel.appendChild(el("p", "round-reason", reason));
     }
+
+    // Chaos-mode toggle lives in the round panel — it swaps the same selection
+    // concern Start Round owns (CHAOS-01). Accent (a forward, non-destructive
+    // mode change), 44px, single click, no modal. D-05 precedence surfaced below.
+    const chaosReason = chaosDisabledReason(snapshot);
+    const chaosToggle = button(
+      snapshot.chaos ? "Disable Chaos Mode" : "Enable Chaos Mode",
+      "button-accent",
+      () => {
+        void toggleChaos();
+      },
+    );
+    chaosToggle.disabled = Boolean(chaosReason);
+    roundPanel.appendChild(chaosToggle);
+    if (chaosReason) {
+      roundPanel.appendChild(el("p", "round-reason", chaosReason));
+    }
+    if (snapshot.chaos) {
+      roundPanel.appendChild(
+        el(
+          "p",
+          "panel-body chaos-on-line",
+          "Chaos mode on — the next task is a random pick from the approved pool. No vote runs.",
+        ),
+      );
+    }
+
     if (roundStartError) {
       roundPanel.appendChild(el("p", "round-reason", roundStartError));
       roundStartError = null;
@@ -274,14 +390,13 @@
   // 1s countdown tick: re-render the round panel while a round is live so the
   // heading and disabled-reason clock stay honest between ws pushes.
   setInterval(() => {
-    if (
-      latest &&
-      latest.mode !== "HALTED" &&
-      latest.round &&
-      latest.round.status === "open" &&
-      !latest.round.frozen
-    ) {
+    if (!latest || latest.mode === "HALTED") return;
+    if (latest.round && latest.round.status === "open" && !latest.round.frozen) {
       renderRound(latest);
+    }
+    // Keep the free-reign window countdown honest between ws pushes (PAID-04).
+    if (latest.controlWindow) {
+      renderWindowPanel(latest);
     }
   }, 1000);
 
@@ -373,6 +488,56 @@
     } else {
       renderBuildProgress(build);
     }
+  }
+
+  // --- Control-window panel + Revoke (PAID-04) ---
+  //
+  // The console shows the FULL honest detail the overlay hides: donor name
+  // (untruncated — the console is private), trigger, and the amount→duration
+  // ledger math (amountLabel). Hidden-not-empty like the build panel. D-11
+  // framing: the window is an OPEN sponsored build slot, never private control.
+
+  async function revokeWindow() {
+    // Single click, NO confirmation modal (D-03: friction only on the hotkey).
+    await postJson("/api/control-window/revoke", {});
+    // Optional one-tap reason tag (reuses the D-18 reason row), never blocking.
+    showReasonRow({ kind: "revoke-window", targetId: null });
+  }
+
+  function renderWindowPanel(snapshot) {
+    windowPanel.replaceChildren();
+    const window_ = snapshot.controlWindow;
+    if (!window_) {
+      windowPanel.hidden = true;
+      return;
+    }
+    windowPanel.hidden = false;
+
+    // Countdown computed CLIENT-side from endsAtMs (resynced on every ws push);
+    // the server never streams per-second timer frames (reuses formatRemaining).
+    const remaining = window_.endsAtMs - Date.now();
+    windowPanel.appendChild(
+      el(
+        "h2",
+        "section-title round-countdown",
+        `Free-reign window — ${formatRemaining(remaining)} left`,
+      ),
+    );
+
+    // Donor line — untruncated, textContent-only (attacker-controlled string).
+    const triggerLabel = window_.trigger === "donation" ? "donation" : "channel points";
+    windowPanel.appendChild(
+      el("p", "window-donor", `${window_.donorDisplayName} — ${triggerLabel}`),
+    );
+
+    // Mapping line — the honest PAID-04 amount→duration math the overlay hides.
+    windowPanel.appendChild(el("p", "window-mapping", window_.amountLabel));
+
+    windowPanel.appendChild(
+      button("Revoke Window", "button-destructive", () => {
+        void revokeWindow();
+      }),
+    );
   }
 
   // --- Needs Review (D-05: per-item approve/reject, no interruption) ---
@@ -694,6 +859,7 @@
     if (!latest) return;
     renderPills(latest);
     renderTwitch(latest);
+    renderDonations(latest);
     const halted = latest.mode === "HALTED";
     // D-04: the triage panel REPLACES the normal view while HALTED.
     haltedBanner.hidden = !halted;
@@ -701,6 +867,7 @@
     triageView.hidden = !halted;
     roundPanel.hidden = halted;
     buildPanel.hidden = halted;
+    windowPanel.hidden = halted; // renderWindowPanel manages visibility when not halted
     for (const name of Object.keys(views)) {
       views[name].hidden = halted || name !== activeTab;
     }
@@ -709,6 +876,7 @@
       return;
     }
     renderBuild(latest);
+    renderWindowPanel(latest);
     renderRound(latest);
     if (activeTab === "review") renderReview(latest);
     if (activeTab === "queue") renderQueue(latest);

@@ -22,6 +22,7 @@
         <span class="pill pill-halted" data-mode="HALTED">HALTED</span>
       </nav>
       <span id="twitch-pill" class="status-pill"></span>
+      <span id="donations-pill" class="status-pill"></span>
       <button id="halt-button" class="halt-button" type="button">Halt Everything</button>
     </header>
 
@@ -45,6 +46,8 @@
 
     <div id="twitch-error" class="error-state" hidden></div>
 
+    <div id="donations-error" class="error-state" hidden></div>
+
     <nav id="tabs" class="tabs" aria-label="Console views">
       <button class="tab active" type="button" data-view="review">Needs Review</button>
       <button class="tab" type="button" data-view="queue">Active Queue</button>
@@ -53,6 +56,8 @@
 
     <main>
       <section id="build-panel" class="panel" hidden></section>
+
+      <section id="window-panel" class="panel" hidden></section>
 
       <section id="round-panel" class="panel"></section>
 
@@ -90,6 +95,12 @@
             <option value="review_resolved">review_resolved</option>
             <option value="review_expired">review_expired</option>
             <option value="submission_refused">submission_refused</option>
+            <option value="window_opened">window_opened</option>
+            <option value="window_expired">window_expired</option>
+            <option value="window_revoked">window_revoked</option>
+            <option value="window_denied">window_denied</option>
+            <option value="chaos_toggled">chaos_toggled</option>
+            <option value="chaos_pick">chaos_pick</option>
           </select>
           <label class="field-label" for="filter-decision">Decision</label>
           <select id="filter-decision" class="dev-input">
