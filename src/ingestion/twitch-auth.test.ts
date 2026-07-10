@@ -86,8 +86,18 @@ afterEach(() => {
 });
 
 describe("TWITCH_SCOPES", () => {
-  it("is exactly user:read:chat + user:write:chat (no user:bot/channel:bot)", () => {
-    expect([...TWITCH_SCOPES]).toEqual(["user:read:chat", "user:write:chat"]);
+  it("is the chat scopes + channel:read:redemptions (no user:bot/channel:bot)", () => {
+    expect([...TWITCH_SCOPES]).toEqual([
+      "user:read:chat",
+      "user:write:chat",
+      "channel:read:redemptions",
+    ]);
+  });
+
+  it("includes channel:read:redemptions (Phase 4 D-02 — redemption subscription scope)", () => {
+    // Adding this scope requires the broadcaster to RE-AUTHORIZE (deferred live
+    // gate, 04-08) — a pre-Phase-4 token does not carry it.
+    expect([...TWITCH_SCOPES]).toContain("channel:read:redemptions");
   });
 });
 
@@ -190,7 +200,9 @@ describe("buildAuthorizeUrl", () => {
     expect(url.searchParams.get("client_id")).toBe("my-client-id");
     expect(url.searchParams.get("redirect_uri")).toBe("http://localhost:4900/auth/callback");
     expect(url.searchParams.get("response_type")).toBe("code");
-    expect(url.searchParams.get("scope")).toBe("user:read:chat user:write:chat");
+    expect(url.searchParams.get("scope")).toBe(
+      "user:read:chat user:write:chat channel:read:redemptions",
+    );
     expect(url.searchParams.get("state")).toBe("nonce-42");
     // Space-joined scope is URL-encoded in the raw string (never a literal space).
     expect(url.search).not.toContain(" ");

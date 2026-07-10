@@ -27,9 +27,25 @@ import { z } from "zod";
 /**
  * D2-09/D2-10: user access token acting as itself — user:bot/channel:bot
  * are NOT needed (those apply only to app access tokens; RESEARCH.md
- * Pattern 2). Channel-points scopes are deferred to Phase 4.
+ * Pattern 2).
+ *
+ * D-02 (Phase 4 SCOPE CORRECTION, 04-RESEARCH Open Question 1): the
+ * channel-points redemption subscription
+ * (`channel.channel_points_custom_reward_redemption.add`) requires the
+ * broadcaster-scoped `channel:read:redemptions` — added here. This is NOT a
+ * zero-touch change: a token issued before this scope was added does not carry
+ * it, so the broadcaster MUST RE-AUTHORIZE at /auth/start for the redemption
+ * subscription to succeed. That live re-auth is a deferred gate in plan 04-08;
+ * until it happens the subscription fails LOUDLY (isMissingRedemptionScopeError
+ * in redemption-source.ts → a missing-scope degraded state, 04-05), never
+ * silently. buildAuthorizeUrl already space-joins this array, so the authorize
+ * URL picks the new scope up with no further change.
  */
-export const TWITCH_SCOPES = ["user:read:chat", "user:write:chat"] as const;
+export const TWITCH_SCOPES = [
+  "user:read:chat",
+  "user:write:chat",
+  "channel:read:redemptions",
+] as const;
 
 /** twurple's AccessToken shape plus the owning user id, as persisted on disk. */
 const PersistedTokenSchema = z.object({
