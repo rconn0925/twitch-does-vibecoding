@@ -70,9 +70,11 @@ Recent decisions affecting current work:
 ### Pending Todos
 
 - Human UAT (01-HUMAN-UAT.md): physical panic-hotkey test, live Sonnet gate:eval (needs ANTHROPIC_API_KEY), console browser run-through
-- [Phase 2] Per-user rate limiting on suggestion intake (T-01-11 accepted this phase; Sonnet-call flood cost)
-- CSRF Origin check compares against Host header — DNS-rebinding residual; one-line Host allowlist hardening (non-blocking, in 01-SECURITY.md)
+- Human UAT (02-HUMAN-UAT.md): live Twitch smoke test (OAuth bootstrap + real-channel round, deferred 02-06 checkpoint; runbook docs/OPERATIONS.md §6), OBS overlay browser-source check
 - Stale `TODO(01-02)` at src/shared/types.ts:43 — GateCategory never narrowed to the categories.ts union (type-looseness only)
+- Review Info findings IN-02..IN-08 in 02-REVIEW.md remain open by scope decision (non-blocking)
+
+*Closed this phase: T-01-11 per-user intake rate limiting (src/ingestion/suggest-intake.ts, pre-classification); DNS-rebinding Host-allowlist hardening (src/shared/loopback.ts, CR-02 fix, both servers).*
 
 ### Blockers/Concerns
 
