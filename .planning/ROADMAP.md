@@ -86,7 +86,7 @@ Plans:
 
 **Wave 3** *(blocked on 02-02 + 02-03)*
 
-- [ ] 02-04-PLAN.md — Live chat slice: EventSub listener, intake limits (closes T-01-11), COMP-03 feedback, narration, OAuth routes (wave 3)
+- [x] 02-04-PLAN.md — Live chat slice: EventSub listener, intake limits (closes T-01-11), COMP-03 feedback, narration, OAuth routes (wave 3)
 
 **Wave 4** *(blocked on 02-04)*
 
@@ -159,7 +159,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Compliance Gate & Kill Switch | 5/5 | Complete   | 2026-07-09 |
-| 2. Chat Vote Loop | 3/6 | In Progress|  |
+| 2. Chat Vote Loop | 4/6 | In Progress|  |
 | 3. Sandboxed Build Engine & Live Show | 0/TBD | Not started | - |
 | 4. Paid Influence & Chaos Mode | 0/TBD | Not started | - |
 | 5. Build History & Stream Night Dry Run | 0/TBD | Not started | - |
