@@ -1,0 +1,175 @@
+// App-under-construction preview client — vanilla JS, no framework (UI-SPEC).
+//
+// Isolation contract (PRES-03 / D3-12, hard rules):
+//  - This page holds ZERO orchestrator connection: no WebSocket, no orchestrator
+//    HTTP call. Its ONLY dynamic input is GET /api/reachable on THIS surface's
+//    own server, which returns just { reachable, url } — a boolean plus the
+//    fixed dev-server URL. No task title, no pipeline stage, no queue, no
+//    chat-derived text is ever fetched or rendered here.
+//  - The iframe's src is the dev-server URL and nothing else (the transient
+//    "about:blank" below is only the double-buffer blanking step, never content).
+//
+// Rendering rule (dom-safety invariant): every text node is authored via
+// textContent through setText() — the same textContent-only discipline as
+// overlay.js's el() helper. This file assigns no HTML strings, uses no
+// innerHTML/insertAdjacentHTML/document.write/eval.
+//
+// Broadcast rule: no error text EVER renders. An unreachable dev server is a
+// normal, expected between-builds condition — it reads as a calm amber
+// "STANDING BY" with a friendly placeholder, never a browser error page, never
+// an HTTP code, never red.
+(() => {
+  const reachabilityEl = document.getElementById("reachability");
+  const statusTitle = document.getElementById("status-title");
+  const statusLabel = document.getElementById("status-label");
+  const placeholder = document.getElementById("placeholder");
+  const placeholderHeadline = document.getElementById("placeholder-headline");
+  const placeholderSubline = document.getElementById("placeholder-subline");
+
+  const POLL_INTERVAL_MS = 2000; // reachability poll cadence (UI-SPEC ~2s)
+  const REFRESH_INTERVAL_MS = 5000; // live app-frame auto-refresh (UI-SPEC 5s)
+
+  // Fixed on-stream copy (UI-SPEC §Copywriting). Static labels only — nothing
+  // here is derived from chat or orchestrator state.
+  const TITLE = "APP UNDER CONSTRUCTION";
+  const LABEL_LIVE = "LIVE";
+  const LABEL_STANDING_BY = "STANDING BY";
+
+  // Calm waiting states. Which one shows is decided by LOCAL reachability
+  // history ONLY (never orchestrator input): before the dev server has ever
+  // answered this session it's "starting up"; once it has answered and later
+  // goes quiet it's "between builds". FAILED is defined for completeness but is
+  // not auto-selected — distinguishing a crash from a normal gap would require
+  // orchestrator state the preview is forbidden to hold (D3-12).
+  const WAITING = {
+    STARTING_UP: {
+      headline: "Setting the stage…",
+      subline: "The build environment is starting up.",
+    },
+    BETWEEN_BUILDS: { headline: "Between builds", subline: "Next one's coming right up." },
+    FAILED: { headline: "Reworking this one", subline: "Back in a moment." },
+  };
+
+  // --- tiny DOM helper (textContent-only, overlay.js el() discipline) ---
+
+  function setText(node, text) {
+    if (node) node.textContent = text;
+  }
+
+  // --- double-buffered app frame (flash-free auto-refresh) ------------------
+
+  let visible = document.getElementById("app-frame");
+  let buffer = document.getElementById("app-frame-buffer");
+
+  function swapFrames() {
+    visible.classList.add("app-frame-buffer");
+    visible.setAttribute("aria-hidden", "true");
+    buffer.classList.remove("app-frame-buffer");
+    buffer.removeAttribute("aria-hidden");
+    const prev = visible;
+    visible = buffer;
+    buffer = prev;
+  }
+
+  // Load `url` into the hidden buffer, then swap on load so the viewer never
+  // sees a white reload flash. Blanking first forces a fresh load even when the
+  // buffer already holds this exact URL (assigning an identical src won't
+  // reload). The blank load is ignored by the guard — only the real URL swaps.
+  let awaitingSwap = false;
+  function loadIntoBuffer(url) {
+    awaitingSwap = true;
+    buffer.onload = () => {
+      // Ignore the transient blank load; only the real dev-server URL swaps.
+      if (buffer.src === "about:blank") return;
+      if (!awaitingSwap) return;
+      awaitingSwap = false;
+      swapFrames();
+    };
+    buffer.src = "about:blank";
+    window.setTimeout(() => {
+      buffer.src = url;
+    }, 0);
+  }
+
+  // --- reachability chrome + placeholder ------------------------------------
+
+  function showLive() {
+    reachabilityEl.classList.add("is-live");
+    reachabilityEl.classList.remove("is-standing-by");
+    setText(statusLabel, LABEL_LIVE);
+    placeholder.hidden = true;
+  }
+
+  function showStandingBy(state) {
+    reachabilityEl.classList.add("is-standing-by");
+    reachabilityEl.classList.remove("is-live");
+    setText(statusLabel, LABEL_STANDING_BY);
+    setText(placeholderHeadline, state.headline);
+    setText(placeholderSubline, state.subline);
+    placeholder.hidden = false;
+  }
+
+  // --- state machine driven purely by reachability --------------------------
+
+  let currentUrl = null;
+  let hasBeenReachable = false;
+  let refreshTimer = null;
+
+  function startRefreshLoop() {
+    if (refreshTimer !== null) return;
+    refreshTimer = window.setInterval(() => {
+      if (currentUrl) loadIntoBuffer(currentUrl);
+    }, REFRESH_INTERVAL_MS);
+  }
+
+  function stopRefreshLoop() {
+    if (refreshTimer === null) return;
+    window.clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+
+  function applyReachability(reachable, url) {
+    if (reachable) {
+      const urlChanged = url && url !== currentUrl;
+      if (!hasBeenReachable || urlChanged) {
+        // First contact (or the dev server relaunched on a new URL): frame it.
+        currentUrl = url || currentUrl;
+        if (currentUrl) loadIntoBuffer(currentUrl);
+      }
+      hasBeenReachable = true;
+      showLive();
+      startRefreshLoop();
+    } else {
+      stopRefreshLoop();
+      // Local-only state selection: never been up → starting up; was up before
+      // → between builds. No orchestrator input, ever.
+      showStandingBy(hasBeenReachable ? WAITING.BETWEEN_BUILDS : WAITING.STARTING_UP);
+    }
+  }
+
+  async function poll() {
+    let reachable = false;
+    let url = currentUrl;
+    try {
+      const res = await fetch("/api/reachable", { cache: "no-store" });
+      if (res.ok) {
+        const data = await res.json();
+        reachable = data.reachable === true;
+        if (typeof data.url === "string") url = data.url;
+      }
+    } catch {
+      // Fail closed: a failed poll reads as "not up yet", never an error on
+      // stream. The next poll resyncs.
+      reachable = false;
+    }
+    applyReachability(reachable, url);
+  }
+
+  // Initial chrome: title is static; start in STANDING BY / starting-up until
+  // the first poll lands (never a blank or red state on first paint).
+  setText(statusTitle, TITLE);
+  showStandingBy(WAITING.STARTING_UP);
+
+  poll();
+  window.setInterval(poll, POLL_INTERVAL_MS);
+})();

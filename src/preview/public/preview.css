@@ -1,0 +1,166 @@
+/*
+ * App-under-construction preview chrome (PRES-03 / D3-12, UI-SPEC §Preview).
+ *
+ * Minimal, neutral slate chrome: the surface frames a live app whose own
+ * colours are not ours to control, so the chrome stays out of the way. The
+ * whole surface is dark (#0F172A) so an iframe reload never flashes white.
+ *
+ * No red anywhere: an unreachable dev server is a normal, expected
+ * between-builds condition and reads as calm amber "STANDING BY", never a
+ * failure. There are zero interactive elements, so no accent colour is used.
+ */
+
+:root {
+  --dominant: #0f172a; /* status bar + stage background */
+  --secondary: #1e293b; /* waiting card */
+  --text: #f8fafc;
+  --text-muted: #94a3b8;
+  --live: #22c55e; /* green dot — dev server reachable */
+  --standing-by: #f59e0b; /* amber dot — unreachable (never red) */
+
+  --status-bar-height: 48px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--dominant);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  overflow: hidden;
+}
+
+/* ── Chrome status bar ─────────────────────────────────────────────── */
+
+.status-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--status-bar-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  background: var(--dominant);
+  z-index: 2;
+}
+
+.status-title {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.04em;
+}
+
+.reachability {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.status-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--standing-by); /* default until the first poll lands */
+  box-shadow: 0 0 8px currentColor;
+  color: var(--standing-by);
+}
+
+/* State classes toggled by preview.js — dot colour follows currentColor so the
+ * soft glow matches. */
+.reachability.is-live .status-dot {
+  background: var(--live);
+  color: var(--live);
+}
+
+.reachability.is-standing-by .status-dot {
+  background: var(--standing-by);
+  color: var(--standing-by);
+}
+
+.status-label {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+}
+
+/* ── Stage: the live app frame + waiting card ──────────────────────── */
+
+.stage {
+  position: absolute;
+  top: var(--status-bar-height);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--dominant);
+}
+
+.app-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--dominant); /* dark, so reloads never flash white */
+}
+
+/* The hidden double-buffer frame loads the next snapshot off-screen, then swaps
+ * with the visible one on load — a flash-free auto-refresh. */
+.app-frame-buffer {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* ── Waiting placeholder (shown only while unreachable) ────────────── */
+
+.placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 48px;
+  background: var(--dominant);
+  z-index: 1;
+}
+
+.placeholder[hidden] {
+  display: none;
+}
+
+/* The calm card sits centred; Secondary #1E293B backing per UI-SPEC. */
+.placeholder-headline,
+.placeholder-subline {
+  margin: 0;
+  padding: 0 24px;
+}
+
+.placeholder-headline {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.3;
+  background: var(--secondary);
+  border-radius: 12px 12px 0 0;
+  padding: 24px 32px 8px;
+}
+
+.placeholder-subline {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: var(--secondary);
+  border-radius: 0 0 12px 12px;
+  padding: 8px 32px 24px;
+}
