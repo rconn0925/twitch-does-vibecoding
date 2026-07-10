@@ -12,7 +12,6 @@ import {
   recordHalt,
   recordReviewResolution,
   recordVeto,
-  recordWindowRevoked,
 } from "../audit/record.js";
 import { submitCandidate } from "../pipeline/submit.js";
 import type { CandidatePool } from "../queue/pool.js";
@@ -682,10 +681,15 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
 
   // PAID-04 / D-03 single-click Revoke Window — mirrors the veto route exactly
   // (zod body, the shared CSRF/DNS-rebinding middleware above already covers this
-  // POST; NO new middleware — T-03-25). On an active window it revokes, writes a
-  // window_revoked audit row (never-silent), and returns the now-null snapshot.
-  // The optional D-18 reason tag lands as a non-blocking follow-up after the
-  // window has already closed (kind "revoke-window") — never a 404/409.
+  // POST; NO new middleware — T-03-25). On an active window it revokes and returns
+  // the now-null snapshot. The optional D-18 reason tag lands as a non-blocking
+  // follow-up after the window has already closed — never a 404/409.
+  //
+  // CR-02: the window_revoked audit row is written by ControlWindow.revoke()
+  // itself (with the STABLE donorIdentifier). The console must NOT write a second
+  // row — a duplicate here previously double-counted every revoke AND used the
+  // mutable donorDisplayName, corrupting the compliance ledger. Exactly one
+  // writer, one consistent identifier.
   app.post("/api/control-window/revoke", (req, res) => {
     const body = ResolveBodySchema.safeParse(req.body ?? {});
     if (!body.success) {
@@ -695,12 +699,7 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
     const reasonTag = body.data.reasonTag ?? null;
     const snapshot = deps.controlWindow?.snapshot() ?? null;
     if (snapshot) {
-      deps.controlWindow?.revoke();
-      recordWindowRevoked(db, {
-        trigger: snapshot.trigger,
-        donorIdentifier: snapshot.donorDisplayName,
-        streamMode: machine.mode,
-      });
+      deps.controlWindow?.revoke(); // this audits window_revoked with the stable identifier
       pushState();
       res.json({ revoked: true, controlWindow: deps.controlWindow?.snapshot() ?? null });
       return;

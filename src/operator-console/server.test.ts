@@ -2,6 +2,7 @@ import http from "node:http";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../audit/db.js";
+import { ControlWindow } from "../control-window/control-window.js";
 import { CandidatePool } from "../queue/pool.js";
 import { TaskQueue } from "../queue/task-queue.js";
 import type { BuildStatusView, ControlWindowSnapshot } from "../shared/types.js";
@@ -240,16 +241,58 @@ function fakeControlWindow(initial: ControlWindowSnapshot | null = ACTIVE_WINDOW
 }
 
 describe("console control-window revoke route (PAID-04 / D-03)", () => {
-  it("POST /api/control-window/revoke revokes an active window, writes a window_revoked audit row, and returns the now-null snapshot", async () => {
-    const controlWindow = fakeControlWindow();
-    const server = await startServer({ controlWindow });
+  it("WR-04/CR-02: revoke drives the REAL ControlWindow and writes EXACTLY ONE window_revoked row with the STABLE donor identifier", async () => {
+    // Exercise the REAL ControlWindow through the console route (not a fake whose
+    // revoke() skips the audit write) — the exact seam-fake divergence that hid
+    // CR-02's production double-write. db + machine are SHARED with the console.
+    db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    const round = new RoundManager({
+      db,
+      machine,
+      pool,
+      enqueueWinner: () => ({ queued: true }),
+    });
+    const controlWindow = new ControlWindow({
+      db,
+      machine,
+      submitDuringWindow: async () => ({ queued: true }) as { queued: true },
+      donationConfig: { ratePerUnit: 12, minSeconds: 30, maxSeconds: 300 },
+      redemptionConfig: { ratePerUnit: 0.03, minSeconds: 30, maxSeconds: 120 },
+      cooldownMs: 120_000,
+    });
+    // The stable identifier deliberately DIFFERS from the display name, so the
+    // assertion proves the ledger uses the stable key (CR-02), not the mutable
+    // display name the console route previously wrote.
+    controlWindow.open({
+      trigger: "donation",
+      donorIdentifier: "alice_stable_id",
+      donorDisplayName: "AliceDisplay",
+      amountOrCost: 5,
+    });
+
+    const server = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      controlWindow: {
+        snapshot: () => controlWindow.snapshot(),
+        revoke: () => controlWindow.revoke(),
+      },
+    });
+    handle = server;
 
     const res = await postJson(`${base(server)}/api/control-window/revoke`, {});
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ revoked: true, controlWindow: null });
-    expect(controlWindow.revoke).toHaveBeenCalledOnce();
 
-    // Never-silent: the revoke landed a window_revoked ledger row with the donor.
+    // EXACTLY ONE window_revoked row (no console duplicate), attributed to the
+    // STABLE donorIdentifier, never the mutable display name.
     const audit = (await (
       await fetch(`${base(server)}/api/audit?eventType=window_revoked`)
     ).json()) as Array<{ event_type: string; source: string; twitch_username: string }>;
@@ -257,7 +300,7 @@ describe("console control-window revoke route (PAID-04 / D-03)", () => {
     expect(audit[0]).toMatchObject({
       event_type: "window_revoked",
       source: "donation",
-      twitch_username: "GenerousGamer",
+      twitch_username: "alice_stable_id",
     });
 
     // The push reflects the collapsed window (full-state-on-connect / diffs).
@@ -265,6 +308,7 @@ describe("console control-window revoke route (PAID-04 / D-03)", () => {
       controlWindow: unknown;
     };
     expect(state.controlWindow).toBeNull();
+    controlWindow.dispose();
   });
 
   it("returns 409 no-window when no window is active (nothing to revoke)", async () => {
