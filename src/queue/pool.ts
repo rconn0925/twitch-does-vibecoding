@@ -1,13 +1,14 @@
 /**
- * Pre-screened candidate pool (D-10).
+ * Pre-screened candidate pool (D-10, bounded per D2-13).
  *
  * Approved candidates land here after background classification; voting
  * rounds (Phase 2+) draw from this pool. The pool is PASSIVE storage —
  * nothing executes from it, so items already pooled when a halt lands are
  * safe to keep (the frozen queue is triaged via D-04).
  *
- * In-memory for Phase 1: the audit ledger already persists the compliance
- * record; durable queue persistence is a later-phase concern.
+ * In-memory by design: suggestions do not persist across stream sessions —
+ * the pool starts clean each night (D2-13). The audit ledger persists the
+ * compliance record; evictions get their own audit row via onEvict.
  */
 
 import type { GateResult, SuggestionCandidate } from "../shared/types.js";
@@ -19,8 +20,22 @@ export interface ApprovedCandidate {
   addedAtMs: number;
 }
 
+export interface CandidatePoolOptions {
+  /** Bound on pool size (D2-13); adding past it drops the OLDEST entry. Unbounded when absent. */
+  maxSize?: number;
+  /** Called once per dropped entry — the composition root records the audit row here. */
+  onEvict?: (item: ApprovedCandidate) => void;
+}
+
 export class CandidatePool {
   readonly #items = new Map<string, ApprovedCandidate>();
+  readonly #maxSize: number | undefined;
+  readonly #onEvict: ((item: ApprovedCandidate) => void) | undefined;
+
+  constructor(opts?: CandidatePoolOptions) {
+    this.#maxSize = opts?.maxSize;
+    this.#onEvict = opts?.onEvict;
+  }
 
   /** Add an APPROVED candidate. Throws for any non-approved gate result. */
   add(candidate: SuggestionCandidate, result: GateResult): void {
@@ -30,6 +45,15 @@ export class CandidatePool {
       );
     }
     this.#items.set(candidate.id, { candidate, result, addedAtMs: Date.now() });
+    if (this.#maxSize !== undefined && this.#items.size > this.#maxSize) {
+      // Oldest = first Map insertion-order key (D2-13 oldest-drop).
+      const oldestKey = this.#items.keys().next().value;
+      if (oldestKey !== undefined) {
+        const evicted = this.#items.get(oldestKey);
+        this.#items.delete(oldestKey);
+        if (evicted) this.#onEvict?.(evicted);
+      }
+    }
   }
 
   /** All pooled candidates, in insertion order. */

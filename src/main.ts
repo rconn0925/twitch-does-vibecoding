@@ -5,8 +5,14 @@ import type Database from "better-sqlite3";
 import { type Logger, pino } from "pino";
 import { openDb } from "./audit/db.js";
 import { purgeOldAuditRecords } from "./audit/purge.js";
+import { recordPoolDropped } from "./audit/record.js";
+import { CATEGORY_META, isLegalCategory } from "./compliance/categories.js";
 import { classifierDepsFromEnv } from "./compliance/classifier.js";
 import { classify, type FakeClassifier, type GateDeps } from "./compliance/gate.js";
+import { type ChatMessageSink, createChatSender } from "./ingestion/chat-sender.js";
+import { createNarrator } from "./ingestion/narration.js";
+import { createSuggestIntake } from "./ingestion/suggest-intake.js";
+import { type ChatEventSource, startTwitchChat } from "./ingestion/twitch-chat.js";
 import { AbortRegistry, abortActiveWork } from "./kill-switch/abort.js";
 import {
   type HotkeyHandle,
@@ -14,17 +20,32 @@ import {
   type PanicLogger,
   startHotkeyListener,
 } from "./kill-switch/hotkey.js";
-import { type ConsoleServerHandle, startConsoleServer } from "./operator-console/server.js";
+import {
+  type ConsoleServerHandle,
+  startConsoleServer,
+  type TwitchConnectionStatus,
+} from "./operator-console/server.js";
 import { enqueueWinner } from "./pipeline/round.js";
 import { submitCandidate } from "./pipeline/submit.js";
 import { CandidatePool } from "./queue/pool.js";
 import { TaskQueue } from "./queue/task-queue.js";
-import { HALT_TRIGGERED } from "./shared/events.js";
-import type { HaltContext } from "./shared/types.js";
+import { HALT_TRIGGERED, ROUND_CLOSED, ROUND_OPENED } from "./shared/events.js";
+import type {
+  GateResult,
+  HaltContext,
+  RoundSnapshot,
+  SuggestionCandidate,
+} from "./shared/types.js";
 import { type HaltDeps, triggerHalt } from "./state-machine/halt.js";
 import { expireAllPending, expireStale, reviewTtlMs } from "./state-machine/review-queue.js";
 import { RoundManager } from "./state-machine/round.js";
 import { StreamModeMachine } from "./state-machine/stream-mode.js";
+
+/** Console-facing OAuth seam — main.ts wires the twitch-auth module behind it. */
+export interface TwitchAuthRoutes {
+  authorizeUrl(state: string): string;
+  complete(code: string): Promise<void>;
+}
 
 export interface CreateAppOptions {
   dbPath: string;
@@ -35,6 +56,18 @@ export interface CreateAppOptions {
    * every submission fails closed (D-11).
    */
   fakeClassifier?: FakeClassifier;
+  /**
+   * Chat seams (plan 02-04): when BOTH are present — injected test fakes or
+   * the real twurple adapters built by the entrypoint branch — createApp
+   * composes the FULL chat pipeline (sender → narrator → round-event
+   * subscriptions → startTwitchChat → reconcile) itself. Test fakes and
+   * production adapters share one code path, so plan 02-06's e2e proves the
+   * production wiring without src edits.
+   */
+  chatSource?: ChatEventSource;
+  chatSink?: ChatMessageSink;
+  /** OAuth route deps passed through to the console server (D2-10). */
+  twitchAuth?: TwitchAuthRoutes;
 }
 
 export interface AppHandle {
@@ -57,6 +90,17 @@ const REVIEW_SWEEP_INTERVAL_MS = 15 * 60_000;
 /** Audit-purge cadence while the process is up (D-17). */
 const PURGE_INTERVAL_MS = 24 * 3_600_000;
 
+/** Env-knob idiom (review-queue.ts pattern): positive number or the default. */
+function envPositive(raw: string | undefined, fallback: number): number {
+  const parsed = raw === undefined ? Number.NaN : Number.parseFloat(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const DEFAULT_POOL_MAX_SIZE = 50;
+const DEFAULT_INTAKE_COOLDOWN_SECONDS = 60;
+const DEFAULT_CHAT_SEND_INTERVAL_CAP = 15;
+const DEFAULT_CHAT_SEND_INTERVAL_MS = 30_000;
+
 /**
  * Wires the Walking Skeleton: audit db -> state machine -> operator console.
  * Exported factory so the e2e suite can start a real server on an ephemeral
@@ -72,8 +116,20 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   const db = openDb(opts.dbPath);
   const machine = new StreamModeMachine();
   const registry = new AbortRegistry();
-  const pool = new CandidatePool();
+  // Bounded pool (D2-13): past POOL_MAX_SIZE the oldest candidate drops with
+  // an audit row — memory stays bounded under a !suggest flood.
+  const pool = new CandidatePool({
+    maxSize: envPositive(process.env.POOL_MAX_SIZE, DEFAULT_POOL_MAX_SIZE),
+    onEvict: (item) =>
+      recordPoolDropped(db, { candidate: item.candidate, streamMode: machine.mode }),
+  });
   const taskQueue = new TaskQueue();
+  // Pre-classification intake limits (D2-11 — closes T-01-11).
+  const intakeCooldownSeconds = envPositive(
+    process.env.INTAKE_COOLDOWN_SECONDS,
+    DEFAULT_INTAKE_COOLDOWN_SECONDS,
+  );
+  const intake = createSuggestIntake({ pool, cooldownMs: intakeCooldownSeconds * 1_000 });
 
   // Session-start hygiene, BEFORE the console accepts a single request:
   // D-07 clean slate (every leftover pending review expires as
@@ -152,9 +208,157 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       ),
   });
   // D2-14 ordering contract: restore persisted round state BEFORE any surface
-  // (console route, future chat listener) can accept input. A round that
-  // expired during downtime closes here; a frozen round waits for triage.
+  // (console route, chat listener) can accept input. A round that expired
+  // during downtime closes here; a frozen round waits for triage.
   round.restore();
+  // 02-03 flagged gap (Rule 2): restore() rebuilds the round but the fresh
+  // StreamModeMachine stays IDLE, and recordVote() requires VOTING_ROUND —
+  // chat votes on a restored round would be silently refused. Re-enter
+  // VOTING_ROUND for a live (non-frozen) restored round via the machine's
+  // own transition API; a frozen round stays put for recovery triage.
+  {
+    const restored = round.snapshot();
+    if (restored?.status === "open" && !restored.frozen && machine.mode === "IDLE") {
+      machine.transition("VOTING_ROUND");
+      logger.info(
+        { roundId: restored.roundId },
+        "restored round is live — stream mode re-entered VOTING_ROUND",
+      );
+    }
+  }
+
+  // ── Chat pipeline composition (plan 02-04) ─────────────────────────────
+  // Runs whenever a chatSource/chatSink pair exists — injected fakes and the
+  // entrypoint's real twurple adapters take the IDENTICAL path.
+  let twitchStatus: TwitchConnectionStatus = "unauthorized";
+  let chatHandle: { stop(): void } | null = null;
+  const chatSource = opts.chatSource;
+  const chatSink = opts.chatSink;
+  if (chatSource && chatSink) {
+    twitchStatus = "disconnected"; // until the EventSub socket reports ready
+    const broadcasterUserId = process.env.TWITCH_BROADCASTER_USER_ID ?? "broadcaster";
+
+    // (1) The single rate-budgeted sender — the ONLY path to chat (D2-08).
+    const sender = createChatSender({
+      sink: chatSink,
+      broadcasterId: broadcasterUserId,
+      logger,
+      intervalCap: envPositive(
+        process.env.CHAT_SEND_INTERVAL_CAP,
+        DEFAULT_CHAT_SEND_INTERVAL_CAP,
+      ),
+      intervalMs: envPositive(process.env.CHAT_SEND_INTERVAL_MS, DEFAULT_CHAT_SEND_INTERVAL_MS),
+    });
+    // (2) Show narration in exact UI-SPEC copy (CHAT-05).
+    const narrator = createNarrator({ sender, logger, cooldownSeconds: intakeCooldownSeconds });
+    // (3) Chat hears transitions only: round open + close/winner (D2-07).
+    round.on(ROUND_OPENED, (...args) => {
+      narrator.roundOpened(args[0] as RoundSnapshot);
+    });
+    round.on(ROUND_CLOSED, (...args) => {
+      narrator.roundClosed(args[0] as RoundSnapshot);
+    });
+
+    // (4) COMP-03 feedback hook — wraps the classify that the CHAT-path
+    // submitCandidate binding uses (classifyThenPush pattern). The narrator
+    // receives ONLY viewer-safe CATEGORY_META labels: never the suggestion
+    // text, never the classifier rationale (T-02-17). Approvals get NO chat
+    // message — silence until the idea appears in a round (D2-07 budget).
+    const classifyThenNotify = async (candidate: SuggestionCandidate): Promise<GateResult> => {
+      const result = await classify(gateDeps, candidate);
+      const viewer = candidate.twitchUsername ?? "viewer";
+      if (result.decision === "rejected") {
+        if (result.category === "feasibility") {
+          narrator.feedback("trim", viewer);
+        } else if (result.category !== null && isLegalCategory(result.category)) {
+          narrator.feedback("rejected", viewer, CATEGORY_META[result.category].label);
+        } else {
+          // Fail-closed rejection (classifier unavailable, D-11): the honest
+          // UI-SPEC error line — no fake category, no internal codes.
+          narrator.error(
+            "Suggestion check is backed up — hold your ideas for a minute, votes still count.",
+          );
+        }
+      } else if (result.decision === "held-for-review") {
+        narrator.feedback("held", viewer);
+      }
+      return result;
+    };
+
+    // (5) D2-14 reconciliation on every EventSub (re)connect: compare the
+    // in-memory tally against the round_votes ledger and re-sync from SQLite
+    // (RoundManager.restore() rebuilds candidates + tally from the ledger).
+    const reconcile = (): void => {
+      const mem = round.snapshot();
+      const openRow = db
+        .prepare("SELECT id FROM rounds WHERE status = 'open' ORDER BY id DESC LIMIT 1")
+        .get() as { id: number } | undefined;
+      if (!openRow) {
+        if (mem) {
+          logger.warn(
+            { roundId: mem.roundId },
+            "reconcile: in-memory round has no open SQLite row — leaving memory authoritative",
+          );
+        }
+        return;
+      }
+      if (!mem || mem.roundId !== openRow.id) {
+        logger.warn(
+          { dbRoundId: openRow.id, memRoundId: mem?.roundId ?? null },
+          "reconcile: SQLite has an open round the in-memory state lacks — restoring from the ledger",
+        );
+        round.restore();
+        return;
+      }
+      const rows = db
+        .prepare(
+          "SELECT option_index, COUNT(*) AS votes FROM round_votes WHERE round_id = ? GROUP BY option_index",
+        )
+        .all(openRow.id) as { option_index: number; votes: number }[];
+      const ledger = new Map(rows.map((row) => [row.option_index, row.votes]));
+      const diverged = mem.candidates.some(
+        (entry) => (ledger.get(entry.option) ?? 0) !== entry.votes,
+      );
+      if (diverged) {
+        logger.warn(
+          {
+            roundId: mem.roundId,
+            ledger: Object.fromEntries(ledger),
+            memory: Object.fromEntries(mem.candidates.map((c) => [c.option, c.votes])),
+          },
+          "reconcile: tally divergence — re-syncing in-memory tally from the round_votes ledger (D2-14)",
+        );
+        round.restore();
+        return;
+      }
+      logger.info({ roundId: mem.roundId }, "reconcile: in-memory round matches the vote ledger");
+    };
+
+    // (6) The listener: !suggest -> intake -> submitCandidate (the ONLY
+    // intake path, COMP-01), !vote -> the round ledger.
+    chatHandle = startTwitchChat({
+      source: chatSource,
+      broadcasterUserId,
+      intake,
+      submit: (candidate) =>
+        submitCandidate(
+          { db, mode: () => machine.mode, pool, classify: classifyThenNotify, logger },
+          candidate,
+        ),
+      round,
+      narrator,
+      reconcile,
+      logger,
+    });
+
+    // (7) createApp-owned connection-health handlers feed the console pill.
+    chatSource.onUserSocketReady(() => {
+      twitchStatus = "connected";
+    });
+    chatSource.onUserSocketDisconnect(() => {
+      twitchStatus = "disconnected";
+    });
+  }
 
   const console_ = await startConsoleServer({
     machine,
@@ -168,6 +372,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     // hotkey — both kill paths must be genuinely equivalent (D-01), so a
     // console-initiated halt also force-kills registered agent process trees.
     abortActiveWork: (frozen) => abortActiveWork(registry, frozen, logger),
+    ...(opts.twitchAuth ? { twitchAuth: opts.twitchAuth } : {}),
+    twitchStatus: () => twitchStatus,
     logger,
   });
   logger.info(
@@ -189,6 +395,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     close: async () => {
       clearInterval(reviewSweepTimer);
       clearInterval(purgeTimer);
+      chatHandle?.stop();
       await console_.close();
       db.close();
     },
@@ -255,6 +462,92 @@ export async function armPanicHotkey(args: ArmPanicHotkeyArgs): Promise<HotkeyHa
   }
 }
 
+/** The chat/auth options the entrypoint branch feeds into createApp. */
+interface TwitchAppOptions {
+  chatSource?: ChatEventSource;
+  chatSink?: ChatMessageSink;
+  twitchAuth?: TwitchAuthRoutes;
+}
+
+/**
+ * Entrypoint-only twurple adapter construction (armPanicHotkey pattern):
+ * dynamic imports inside a try/catch, so vitest never loads twurple and a
+ * broken/missing Twitch setup degrades to a loud log — console + overlay
+ * keep running (graceful degradation). This helper builds REAL adapters and
+ * option objects ONLY; all composition (sender, narrator, subscriptions,
+ * startTwitchChat, reconcile) lives inside createApp.
+ */
+async function buildTwitchAdapters(logger: Logger): Promise<TwitchAppOptions> {
+  const clientId = process.env.TWITCH_CLIENT_ID;
+  const clientSecret = process.env.TWITCH_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    logger.warn(
+      "TWITCH DISABLED — set TWITCH_CLIENT_ID/TWITCH_CLIENT_SECRET to enable chat ingestion",
+    );
+    return {};
+  }
+  const consolePort = Number(process.env.CONSOLE_PORT ?? 4900);
+  const redirectUri =
+    process.env.TWITCH_REDIRECT_URI ?? `http://localhost:${consolePort}/auth/callback`;
+  const tokenPath = process.env.TWITCH_TOKEN_PATH ?? "./data/twitch-token.json";
+  try {
+    const auth = await import("./ingestion/twitch-auth.js");
+    const authDeps = { clientId, clientSecret, tokenPath, logger };
+    const twitchAuth: TwitchAuthRoutes = {
+      authorizeUrl: (state) => auth.buildAuthorizeUrl({ clientId, redirectUri, state }),
+      complete: (code) => auth.completeAuthorization(authDeps, code, redirectUri),
+    };
+
+    const provider = auth.createAuthProvider(authDeps);
+    if (!provider) {
+      logger.warn(
+        "TWITCH DISABLED — no token; authorize at http://127.0.0.1:%d/auth/start",
+        consolePort,
+      );
+      return { twitchAuth }; // /auth/start still works — re-auth path stays open
+    }
+    const broadcasterUserId = process.env.TWITCH_BROADCASTER_USER_ID;
+    if (!broadcasterUserId) {
+      logger.warn("TWITCH DISABLED — set TWITCH_BROADCASTER_USER_ID (numeric Twitch user id)");
+      return { twitchAuth };
+    }
+
+    const { ApiClient } = await import("@twurple/api");
+    const { EventSubWsListener } = await import("@twurple/eventsub-ws");
+    const apiClient = new ApiClient({ authProvider: provider });
+    const listener = new EventSubWsListener({ apiClient });
+
+    // Thin arrow-function adapters behind the two seam interfaces — the only
+    // twurple-touching code outside src/ingestion/twitch-auth.ts.
+    const chatSource: ChatEventSource = {
+      onChannelChatMessage: (broadcasterId, userId, handler) =>
+        listener.onChannelChatMessage(broadcasterId, userId, (event) =>
+          handler({
+            chatterId: event.chatterId,
+            chatterDisplayName: event.chatterDisplayName,
+            messageText: event.messageText,
+          }),
+        ),
+      onUserSocketReady: (handler) =>
+        listener.onUserSocketReady((userId, sessionId) => handler(userId, sessionId)),
+      onUserSocketDisconnect: (handler) =>
+        listener.onUserSocketDisconnect((userId, error) => handler(userId, error)),
+      start: () => listener.start(),
+      stop: () => listener.stop(),
+    };
+    // ApiClient.chat structurally satisfies ChatMessageSink — passing it
+    // directly keeps the sanctioned send call inside chat-sender.ts only.
+    const chatSink: ChatMessageSink = apiClient.chat;
+    return { chatSource, chatSink, twitchAuth };
+  } catch (err) {
+    logger.error(
+      { err },
+      "TWITCH UNAVAILABLE — chat ingestion disabled; console + overlay keep running",
+    );
+    return {};
+  }
+}
+
 // Run-as-entrypoint branch (npm run dev): tsx executes this file directly.
 const invokedPath = process.argv[1];
 const isMain =
@@ -263,7 +556,11 @@ const isMain =
 if (isMain) {
   const port = Number(process.env.CONSOLE_PORT ?? 4900);
   const dbPath = process.env.AUDIT_DB_PATH ?? "./data/audit.db";
-  createApp({ dbPath, port })
+  const bootLogger = pino({ level: process.env.LOG_LEVEL ?? "info" });
+  // Entrypoint-only: build real twurple adapters (guarded dynamic imports),
+  // then hand them to createApp — which owns ALL chat composition.
+  buildTwitchAdapters(bootLogger)
+    .then((twitchOpts) => createApp({ dbPath, port, ...twitchOpts }))
     .then((app) =>
       // Entrypoint-only: this is the sole call path that loads the native
       // uiohook module. Test runs (vitest) never reach this branch.

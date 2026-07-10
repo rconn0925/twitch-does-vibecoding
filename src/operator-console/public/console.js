@@ -30,6 +30,8 @@
   const devText = document.getElementById("dev-text");
   const devFeedback = document.getElementById("dev-feedback");
   const roundPanel = document.getElementById("round-panel");
+  const twitchPill = document.getElementById("twitch-pill");
+  const twitchError = document.getElementById("twitch-error");
 
   /** Latest ConsoleState snapshot from the ws push. */
   let latest = null;
@@ -121,6 +123,47 @@
     for (const pill of pills) {
       const isActive = pill.dataset.mode === snapshot.mode;
       pill.classList.toggle("active", isActive);
+    }
+  }
+
+  // --- Twitch connection indicator + UI-SPEC error copy (plan 02-04) ---
+
+  function renderTwitch(snapshot) {
+    const status = snapshot.twitch || "unauthorized";
+    if (status === "connected") {
+      twitchPill.textContent = "Twitch: connected";
+      twitchPill.className = "status-pill status-approved";
+    } else if (status === "disconnected") {
+      twitchPill.textContent = "Twitch: reconnecting";
+      twitchPill.className = "status-pill status-held";
+    } else {
+      twitchPill.textContent = "Twitch: not authorized";
+      twitchPill.className = "status-pill status-rejected";
+    }
+
+    twitchError.replaceChildren();
+    if (status === "disconnected") {
+      twitchError.appendChild(el("h2", "error-heading", "Twitch connection lost"));
+      twitchError.appendChild(
+        el(
+          "p",
+          "error-body",
+          "Reconnecting automatically (no action needed). Votes sent during the gap can't be recovered; the tally resumes from the last saved state.",
+        ),
+      );
+      twitchError.hidden = false;
+    } else if (status === "unauthorized") {
+      twitchError.appendChild(el("h2", "error-heading", "Twitch login expired"));
+      twitchError.appendChild(
+        el(
+          "p",
+          "error-body",
+          "Re-authorize at /auth/start to reconnect chat. Rounds can't run until this is fixed.",
+        ),
+      );
+      twitchError.hidden = false;
+    } else {
+      twitchError.hidden = true;
     }
   }
 
@@ -542,6 +585,7 @@
   function renderAll() {
     if (!latest) return;
     renderPills(latest);
+    renderTwitch(latest);
     const halted = latest.mode === "HALTED";
     // D-04: the triage panel REPLACES the normal view while HALTED.
     haltedBanner.hidden = !halted;
