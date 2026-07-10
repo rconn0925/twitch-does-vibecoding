@@ -140,7 +140,9 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
   it("error(text) sends the given line through the sender", () => {
     const { sent, sender } = capturingSender();
     const narrator = createNarrator({ sender });
-    narrator.error("Suggestion check is backed up — hold your ideas for a minute, votes still count.");
+    narrator.error(
+      "Suggestion check is backed up — hold your ideas for a minute, votes still count.",
+    );
     expect(sent).toEqual([
       "Suggestion check is backed up — hold your ideas for a minute, votes still count.",
     ]);
@@ -149,7 +151,12 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
   it("the Narrator interface has no tally-shaped input (rate-budget doctrine is structural)", () => {
     const { sender } = capturingSender();
     const narrator = createNarrator({ sender });
-    expect(Object.keys(narrator).sort()).toEqual(["error", "feedback", "roundClosed", "roundOpened"]);
+    expect(Object.keys(narrator).sort()).toEqual([
+      "error",
+      "feedback",
+      "roundClosed",
+      "roundOpened",
+    ]);
   });
 
   describe("feedback burst coalescing (D2-07, fake timers)", () => {

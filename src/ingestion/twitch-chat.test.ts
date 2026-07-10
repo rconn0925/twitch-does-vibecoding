@@ -92,9 +92,7 @@ function fakeLogger() {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
-function makeDeps(
-  overrides: Partial<TwitchChatDeps> = {},
-): TwitchChatDeps & {
+function makeDeps(overrides: Partial<TwitchChatDeps> = {}): TwitchChatDeps & {
   submitted: SuggestionCandidate[];
   votes: [string, number][];
 } {
