@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS control_windows (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   trigger_type     TEXT NOT NULL,                   -- 'donation' | 'channel_points' (D-03: one FSM, two triggers)
   donor_identifier TEXT NOT NULL,                   -- donor display name / redeemer handle (untrusted upstream, validated at ingestion 04-02)
-  amount_or_cost   INTEGER NOT NULL,                -- tip amount (minor units) or channel-points cost — the D-04 mapping input
+  amount_or_cost   REAL NOT NULL,                   -- WR-05: whole-currency tip amount (e.g. 4.50 dollars, NOT cents) or channel-points cost — the D-04 mapping input. REAL because tip amounts are fractional dollars.
   duration_ms      INTEGER NOT NULL,                -- amount→duration result (linear, floored, capped)
   opened_at_ms     INTEGER NOT NULL,                -- Date.now() at open
   ends_at_ms       INTEGER NOT NULL,                -- ABSOLUTE close time — single source of truth, crash-safe (D-06/D-12)
