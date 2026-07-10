@@ -345,7 +345,9 @@ export class RoundManager {
    */
   closeRound(): void {
     const round = this.#round;
-    if (round?.status !== "open") return;
+    // WR-01: a halt-frozen round still has status 'open' — it must wait for
+    // recovery triage (resume or discard), never close out from under it.
+    if (round?.status !== "open" || round.frozen) return;
     this.#clearTimer();
 
     const totalVotes = round.options.reduce((sum, o) => sum + o.votes, 0);
@@ -407,6 +409,13 @@ export class RoundManager {
             { roundId: round.roundId, reason: outcome.reason },
             "round winner was not queued",
           );
+          // WR-01: a "halted" refusal must never silently drop a
+          // gate-approved candidate — return it to the pool. The
+          // "stale-reclassified" branch is different: resubmit() already
+          // re-routed it through the gate, so repooling would duplicate it.
+          if (outcome.reason === "halted") {
+            this.#pool.add(winner.candidate, winner.result);
+          }
         }
       }
       for (const option of round.options) {

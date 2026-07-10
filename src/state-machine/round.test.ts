@@ -429,6 +429,64 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
     expect(h.machine.mode).toBe("IDLE");
     h.db.close();
   });
+
+  it("is a no-op on a halt-frozen round — frozen rounds wait for triage (WR-01)", () => {
+    const h = makeHarness();
+    const snap = h.manager.startRound();
+    h.manager.recordVote("111", 1);
+    h.setNow(21_000);
+    h.machine.forceTransition("HALTED", haltCtx(h.machine));
+    expect(h.manager.snapshot()?.frozen).toBe(true);
+
+    h.manager.closeRound();
+
+    // Nothing moved: the round is still open+frozen, nothing was enqueued.
+    const row = h.db.prepare("SELECT * FROM rounds WHERE id = ?").get(snap.roundId) as Record<
+      string,
+      unknown
+    >;
+    expect(row.status).toBe("open");
+    expect(row.frozen_remaining_ms).toBe(40_000);
+    expect(h.enqueueWinner).not.toHaveBeenCalled();
+    expect(h.manager.snapshot()?.frozen).toBe(true);
+    h.db.close();
+  });
+
+  it("repools a winner the funnel refused as 'halted' — an approved candidate is never dropped (WR-01)", () => {
+    const h = makeHarness();
+    h.manager.startRound();
+    h.manager.recordVote("111", 1);
+    h.enqueueWinner.mockReturnValue({ queued: false, reason: "halted" });
+
+    h.manager.closeRound();
+
+    // Winner AND losers are all back in the pool — nothing vanished.
+    expect(
+      h.pool
+        .list()
+        .map((a) => a.candidate.id)
+        .sort(),
+    ).toEqual(["cand-1", "cand-2", "cand-3"]);
+    h.db.close();
+  });
+
+  it("does NOT repool a stale-reclassified winner — resubmit() already re-routed it (WR-01)", () => {
+    const h = makeHarness();
+    h.manager.startRound();
+    h.manager.recordVote("111", 1);
+    h.enqueueWinner.mockReturnValue({ queued: false, reason: "stale-reclassified" });
+
+    h.manager.closeRound();
+
+    // Only the losers repool; the winner is owned by the resubmission path.
+    expect(
+      h.pool
+        .list()
+        .map((a) => a.candidate.id)
+        .sort(),
+    ).toEqual(["cand-2", "cand-3"]);
+    h.db.close();
+  });
 });
 
 describe("RoundManager halt-freeze (D2-16)", () => {
