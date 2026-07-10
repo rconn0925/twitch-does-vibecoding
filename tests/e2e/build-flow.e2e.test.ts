@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { listAuditRecords } from "../../src/audit/record.js";
+import { listAuditRecords, listBuildHistory } from "../../src/audit/record.js";
 import { createApp } from "../../src/main.js";
 import { translate } from "../../src/orchestrator/progress-events.js";
 import type { AgentRunner, DevServerProbe, SandboxAdapter } from "../../src/orchestrator/types.js";
@@ -240,6 +240,14 @@ describe("build-flow e2e (MVP happy path) — 03-06 GREEN", () => {
   it("overlay GET /api/state reflects the current pipeline stage (PRES-02/04)", () => {
     expect(midBuildStage).toBe("building");
     expect(midBuildTitle).toBe("make a counter app");
+  });
+
+  it("persists a build_history row with provenance 'vote' — the onWinnerQueued driver threads it (HIST-01)", () => {
+    const rows = listBuildHistory(app.db, { limit: 20 });
+    const entry = rows.find((r) => r.title === "make a counter app");
+    expect(entry).toBeDefined();
+    expect(entry?.provenance).toBe("vote");
+    expect(entry?.result).toBe("built");
   });
 });
 

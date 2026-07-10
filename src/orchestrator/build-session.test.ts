@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../audit/db.js";
-import { listAuditRecords } from "../audit/record.js";
+import { listAuditRecords, listBuildHistory } from "../audit/record.js";
 import { AbortRegistry } from "../kill-switch/abort.js";
 import { TaskQueue } from "../queue/task-queue.js";
 import type {
@@ -829,6 +829,236 @@ describe("createBuildSession — concurrency-1 (D3-04)", () => {
       "task-b",
     ]);
     expect(machine.mode).toBe("IDLE");
+  });
+});
+
+describe("createBuildSession — provenance → build_history (HIST-01, 05-01)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  /** A machine whose transition to BUILD_IN_PROGRESS throws — forces the outer
+   *  fail-closed catch (which finalizes with stage 'failed'). */
+  function throwingBuildModeMachine() {
+    let mode: StreamMode = "IDLE";
+    const machine: BuildMachineView = {
+      get mode() {
+        return mode;
+      },
+      transition(next) {
+        if (next === "BUILD_IN_PROGRESS") throw new Error("boom: cannot enter build mode");
+        mode = next;
+      },
+      setActiveTask() {},
+    };
+    return { machine };
+  }
+
+  /** A machine + a halt() that flips it to HALTED (simulating a mid-build veto). */
+  function haltableMachine() {
+    let mode: StreamMode = "IDLE";
+    const machine: BuildMachineView = {
+      get mode() {
+        return mode;
+      },
+      transition(next) {
+        mode = next;
+      },
+      setActiveTask() {},
+    };
+    return { machine, halt: () => (mode = "HALTED") };
+  }
+
+  /** A runner that flips the machine to HALTED DURING the research turn. */
+  function haltingResearchRunner(onResearch: () => void): AgentRunner {
+    return {
+      run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
+        const kind = spec.agent === "research" ? "research" : spec.sandbox ? "build" : "plan";
+        const messages = HAPPY_SCRIPT[kind] ?? [];
+        return (async function* () {
+          for (const message of messages) {
+            yield message as AgentMessage;
+            if (kind === "research") onResearch();
+          }
+        })();
+      },
+    };
+  }
+
+  it("finalize(done) writes exactly one build_history row: result 'built', stored provenance, gate-approved title", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-hist-1", "make a leaderboard");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    await createBuildSession(deps).startBuild(task, "vote");
+
+    const rows = listBuildHistory(db, { limit: 10 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.result).toBe("built");
+    expect(rows[0]?.provenance).toBe("vote");
+    // title is the gate-approved QueuedTask.text ONLY (D-03).
+    expect(rows[0]?.title).toBe("make a leaderboard");
+    expect(rows[0]?.taskId).toBe("task-hist-1");
+  });
+
+  it("stores provenance per-startBuild — a 'donation' build records provenance 'donation'", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-hist-2", "donor pick");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    await createBuildSession(deps).startBuild(task, "donation");
+    expect(listBuildHistory(db, { limit: 10 })[0]?.provenance).toBe("donation");
+  });
+
+  it("stores provenance per-startBuild — a 'channel_points' build records provenance 'channel_points'", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-hist-3", "redeemer pick");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    await createBuildSession(deps).startBuild(task, "channel_points");
+    expect(listBuildHistory(db, { limit: 10 })[0]?.provenance).toBe("channel_points");
+  });
+
+  it("defaults provenance to 'vote' when startBuild is called without one (overlay.js parity)", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-hist-4", "default pick");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    await createBuildSession(deps).startBuild(task);
+    expect(listBuildHistory(db, { limit: 10 })[0]?.provenance).toBe("vote");
+  });
+
+  it("maps a COMP-02 plan rejection to a build_history row with result 'refused'", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02((id) =>
+      id.endsWith("-plan")
+        ? { decision: "rejected", category: "tos-risk", rationale: "no" }
+        : APPROVED,
+    );
+    const { sink } = capturingSink();
+    const task = queuedTask("task-hist-5", "risky idea");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    await createBuildSession(deps).startBuild(task, "chaos");
+    const rows = listBuildHistory(db, { limit: 10 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.result).toBe("refused");
+    expect(rows[0]?.provenance).toBe("chaos");
+  });
+
+  it("maps the fail-closed catch to a build_history row with result 'failed'", async () => {
+    const { machine } = throwingBuildModeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-hist-6", "boom");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    await createBuildSession(deps).startBuild(task, "vote");
+    const rows = listBuildHistory(db, { limit: 10 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.result).toBe("failed");
+  });
+
+  it("finalizeAborted writes ZERO build_history rows — an abort is neither success nor narrated failure (CR-01)", async () => {
+    const { machine, halt } = haltableMachine();
+    const runner = haltingResearchRunner(halt);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-hist-7", "vetoed mid-build");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    await createBuildSession(deps).startBuild(task, "vote");
+    // The abort path fired (a teardown row exists) but NO changelog row was written.
+    expect(machine.mode).toBe("HALTED");
+    expect(listAuditRecords(db, { limit: 10, eventType: "sandbox_teardown" })).toHaveLength(1);
+    expect(listBuildHistory(db, { limit: 10 })).toHaveLength(0);
+  });
+
+  it("finalize on a CLOSED ledger is a no-throw no-op (auditIfOpen guard, WR-05)", async () => {
+    const { machine } = throwingBuildModeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-hist-8", "shutdown drain");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    const session = createBuildSession(deps);
+    db.close(); // simulate shutdown BEFORE the fail-closed finalize runs
+    await expect(session.startBuild(task, "vote")).resolves.toBeUndefined();
   });
 });
 

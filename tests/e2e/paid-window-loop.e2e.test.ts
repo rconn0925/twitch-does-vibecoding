@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { listAuditRecords } from "../../src/audit/record.js";
+import { listAuditRecords, listBuildHistory } from "../../src/audit/record.js";
 import type { ChatMessageSink } from "../../src/ingestion/chat-sender.js";
 import type { DonationEventSource, TipEvent } from "../../src/ingestion/donation-source.js";
 import type { ChatEventSource, ChatMessageEvent } from "../../src/ingestion/twitch-chat.js";
@@ -246,6 +246,15 @@ describe("paid-window loop e2e (tip → window → gated !build → BUILD → dr
     expect(app.controlWindow.snapshot()).not.toBeNull();
     // The finished task was dequeued (a completed build never lingers).
     expect(app.taskQueue.list()).toHaveLength(0);
+
+    // HIST-01: the driveWindowBuild driver threads the live window's trigger —
+    // a donation window persists the changelog row with provenance 'donation'.
+    const entry = listBuildHistory(app.db, { limit: 20 }).find(
+      (r) => r.title === "make a counter app",
+    );
+    expect(entry).toBeDefined();
+    expect(entry?.provenance).toBe("donation");
+    expect(entry?.result).toBe("built");
   });
 
   it("(3) a REJECTED !build is narrated, NOT built, and consumes no window time (D-12/never-silent)", async () => {

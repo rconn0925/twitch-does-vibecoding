@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { listAuditRecords } from "../../src/audit/record.js";
+import { listAuditRecords, listBuildHistory } from "../../src/audit/record.js";
 import type { ChatMessageSink } from "../../src/ingestion/chat-sender.js";
 import type { ChatEventSource, ChatMessageEvent } from "../../src/ingestion/twitch-chat.js";
 import { createApp } from "../../src/main.js";
@@ -187,6 +187,16 @@ describe("chaos-mode e2e (toggle → auto-pick → BUILD → re-pick → drain; 
     // Exactly two chaos_pick audit rows — one per built pick (never silent).
     const picked = listAuditRecords(app.db, { limit: 20, eventType: "chaos_pick" });
     expect(picked).toHaveLength(2);
+
+    // HIST-01: the driveChaosBuild driver threads provenance 'chaos' — both
+    // completed builds persist changelog rows tagged 'chaos' (never 'vote').
+    const history = listBuildHistory(app.db, { limit: 20 });
+    const chaosBuilds = history.filter((r) =>
+      ["make a snake game", "make a todo list"].includes(r.title),
+    );
+    expect(chaosBuilds).toHaveLength(2);
+    expect(chaosBuilds.every((r) => r.provenance === "chaos")).toBe(true);
+    expect(chaosBuilds.every((r) => r.result === "built")).toBe(true);
   });
 
   it("(2) with the pool drained, chaos does NOT spin — stays in CHAOS_MODE, idle", async () => {
