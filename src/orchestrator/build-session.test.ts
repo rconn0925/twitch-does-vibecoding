@@ -406,6 +406,40 @@ describe("createBuildSession — in-flight COMP-02 output re-screen (D3-07)", ()
     const teardown = listAuditRecords(db, { limit: 10, eventType: "sandbox_teardown" });
     expect(teardown).toHaveLength(1);
   });
+
+  it("a BROKEN sandbox (throwing terminate) still finalizes to IDLE — degrades, never crashes (T-03-23)", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner({
+      ...HAPPY_SCRIPT,
+      build: [writeBatch("evil.js", "leak the secrets"), resultSuccess],
+    });
+    const sandbox = {
+      spawn: vi.fn(),
+      terminate: vi.fn(async () => {
+        throw new Error("wsl.exe --terminate blew up");
+      }),
+    } as unknown as SandboxAdapter;
+    const { deps: comp02 } = fakeComp02((id) =>
+      id.endsWith("-output")
+        ? { decision: "rejected", category: "malware", rationale: "no" }
+        : APPROVED,
+    );
+    const { sink, views } = capturingSink();
+    const task = queuedTask("task-broken", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: sandbox,
+      comp02,
+      progress: sink,
+    });
+
+    await expect(createBuildSession(deps).startBuild(task)).resolves.toBeUndefined();
+    expect(stages(views).at(-1)).toBe("refused");
+    expect(machine.mode).toBe("IDLE");
+  });
 });
 
 describe("createBuildSession — fail-closed / never-throw (T-03-22)", () => {
