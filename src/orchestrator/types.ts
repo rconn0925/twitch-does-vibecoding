@@ -101,7 +101,9 @@ export interface DevServerProbe {
 export interface BuildMachineView {
   readonly mode: StreamMode;
   transition(next: StreamMode): void;
-  setActiveTask(taskId: string, pid: number | null): void;
+  /** taskId is nullable so the orchestrator can CLEAR the active task on build
+   *  end — matches StreamModeMachine.setActiveTask(taskId: string | null, …). */
+  setActiveTask(taskId: string | null, pid: number | null): void;
 }
 
 /**
