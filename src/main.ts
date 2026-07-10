@@ -296,6 +296,14 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     // receives ONLY viewer-safe CATEGORY_META labels: never the suggestion
     // text, never the classifier rationale (T-02-17). Approvals get NO chat
     // message — silence until the idea appears in a round (D2-07 budget).
+    //
+    // WR-03: the fail-closed outage line goes through narrator.error(),
+    // which bypasses the coalesce buffer — during a classifier outage every
+    // accepted !suggest would enqueue an IDENTICAL line (N users → N
+    // messages queued at 15/30s, minutes of repeats). Throttle it: at most
+    // one backed-up notice per OUTAGE_NOTICE_MIN_INTERVAL_MS.
+    const OUTAGE_NOTICE_MIN_INTERVAL_MS = 30_000;
+    let lastOutageNoticeAtMs = 0;
     const classifyThenNotify = async (candidate: SuggestionCandidate): Promise<GateResult> => {
       const result = await classify(gateDeps, candidate);
       const viewer = candidate.twitchUsername ?? "viewer";
@@ -307,9 +315,13 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         } else {
           // Fail-closed rejection (classifier unavailable, D-11): the honest
           // UI-SPEC error line — no fake category, no internal codes.
-          narrator.error(
-            "Suggestion check is backed up — hold your ideas for a minute, votes still count.",
-          );
+          const now = Date.now();
+          if (now - lastOutageNoticeAtMs >= OUTAGE_NOTICE_MIN_INTERVAL_MS) {
+            lastOutageNoticeAtMs = now;
+            narrator.error(
+              "Suggestion check is backed up — hold your ideas for a minute, votes still count.",
+            );
+          }
         }
       } else if (result.decision === "held-for-review") {
         narrator.feedback("held", viewer);

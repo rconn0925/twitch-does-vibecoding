@@ -157,6 +157,34 @@ describe("createApp chat composition (fake source + capturing sink)", () => {
     expect(state.round?.candidates[0]?.votes).toBe(1);
   });
 
+  it("WR-03: a burst of fail-closed rejections sends at most ONE backed-up notice per throttle window", async () => {
+    const chat = fakeChatSource();
+    const { sent, sink } = capturingSink();
+    // D-11 fail-closed shape: rejected with NO category (classifier down).
+    const FAIL_CLOSED = () =>
+      ({ decision: "rejected", category: null, rationale: "classifier unavailable" }) as const;
+    app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: FAIL_CLOSED,
+      chatSource: chat.source,
+      chatSink: sink,
+    });
+
+    // Five DISTINCT users burst !suggest during the outage — the per-user
+    // cooldown lets every one of them through, so without the throttle each
+    // would enqueue an identical "backed up" line.
+    for (let i = 0; i < 5; i++) {
+      chat.say(String(200 + i), `viewer${i}`, `!suggest idea number ${i}`);
+    }
+    await until(async () =>
+      sent.some((m) => m.startsWith("Suggestion check is backed up")) ? true : undefined,
+    );
+    // Give the sender queue a beat: any (wrong) duplicates would drain now.
+    await sleep(150);
+    expect(sent.filter((m) => m.startsWith("Suggestion check is backed up"))).toHaveLength(1);
+  });
+
   it("twitch status follows the socket: disconnected until ready, connected after", async () => {
     const chat = fakeChatSource();
     const { sink } = capturingSink();
