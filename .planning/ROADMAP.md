@@ -90,7 +90,7 @@ Plans:
 
 **Wave 4** *(blocked on 02-04)*
 
-- [ ] 02-05-PLAN.md — Public OBS overlay: separate read-only surface, live tally + countdown, DOM-safety scan (wave 4)
+- [x] 02-05-PLAN.md — Public OBS overlay: separate read-only surface, live tally + countdown, DOM-safety scan (wave 4)
 
 **Wave 5** *(blocked on 02-05)*
 
@@ -159,7 +159,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Compliance Gate & Kill Switch | 5/5 | Complete   | 2026-07-09 |
-| 2. Chat Vote Loop | 4/6 | In Progress|  |
+| 2. Chat Vote Loop | 5/6 | In Progress|  |
 | 3. Sandboxed Build Engine & Live Show | 0/TBD | Not started | - |
 | 4. Paid Influence & Chaos Mode | 0/TBD | Not started | - |
 | 5. Build History & Stream Night Dry Run | 0/TBD | Not started | - |
