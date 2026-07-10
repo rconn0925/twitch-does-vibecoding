@@ -2,12 +2,13 @@
  * Live Sonnet gate evaluation — Success Criterion 2.
  *
  * Runs EVERY fixture (taxonomy + adversarial + feasibility) through the REAL
- * gate: prefilter + live Sonnet classifier, concurrency 4. Each fixture costs
- * one metered Sonnet call (raw Messages API always bills per-token — this is
- * NOT plan-credit billing).
+ * gate: prefilter + live Sonnet classifier, concurrency 4. Each fixture is one
+ * plan-billed Sonnet call (Agent SDK query() via `claude login` — Claude
+ * plan/subscription credits, NOT the metered per-token Messages API).
  *
  * Usage:
- *   npm run gate:eval        (loads ANTHROPIC_API_KEY / GATE_MODEL from .env)
+ *   npm run gate:eval        (authenticates via `claude login`; GATE_MODEL from
+ *                             .env is optional. ANTHROPIC_API_KEY is NOT needed.)
  *
  * Exit codes:
  *   0 — zero SAFETY FAILs. Over-rejections (expected approved, got
@@ -17,15 +18,14 @@
  *       back approved, OR the canonical play-money gambling fixture
  *       (tax-07-gray) did not come back held-for-review, OR the classifier
  *       failed closed on every single call (nothing was actually evaluated).
- *   2 — ANTHROPIC_API_KEY not set: live eval skipped (clean follow-up, not a
- *       failure).
+ *   2 — Claude plan credentials unavailable (not logged in): live eval skipped
+ *       (clean follow-up, not a failure).
  *
  * Audit rows written during the eval go to data/eval.db (throwaway), never
  * the operator DB.
  */
 
 import { mkdirSync } from "node:fs";
-import Anthropic from "@anthropic-ai/sdk";
 import { openDb } from "../src/audit/db.js";
 import { ADVERSARIAL_FIXTURES } from "../src/compliance/fixtures/adversarial.fixtures.js";
 import { FEASIBILITY_FIXTURES } from "../src/compliance/fixtures/feasibility.fixtures.js";
@@ -33,6 +33,7 @@ import type { GateFixture } from "../src/compliance/fixtures/taxonomy.fixtures.j
 import { TAXONOMY_FIXTURES } from "../src/compliance/fixtures/taxonomy.fixtures.js";
 import type { GateDeps } from "../src/compliance/gate.js";
 import { classify } from "../src/compliance/gate.js";
+import { createClassifierTransport } from "../src/orchestrator/classifier-runner.js";
 
 /** The canonical D-12 gray-zone fixture that MUST come back held-for-review. */
 const CANONICAL_GAMBLING_GRAY_ID = "tax-07-gray";
@@ -91,11 +92,18 @@ function statusFor(fixture: GateFixture, actual: string): { status: Status; note
 }
 
 async function main(): Promise<number> {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const transport = createClassifierTransport();
+
+  // Plan-credential probe: one trivial call. If the Agent SDK / `claude login`
+  // credentials are unavailable, the transport THROWS (as opposed to merely
+  // returning non-JSON) — skip the live eval cleanly (exit 2), never a failure.
+  try {
+    await transport("ping");
+  } catch (err) {
     console.error(
-      "ANTHROPIC_API_KEY not set — live eval skipped.\n" +
-        "Create a key at console.anthropic.com -> API Keys and put it in .env\n" +
-        "(never committed), then re-run: npm run gate:eval",
+      "Claude plan credentials unavailable — the live eval was skipped.\n" +
+        "Run `claude login` (plan/subscription credits; no ANTHROPIC_API_KEY needed),\n" +
+        `then re-run: npm run gate:eval\n(probe error: ${err instanceof Error ? err.message : String(err)})`,
     );
     return 2;
   }
@@ -110,10 +118,9 @@ async function main(): Promise<number> {
   mkdirSync("data", { recursive: true });
   const db = openDb("data/eval.db");
 
-  const anthropic = new Anthropic();
   const deps: GateDeps = {
     db,
-    classifier: { anthropic },
+    classifier: { transport },
     streamModeProvider: () => "IDLE",
   };
 
