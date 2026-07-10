@@ -21,6 +21,7 @@ import {
   loadDonationDurationConfig,
   loadRedemptionDurationConfig,
 } from "./control-window/duration.js";
+import { type HistoryServerHandle, startHistoryServer } from "./history/server.js";
 import { type ChatMessageSink, createChatSender } from "./ingestion/chat-sender.js";
 import {
   connectStreamElements,
@@ -152,6 +153,14 @@ export interface CreateAppOptions {
    */
   previewPort?: number;
   /**
+   * Audience-facing build-history changelog port (HIST-01 / 05-02). Defaults to
+   * 0 (ephemeral) so parallel test apps never collide; the entrypoint passes
+   * HISTORY_PORT (default 4903) — always a SEPARATE surface from the console,
+   * overlay, and preview (D-04). The history server is a pure read-over-db
+   * surface, so it starts unconditionally (no external adapter needed).
+   */
+  historyPort?: number;
+  /**
    * Paid-influence seams (plan 04-07): injected StreamElements donation source
    * and channel-points redemption source — test fakes (zero network) or the real
    * adapters the entrypoint builds. Both feed the SAME ControlWindow FSM. Absent
@@ -184,6 +193,8 @@ export interface AppHandle {
   orchestrator?: BuildSession;
   /** App-under-construction preview surface (PRES-03) — present only when the orchestrator is composed. */
   preview?: PreviewServerHandle;
+  /** Audience-facing build-history changelog surface (HIST-01) — always composed (read-over-db). */
+  history: HistoryServerHandle;
   /** Paid/redemption control-window FSM (PAID-01/02/03/04) — always composed (04-07). */
   controlWindow: ControlWindow;
   /**
@@ -1046,6 +1057,22 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     overlay.port,
   );
 
+  // Audience-facing build-history changelog (HIST-01) — a FOURTH read-only,
+  // loopback-bound surface. Unlike the overlay/preview it holds no orchestrator
+  // connection: it reads build_history over the SAME db (pure read-over-db), so
+  // it is safe to start unconditionally, including in tests against the in-memory
+  // db. Ephemeral port 0 by default; the entrypoint passes HISTORY_PORT.
+  const history = await startHistoryServer({
+    db,
+    port: opts.historyPort ?? 0,
+    logger,
+  });
+  logger.info(
+    { port: history.port },
+    "build history changelog listening at http://127.0.0.1:%d — open in a browser tab or OBS source",
+    history.port,
+  );
+
   return {
     server: console_.server,
     port: console_.port,
@@ -1059,6 +1086,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     registry,
     controlWindow,
     chaos,
+    history,
     ...(orchestrator ? { orchestrator } : {}),
     ...(preview ? { preview } : {}),
     close: async () => {
@@ -1077,6 +1105,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // build + unregister so no agent turn can touch a closed db (03-06).
       await orchestrator?.close();
       await preview?.close();
+      // Tear down the read-only history surface BEFORE db.close() so no in-flight
+      // GET /api/history read can touch a closed db.
+      await history.close();
       await overlay.close();
       await console_.close();
       db.close();
@@ -1374,6 +1405,7 @@ if (isMain) {
   const port = Number(process.env.CONSOLE_PORT ?? 4900);
   const overlayPort = Number(process.env.OVERLAY_PORT ?? 4901);
   const previewPort = Number(process.env.PREVIEW_PORT ?? 4902);
+  const historyPort = Number(process.env.HISTORY_PORT ?? 4903);
   const dbPath = process.env.AUDIT_DB_PATH ?? "./data/audit.db";
   const bootLogger = pino({ level: process.env.LOG_LEVEL ?? "info" });
   // Entrypoint-only: build real twurple + build-orchestrator adapters (guarded
@@ -1389,6 +1421,7 @@ if (isMain) {
         port,
         overlayPort,
         previewPort,
+        historyPort,
         ...twitchOpts,
         ...orchestratorOpts,
         ...(donationSource ? { donationSource } : {}),
