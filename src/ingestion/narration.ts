@@ -19,12 +19,18 @@
  */
 
 import type { Logger } from "pino";
-import type { RoundSnapshot } from "../shared/types.js";
+import type { BuildNarrator, RoundSnapshot } from "../shared/types.js";
 import type { ChatSender } from "./chat-sender.js";
 
 export type FeedbackKind = "rejected" | "held" | "duplicate" | "cooldown" | "trim";
 
-export interface Narrator {
+/**
+ * The narrator implements the round/feedback beats AND the build-pipeline beats
+ * (BuildNarrator, BUILD-03/D3-08/D3-09). Build events are transitions too — one
+ * message per transition through the SAME single rate-limited sender — so a
+ * build failure is never silent (per-token/per-file churn stays OFF chat).
+ */
+export interface Narrator extends BuildNarrator {
   roundOpened(snap: RoundSnapshot): void;
   roundClosed(snap: RoundSnapshot): void;
   feedback(kind: FeedbackKind, displayName: string, categoryLabel?: string): void;
@@ -149,6 +155,67 @@ export function createNarrator(deps: {
 
     error(text: string): void {
       void deps.sender.send(text);
+    },
+
+    // ── Build-pipeline beats (BUILD-03 / D3-08 / D3-09) ───────────────────────
+    // One message per transition, through the SAME rate-limited sender. Copy is
+    // the reviewed 03-UI-SPEC "Bot chat narration" contract — render verbatim.
+    // Task titles truncate to 60 chars (Twitch 500-char cap headroom).
+
+    buildPickedUp(title: string): void {
+      void deps.sender.send(
+        `Building "${truncateTitle(title)}" now — researching how to pull it off.`,
+      );
+    },
+
+    stagePlanning(title: string): void {
+      void deps.sender.send(`Plan's coming together for "${truncateTitle(title)}"…`);
+    },
+
+    stageBuilding(title: string): void {
+      void deps.sender.send(
+        `Writing the code for "${truncateTitle(title)}" now — watch it come alive.`,
+      );
+    },
+
+    buildDone(title: string): void {
+      void deps.sender.send(`"${truncateTitle(title)}" is built — it's live on screen. GG.`);
+    },
+
+    buildRefused(title: string): void {
+      void deps.sender.send(
+        `Heads up — the build agent won't build "${truncateTitle(title)}". Moving on to the next one.`,
+      );
+    },
+
+    buildRetryingOnce(title: string): void {
+      void deps.sender.send(`"${truncateTitle(title)}" hit a snag — giving it one more shot.`);
+    },
+
+    buildDeciding(title: string): void {
+      void deps.sender.send(
+        `"${truncateTitle(title)}" won't build cleanly — streamer's calling retry or skip.`,
+      );
+    },
+
+    buildRetryChosen(title: string): void {
+      void deps.sender.send(`Another go at "${truncateTitle(title)}" — here we go.`);
+    },
+
+    buildSkipped(title: string): void {
+      void deps.sender.send(`Skipping "${truncateTitle(title)}" — on to the next idea.`);
+    },
+
+    comp02Rejected(title: string): void {
+      void deps.sender.send(
+        `"${truncateTitle(title)}" didn't pass the second safety check — can't build that one. Next up.`,
+      );
+    },
+
+    buildVetoed(title: string): void {
+      void deps.sender.send(
+        `Build stopped — pulling the plug on "${truncateTitle(title)}". Standing by.`,
+      );
     },
   };
 }

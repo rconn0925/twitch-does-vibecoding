@@ -19,7 +19,10 @@ import type { TaskQueue } from "../queue/task-queue.js";
 import { ROUND_CLOSED, ROUND_OPENED, STATE_CHANGED, VOTE_RECORDED } from "../shared/events.js";
 import { isLoopbackHostHeader, isLoopbackOrigin } from "../shared/loopback.js";
 import type {
+  BuildStatusView,
   GateResult,
+  PipelineStage,
+  ReasonTag,
   RoundSnapshot,
   StateSnapshot,
   SuggestionCandidate,
@@ -70,6 +73,16 @@ export interface ConsoleServerDeps {
   };
   /** Live Twitch connection health for the console pill; absent = unauthorized. */
   twitchStatus?: () => TwitchConnectionStatus;
+  /**
+   * BUILD-03 / D3-09 build-decision hooks — the orchestrator's retry/skip
+   * resolvers, invoked by POST /api/tasks/:id/retry and /skip (mirroring the
+   * veto route). Absent when no build engine is composed; the routes then no-op
+   * cleanly. `buildStatus` feeds the console build-awareness panel + the
+   * failed/refused decision surface (the build session's snapshot()).
+   */
+  retryBuild?: (taskId: string) => void;
+  skipTask?: (taskId: string, reasonTag?: ReasonTag | null) => void;
+  buildStatus?: () => BuildStatusView | null;
   logger?: Logger;
 }
 
@@ -79,6 +92,19 @@ export interface ConsoleServerHandle {
   server: Server;
   port: number;
   close: () => Promise<void>;
+}
+
+/**
+ * Console-facing build status (PRES-02/04 + BUILD-03): the live build task/stage
+ * plus a decision-pending flag. `decisionPending` is true on `failed`/`refused` —
+ * that's when the console renders the retry/skip decision surface (D3-09). The
+ * console MAY show full stage detail; only the public overlay stays coarse.
+ */
+export interface BuildConsoleStatus {
+  taskId: string;
+  title: string;
+  stage: PipelineStage;
+  decisionPending: boolean;
 }
 
 /** The full console state pushed over ws and returned by GET /api/state. */
@@ -91,6 +117,8 @@ export interface ConsoleState extends StateSnapshot {
   round: RoundSnapshot | null;
   /** Twitch connection health for the console pill (plan 02-04). */
   twitch: TwitchConnectionStatus;
+  /** Live build status + retry/skip decision flag, or null when no build is active (03-09). */
+  build: BuildConsoleStatus | null;
 }
 
 // zod v4 validation at every untrusted boundary (ASVS V5): terse 400s, never stack traces.
@@ -212,9 +240,10 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
   const publicDir = fileURLToPath(new URL("./public", import.meta.url));
   app.use(express.static(publicDir));
 
-  /** Compose the extended console state: machine snapshot + pool + queue + review. */
+  /** Compose the extended console state: machine snapshot + pool + queue + review + build. */
   function buildState(): ConsoleState {
     const review = listPending(db);
+    const buildView = deps.buildStatus?.() ?? null;
     return {
       ...machine.snapshot(),
       pool: pool.list(),
@@ -223,6 +252,13 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       review,
       round: deps.round.snapshot(),
       twitch: deps.twitchStatus?.() ?? "unauthorized",
+      // Failed/refused freezes the build awaiting a streamer decision (D3-09).
+      build: buildView
+        ? {
+            ...buildView,
+            decisionPending: buildView.stage === "failed" || buildView.stage === "refused",
+          }
+        : null,
     };
   }
 
@@ -543,6 +579,37 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       return;
     }
     res.status(404).json({ error: "task not found" });
+  });
+
+  // BUILD-03 / D3-09: retry a failed/refused build — mirrors the veto route
+  // exactly (TaskIdParamsSchema + zod body; the shared CSRF/DNS-rebinding
+  // middleware above already covers this POST — NO new middleware, T-03-25).
+  // The orchestrator's retryBuild re-runs the build from the approved plan; a
+  // no-op when no build engine is composed or the task isn't decision-pending.
+  app.post("/api/tasks/:id/retry", (req, res) => {
+    const params = TaskIdParamsSchema.safeParse(req.params);
+    const body = ResolveBodySchema.safeParse(req.body ?? {});
+    if (!params.success || !body.success) {
+      res.status(400).json({ error: "invalid retry request" });
+      return;
+    }
+    deps.retryBuild?.(params.data.id);
+    pushState();
+    res.json({ ok: true });
+  });
+
+  // BUILD-03 / D3-09: skip a failed/refused build (routine pacing decision, not
+  // destructive) — same mirrored shape, with the optional one-tap reason tag.
+  app.post("/api/tasks/:id/skip", (req, res) => {
+    const params = TaskIdParamsSchema.safeParse(req.params);
+    const body = ResolveBodySchema.safeParse(req.body ?? {});
+    if (!params.success || !body.success) {
+      res.status(400).json({ error: "invalid skip request" });
+      return;
+    }
+    deps.skipTask?.(params.data.id, body.data.reasonTag ?? null);
+    pushState();
+    res.json({ ok: true });
   });
 
   // Dev-only submission form backend: drives the full live slice (type text →
