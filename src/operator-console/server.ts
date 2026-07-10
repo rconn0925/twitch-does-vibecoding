@@ -12,6 +12,7 @@ import {
   recordHalt,
   recordReviewResolution,
   recordVeto,
+  recordWindowRevoked,
 } from "../audit/record.js";
 import { submitCandidate } from "../pipeline/submit.js";
 import type { CandidatePool } from "../queue/pool.js";
@@ -20,6 +21,7 @@ import { ROUND_CLOSED, ROUND_OPENED, STATE_CHANGED, VOTE_RECORDED } from "../sha
 import { isLoopbackHostHeader, isLoopbackOrigin } from "../shared/loopback.js";
 import type {
   BuildStatusView,
+  ControlWindowSnapshot,
   GateResult,
   PipelineStage,
   ReasonTag,
@@ -83,10 +85,62 @@ export interface ConsoleServerDeps {
   retryBuild?: (taskId: string) => void;
   skipTask?: (taskId: string, reasonTag?: ReasonTag | null) => void;
   buildStatus?: () => BuildStatusView | null;
+  /**
+   * PAID-04 / D-03 control-window seam: the honest full-detail snapshot the
+   * console renders (donor + amount→duration mapping) and the streamer revoke
+   * primitive. Structural — the real ControlWindow FSM is wired in 04-07; absent
+   * here composes to "no window active" (snapshot() → null, revoke() → no-op).
+   */
+  controlWindow?: ConsoleControlWindowSource;
+  /**
+   * CHAOS-01 chaos-mode seam: current on/off state + the toggle primitive, which
+   * drives the IDLE↔CHAOS_MODE machine transition (throwing InvalidTransitionError
+   * when precedence forbids it — D-05). Structural — wired in 04-07; absent
+   * composes to "chaos off" (enabled() → false, toggle() → no-op).
+   */
+  chaos?: ChaosModeSource;
+  /**
+   * Donation-feed connection health for the console pill (04-RESEARCH Open
+   * Question 1 — never let the tip feed fail silently). Absent = "unconfigured"
+   * (the expected pre-StreamElements state; the show runs without it).
+   */
+  donationsStatus?: () => DonationsStatus;
   logger?: Logger;
 }
 
-export type TwitchConnectionStatus = "connected" | "disconnected" | "unauthorized";
+/**
+ * Console-side control-window seam (PAID-04). `snapshot()` returns the honest,
+ * full-detail projection (donor + trigger + amount→duration mapping the overlay
+ * hides); `revoke()` cancels the active window. Real impl wired in 04-07.
+ */
+export interface ConsoleControlWindowSource {
+  snapshot(): ControlWindowSnapshot | null;
+  revoke(): void;
+}
+
+/** Chaos-mode seam (CHAOS-01): current state + the streamer toggle primitive. */
+export interface ChaosModeSource {
+  enabled(): boolean;
+  toggle(): void;
+}
+
+/**
+ * Twitch connection health. `missing-scope` (04-02) is the loud degraded state
+ * when the token lacks `channel:read:redemptions` — channel-points windows can't
+ * subscribe, but chat/voting/builds still work (never a silent failure).
+ */
+export type TwitchConnectionStatus =
+  | "connected"
+  | "disconnected"
+  | "unauthorized"
+  | "missing-scope";
+
+/**
+ * Donation-feed connection health. Reconciled with the copy labels (UI-checker
+ * flag): `reconnecting` (not "disconnected") matches "Donations: reconnecting";
+ * `unconfigured` is the pre-setup "not configured" amber state.
+ */
+export type DonationsStatus = "connected" | "reconnecting" | "unconfigured";
 
 export interface ConsoleServerHandle {
   server: Server;
@@ -119,6 +173,15 @@ export interface ConsoleState extends StateSnapshot {
   twitch: TwitchConnectionStatus;
   /** Live build status + retry/skip decision flag, or null when no build is active (03-09). */
   build: BuildConsoleStatus | null;
+  /**
+   * Active control window (honest full detail: donor + amount→duration mapping),
+   * or null when no window is active — drives the window panel + Revoke (PAID-04).
+   */
+  controlWindow: ControlWindowSnapshot | null;
+  /** Chaos mode on/off — drives the round-panel toggle + precedence (CHAOS-01/D-05). */
+  chaos: boolean;
+  /** Donation-feed connection health for the console pill (04-RESEARCH OQ1). */
+  donations: DonationsStatus;
 }
 
 // zod v4 validation at every untrusted boundary (ASVS V5): terse 400s, never stack traces.
@@ -259,6 +322,11 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
             decisionPending: buildView.stage === "failed" || buildView.stage === "refused",
           }
         : null,
+      // Full honest detail — the console shows the amount→duration ledger the
+      // overlay deliberately hides (PAID-04). Absent seam → no window active.
+      controlWindow: deps.controlWindow?.snapshot() ?? null,
+      chaos: deps.chaos?.enabled() ?? false,
+      donations: deps.donationsStatus?.() ?? "unconfigured",
     };
   }
 
@@ -610,6 +678,66 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
     deps.skipTask?.(params.data.id, body.data.reasonTag ?? null);
     pushState();
     res.json({ ok: true });
+  });
+
+  // PAID-04 / D-03 single-click Revoke Window — mirrors the veto route exactly
+  // (zod body, the shared CSRF/DNS-rebinding middleware above already covers this
+  // POST; NO new middleware — T-03-25). On an active window it revokes, writes a
+  // window_revoked audit row (never-silent), and returns the now-null snapshot.
+  // The optional D-18 reason tag lands as a non-blocking follow-up after the
+  // window has already closed (kind "revoke-window") — never a 404/409.
+  app.post("/api/control-window/revoke", (req, res) => {
+    const body = ResolveBodySchema.safeParse(req.body ?? {});
+    if (!body.success) {
+      res.status(400).json({ error: "invalid revoke request" });
+      return;
+    }
+    const reasonTag = body.data.reasonTag ?? null;
+    const snapshot = deps.controlWindow?.snapshot() ?? null;
+    if (snapshot) {
+      deps.controlWindow?.revoke();
+      recordWindowRevoked(db, {
+        trigger: snapshot.trigger,
+        donorIdentifier: snapshot.donorDisplayName,
+        streamMode: machine.mode,
+      });
+      pushState();
+      res.json({ revoked: true, controlWindow: deps.controlWindow?.snapshot() ?? null });
+      return;
+    }
+    if (reasonTag) {
+      // D-18 follow-up: the window already closed on the first click; the tag
+      // POST is acknowledged without failing (the window_revoked row is written
+      // at revoke time — a follow-up tag never blocks, never 404s, like veto).
+      res.json({ revoked: false, tagged: true });
+      return;
+    }
+    res.status(409).json({ reason: "no-window" });
+  });
+
+  // CHAOS-01 chaos-mode toggle — same mirrored shape (strict-empty body; inherits
+  // the CSRF/DNS-rebinding middleware, NO new middleware). toggle() drives the
+  // IDLE↔CHAOS_MODE machine transition; precedence (D-05: a window or a non-IDLE
+  // mode forbids it) surfaces as InvalidTransitionError → a terse 409, never a
+  // stack trace. The client also disables the button with a reason, so this is
+  // the backstop.
+  app.post("/api/chaos/toggle", (req, res) => {
+    const parsed = RoundStartBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid chaos toggle request body" });
+      return;
+    }
+    try {
+      deps.chaos?.toggle();
+    } catch (err) {
+      if (err instanceof InvalidTransitionError) {
+        res.status(409).json({ error: err.message, reason: "not-togglable" });
+        return;
+      }
+      throw err;
+    }
+    pushState();
+    res.json({ chaos: deps.chaos?.enabled() ?? false });
   });
 
   // Dev-only submission form backend: drives the full live slice (type text →
