@@ -28,7 +28,11 @@ const STAGE_BY_AGENT: Record<string, PipelineStage> = {
 };
 
 /** A model refusal is a first-class narrated event (D3-08) — refused, not failed. */
-const REFUSAL_SUBTYPES = new Set(["model_refusal_fallback", "model_refusal_no_fallback", "refusal"]);
+const REFUSAL_SUBTYPES = new Set([
+  "model_refusal_fallback",
+  "model_refusal_no_fallback",
+  "refusal",
+]);
 
 function stageForAgent(agentType: unknown): PipelineStage | null {
   if (typeof agentType !== "string") return null;

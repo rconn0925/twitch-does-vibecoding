@@ -14,8 +14,6 @@
  * (single-funnel COMP-01 discipline; PILL_BY_MODE analog).
  */
 
-import type Database from "better-sqlite3";
-import type { Logger } from "pino";
 import type {
   SDKMessage,
   SpawnedProcess,
@@ -23,6 +21,8 @@ import type {
   SubagentStartHookInput,
   SubagentStopHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
+import type Database from "better-sqlite3";
+import type { Logger } from "pino";
 import type { AbortRegistry } from "../kill-switch/abort.js";
 import type { TaskQueue } from "../queue/task-queue.js";
 import type {

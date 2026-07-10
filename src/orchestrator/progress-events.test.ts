@@ -21,9 +21,9 @@ describe("progress-events translate() — raw SDK stream → PipelineStage", () 
   });
 
   it("maps a task_progress system message by subagent_type (research → researching)", () => {
-    expect(
-      translate({ type: "system", subtype: "task_progress", subagent_type: "research" }),
-    ).toBe("researching");
+    expect(translate({ type: "system", subtype: "task_progress", subagent_type: "research" })).toBe(
+      "researching",
+    );
   });
 
   it("maps the plan step to 'planning'", () => {
@@ -48,9 +48,9 @@ describe("progress-events translate() — raw SDK stream → PipelineStage", () 
   });
 
   it("maps a model refusal to 'refused' (not 'failed') — D3-08 first-class event", () => {
-    expect(translate({ type: "system", subtype: "model_refusal_fallback", trigger: "refusal" })).toBe(
-      "refused",
-    );
+    expect(
+      translate({ type: "system", subtype: "model_refusal_fallback", trigger: "refusal" }),
+    ).toBe("refused");
     expect(translate({ type: "system", subtype: "model_refusal_no_fallback" })).toBe("refused");
     // The RESEARCH.md code-example shape (result + refusal) also maps to refused.
     expect(translate({ type: "result", subtype: "refusal" })).toBe("refused");
