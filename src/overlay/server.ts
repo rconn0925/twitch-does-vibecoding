@@ -6,7 +6,18 @@ import type { Logger } from "pino";
 import { WebSocketServer } from "ws";
 import { ROUND_CLOSED, ROUND_OPENED, STATE_CHANGED, VOTE_RECORDED } from "../shared/events.js";
 import { isLoopbackHostHeader, isLoopbackOrigin } from "../shared/loopback.js";
-import type { RoundSnapshot, StreamMode } from "../shared/types.js";
+import type { BuildStatusView, RoundSnapshot, StreamMode } from "../shared/types.js";
+
+/**
+ * Emitted by the OverlayBuildSource whenever the pipeline stage advances
+ * (researching → planning → building → done/failed/refused). Stage transitions
+ * are low-frequency show beats — a handful per build — so they push IMMEDIATELY
+ * like the round lifecycle events, never through the vote-tally debounce
+ * (UI-SPEC §Motion & update cadence). Declared here rather than in
+ * shared/events.ts so this plan stays inside its own file boundary; the
+ * orchestrator (03-06) imports the constant from the overlay contract.
+ */
+export const BUILD_STAGE_CHANGED = "build:stage-changed" as const;
 
 /**
  * Public OBS overlay server (PRES-01) — a PHYSICALLY separate localhost
@@ -36,6 +47,15 @@ export interface OverlayState {
   round: RoundSnapshot | null;
   /** First 3 queued task texts, untruncated — the client truncates (UI-SPEC). */
   nextUp: string[];
+  /**
+   * The live build's status (PRES-02/04), or null when no build is active.
+   * The pill stays "BUILDING" across the whole pipeline (PILL_BY_MODE
+   * unchanged); this field carries the fine-grained researching→planning→build
+   * →done/failed/refused stage the overlay stepper renders. `title` is the one
+   * chat-derived string on the build panel — rendered textContent-only, 80-char
+   * truncated client-side (T-03-15).
+   */
+  buildStatus: BuildStatusView | null;
 }
 
 /**
@@ -57,10 +77,34 @@ export interface OverlayQueueSource {
   list(): readonly { text: string }[];
 }
 
+/**
+ * The build-status sliver the overlay needs (mirrors OverlayRoundSource): a
+ * point-in-time snapshot plus a BUILD_STAGE_CHANGED subscription. The
+ * orchestrator (03-06) feeds this seam; tests inject a plain fake. snapshot()
+ * returns null whenever no build is active.
+ */
+export interface OverlayBuildSource {
+  snapshot(): BuildStatusView | null;
+  on(event: string, handler: (...args: unknown[]) => void): void;
+}
+
+/**
+ * A no-op build source: no build ever active, no stage events. Used until the
+ * orchestrator (03-06) feeds a real OverlayBuildSource — the composition root
+ * (main.ts) can wire the overlay before the build engine exists, and the panel
+ * simply stays absent (buildStatus === null).
+ */
+const NULL_BUILD_SOURCE: OverlayBuildSource = {
+  snapshot: () => null,
+  on: () => {},
+};
+
 export interface OverlayServerDeps {
   machine: OverlayModeSource;
   round: OverlayRoundSource;
   taskQueue: OverlayQueueSource;
+  /** Optional until 03-06 wires the orchestrator; defaults to no build active. */
+  build?: OverlayBuildSource;
   port: number;
   /** Tally push debounce; defaults to the UI-SPEC 300ms. */
   debounceMs?: number;
@@ -99,6 +143,7 @@ const PILL_BY_MODE: Record<StreamMode, OverlayPill> = {
  */
 export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServerHandle> {
   const { machine, round, taskQueue, logger } = deps;
+  const build = deps.build ?? NULL_BUILD_SOURCE;
   const app = express();
 
   // ── DNS-rebinding defense (CR-02, shared with the console) ──────────
@@ -116,11 +161,12 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   const publicDir = fileURLToPath(new URL("./public", import.meta.url));
   app.use(express.static(publicDir));
 
-  /** Compose the public overlay state — round snapshot + queue titles ONLY (T-02-21). */
+  /** Compose the public overlay state — round + build snapshots + queue titles ONLY (T-02-21). */
   function buildOverlayState(): OverlayState {
     return {
       pill: PILL_BY_MODE[machine.mode],
       round: round.snapshot(),
+      buildStatus: build.snapshot(),
       nextUp: taskQueue
         .list()
         .slice(0, 3)
@@ -177,6 +223,15 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
       pushState(args[0] as RoundSnapshot | undefined);
     });
   }
+
+  // Build-stage transitions are low-frequency show beats (a handful per build)
+  // → push IMMEDIATELY, exactly like ROUND_OPENED/ROUND_CLOSED and never via
+  // the vote-tally debounce. buildOverlayState() re-reads the source's current
+  // snapshot, which the orchestrator advances BEFORE emitting (so the "done"
+  // stage that drives the client's 8s BUILT IT beat is always in the push).
+  build.on(BUILD_STAGE_CHANGED, () => {
+    pushState();
+  });
 
   // High-frequency tally events collapse into one push per debounce window:
   // the first vote arms ONE unref'd timer; every vote inside the window rides
