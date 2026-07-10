@@ -14,7 +14,7 @@ Build the safety spine first — a single compliance chokepoint and an always-re
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Compliance Gate & Kill Switch** - Single-funnel ToS filter, state machine, and operator veto — the safety spine, adversarially tested before any chat input exists (completed 2026-07-09)
-- [ ] **Phase 2: Chat Vote Loop** - Twitch EventSub ingestion, !suggest/!vote rounds, chat narration, and live vote overlay — the first end-to-end demoable slice
+- [x] **Phase 2: Chat Vote Loop** - Twitch EventSub ingestion, !suggest/!vote rounds, chat narration, and live vote overlay — the first end-to-end demoable slice (completed 2026-07-10)
 - [ ] **Phase 3: Sandboxed Build Engine & Live Show** - Agent orchestrator (Sonnet research, Fable build) in a WSL2/Docker sandbox, second-pass output screening, build overlay, and live app preview
 - [ ] **Phase 4: Paid Influence & Chaos Mode** - Donation free-reign windows (external platform), channel points micro-control, and chaos mode — all through the identical gate
 - [ ] **Phase 5: Build History & Stream Night Dry Run** - Persistent changelog and a full-loop rehearsal on a test channel before the first real stream night
@@ -94,7 +94,7 @@ Plans:
 
 **Wave 5** *(blocked on 02-05)*
 
-- [ ] 02-06-PLAN.md — Full-loop + recovery e2e, operator docs, live OAuth/chat smoke checkpoint (wave 5)
+- [x] 02-06-PLAN.md — Full-loop + recovery e2e, operator docs, live OAuth/chat smoke checkpoint (wave 5)
 
 **UI hint**: yes
 
@@ -159,7 +159,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Compliance Gate & Kill Switch | 5/5 | Complete   | 2026-07-09 |
-| 2. Chat Vote Loop | 5/6 | In Progress|  |
+| 2. Chat Vote Loop | 6/6 | Complete   | 2026-07-10 |
 | 3. Sandboxed Build Engine & Live Show | 0/TBD | Not started | - |
 | 4. Paid Influence & Chaos Mode | 0/TBD | Not started | - |
 | 5. Build History & Stream Night Dry Run | 0/TBD | Not started | - |
