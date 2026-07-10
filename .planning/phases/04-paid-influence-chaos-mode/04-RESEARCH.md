@@ -32,7 +32,7 @@ Architecturally, this phase is well set up by Phase 1: `StreamMode` already has 
 
 ### Locked Decisions
 
-- **D-02:** Channel-points trigger = native Twitch EventSub `channel.channel_points_custom_reward_redemption.add` (broadcaster-scoped — the broadcaster token from Phase 2 already covers it). No new auth surface beyond what Phase 2 established.
+- **D-02 (CORRECTED — see Open Question 1 + Environment table below):** Channel-points trigger = native Twitch EventSub `channel.channel_points_custom_reward_redemption.add` (v1), scope **`channel:read:redemptions`**. ⚠ Phase 2's token requests only chat scopes — it does NOT already cover this. Phase 4 MUST add `channel:read:redemptions` to `TWITCH_SCOPES` and have the broadcaster RE-AUTHORIZE (planned: scope change in 04-02, re-auth live gate in 04-08). This supersedes the earlier "already covers it" phrasing.
 - **D-03:** A single **ControlWindow** state machine backs BOTH donation windows and channel-points windows (same open → active → expiry/revoke lifecycle, same gate + veto routing); they differ only in trigger and in their (configurable) duration/cap constants. Do not build two parallel mechanisms.
 - **D-04:** Amount→duration mapping is **linear with a floor and a hard cap**, plus a **per-donor cooldown** — exact constants are streamer-tunable config (Claude's discretion / research-informed), but the SHAPE (linear-capped + cooldown) is locked.
 - **D-05:** **One active control window at a time** (no stacking), mirroring the build concurrency-1 discipline. Precedence: an active paid window > chaos mode > the normal vote loop. A redemption/donation arriving while a window is active is queued behind the cooldown or dropped-with-feedback (never silently) — narration + audit.

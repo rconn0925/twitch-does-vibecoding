@@ -210,8 +210,8 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Compliance Gate & Kill Switch | 5/5 | Complete   | 2026-07-09 |
 | 2. Chat Vote Loop | 6/6 | Complete   | 2026-07-10 |
-| 3. Sandboxed Build Engine & Live Show | 0/9 | Not started | - |
-| 4. Paid Influence & Chaos Mode | 0/8 | Not started | - |
+| 3. Sandboxed Build Engine & Live Show | 8/9 | Code complete (review/verify/secure green); Wave 0 WSL2 go/no-go pending | - |
+| 4. Paid Influence & Chaos Mode | 0/8 | Planned | - |
 | 5. Build History & Stream Night Dry Run | 0/TBD | Not started | - |
 
 ## Coverage
