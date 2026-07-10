@@ -21,16 +21,7 @@ import type {
   SubagentStartHookInput,
   SubagentStopHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
-import type Database from "better-sqlite3";
-import type { Logger } from "pino";
-import type { AbortRegistry } from "../kill-switch/abort.js";
-import type { TaskQueue } from "../queue/task-queue.js";
-import type {
-  BuildStatusView,
-  GateResult,
-  StreamMode,
-  SuggestionCandidate,
-} from "../shared/types.js";
+import type { BuildStatusView, StreamMode } from "../shared/types.js";
 
 /**
  * The small internal message type the AgentRunner yields. It aliases the raw
@@ -107,57 +98,17 @@ export interface BuildMachineView {
 }
 
 /**
- * COMP-02 second-pass caller (03-04): re-screens the build agent's OWN generated
- * plan text through the SAME Phase 1 gate (classify()) BEFORE any code is
- * written (D3-06). A blocking approve/reject/hold — never submitCandidate().
- */
-export interface Comp02Screen {
-  screenPlan(args: { taskId: string; planText: string }): Promise<GateResult>;
-}
-
-/**
- * SAND-04 zero-interpolation prompt construction (03-06): turns a QueuedTask
- * into the delimited `<task_description source="chat">…</task_description>` user
- * prompt. Mirrors the classifier's fixed-system-prompt / untrusted-text-as-data
- * discipline.
- */
-export interface PromptBoundary {
-  buildTaskPrompt(task: SuggestionCandidate): string;
-}
-
-/**
  * Where translated pipeline-stage transitions go (overlay push / console state /
  * chat narration). Consumers receive only the BuildStatusView vocabulary, never
  * a raw SDK message.
+ *
+ * NOTE (WR-04): the authoritative build-session dependency shape is
+ * `BuildSessionDeps` in build-session.ts (which consumes `Comp02Deps` from
+ * comp02.ts and the prompt-boundary.ts functions directly). Earlier blueprint
+ * interfaces (`BuildSessionDeps`, `Comp02Screen`, `PromptBoundary`) that once
+ * lived here diverged from the real shapes and were unused by any source file —
+ * they were removed so this file is not a misleading second source of truth.
  */
 export interface ProgressSink {
   push(status: BuildStatusView): void;
-}
-
-/**
- * The DI shape 03-06's build session implements against — everything the
- * orchestrator touches is injected so vitest never constructs a real
- * query()/WSL2/SQLite (mirrors EnqueueWinnerDeps). Skeleton: fields are the
- * seams above plus the existing Phase 1/2 handles the orchestrator consumes.
- */
-export interface BuildSessionDeps {
-  /** Read-only consumer: list()/remove(); NEVER a new .enqueue() call site. */
-  taskQueue: TaskQueue;
-  /** Audit ledger handle (recordPipelineStage + siblings write here, D3-13). */
-  db: Database.Database;
-  /** State-machine sliver (BUILD_IN_PROGRESS ↔ IDLE, active-task PID). */
-  machine: BuildMachineView;
-  /** Agent-session abort/teardown registry (BUILD-04 / D3-10). */
-  registry: AbortRegistry;
-  /** Host-side SDK query() wrapper (research + build turns). */
-  agentRunner: AgentRunner;
-  /** WSL2 process isolation for the build agent (03-05). */
-  sandboxAdapter: SandboxAdapter;
-  /** COMP-02 pre-write plan re-screen (03-04, D3-06). */
-  comp02: Comp02Screen;
-  /** SAND-04 delimited-prompt construction (03-06). */
-  promptBoundary: PromptBoundary;
-  /** Translated pipeline-stage sink (overlay/console/chat). */
-  progress: ProgressSink;
-  logger?: Logger;
 }
