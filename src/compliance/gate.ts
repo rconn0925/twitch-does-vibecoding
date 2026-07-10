@@ -37,7 +37,7 @@ export interface GateDeps {
   db?: Database.Database;
   /** Test-injected classifier; takes priority over `classifier` when present. */
   fakeClassifier?: FakeClassifier;
-  /** Live Sonnet classifier deps (anthropic client, model, retry budget). */
+  /** Live plan-billed classifier transport (Sonnet via Agent SDK). */
   classifier?: ClassifierDeps;
   /** Injectable prefilter (defaults to the real prefilterCheck). */
   prefilter?: typeof prefilterCheck;

@@ -1,58 +1,93 @@
 /**
- * Anthropic SDK structural contract pins (WR-03) — NO network, ever.
+ * Classifier transport contract pins — NO network, no Anthropic SDK, ever.
  *
- * Every functional classifier test injects a mock, so nothing else verifies
- * that the REAL installed SDK still exposes the exact call surface
- * classifier.ts depends on: the `messages.parse` method, the
- * `output_config.format = { type: "json_schema", schema }` request field, and
- * the `parsed_output` response property. Because the classifier is
- * structurally fail-closed, a drifted shape would not crash — it would
- * silently reject 100% of live chat with no failing test to warn anyone.
+ * The live gate now bills via the Claude plan: candidate text → the injected
+ * ClassifierTransport (Sonnet via the Agent SDK query() under src/orchestrator/)
+ * → the model's raw assistant text. Because `query()` has no native json_schema
+ * enforcement, this layer must tolerantly extract the JSON object from raw text
+ * and then fail CLOSED on anything malformed. These tests pin exactly that
+ * contract with an injected fake transport — the real end-to-end check remains
+ * `npm run gate:eval`, run as a pre-stream gate.
  *
- * These assertions check only the installed SDK's runtime symbols and type
- * declarations. The real-API end-to-end check remains `npm run gate:eval`,
- * which should be run as a pre-stream gate.
+ * Since the classifier is structurally fail-closed, a drifted transport shape
+ * would not crash — it would silently reject 100% of live chat. These pins are
+ * the network-free warning that the extraction + validation surface still works.
  */
 
-import type { ParsedMessage } from "@anthropic-ai/sdk";
-import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
+import type { SuggestionCandidate } from "../shared/types.js";
+import { type ClassifierTransport, classifyWithSonnet } from "./classifier.js";
 import { GateDecisionSchema } from "./schema.js";
 
-describe("Anthropic SDK contract (WR-03 — network-free)", () => {
-  it("the installed SDK exposes messages.parse as a callable method at runtime", () => {
-    // Constructing a client performs no I/O; the key is never used.
-    const client = new Anthropic({ apiKey: "contract-test-never-sent" });
-    expect(typeof client.messages.parse).toBe("function");
+function candidate(text: string): SuggestionCandidate {
+  return {
+    id: "contract-1",
+    source: "chat",
+    kind: "suggestion",
+    twitchUsername: "viewer",
+    text,
+    submittedAtMs: 1_700_000_000_000,
+  };
+}
+
+/** A transport that always returns the same raw text. */
+function fixedTransport(raw: string): ClassifierTransport {
+  return async () => raw;
+}
+
+const DECISION = { decision: "rejected", category: "spam-malware", rationale: "requests malware" };
+const RAW_JSON = JSON.stringify(DECISION);
+
+describe("classifier transport contract (network-free, no SDK)", () => {
+  it("GateDecisionSchema still validates a well-formed decision (validator pin)", () => {
+    // If the schema surface drifts, this fails BEFORE the gate silently rejects.
+    const parsed = GateDecisionSchema.safeParse(DECISION);
+    expect(parsed.success).toBe(true);
   });
 
-  it("the exact request shape classifier.ts sends conforms to the SDK's request type", () => {
-    // `satisfies` makes this a COMPILE-TIME pin: if an SDK upgrade renames or
-    // retypes model/max_tokens/system/messages/output_config/format/
-    // json_schema, `tsc --noEmit` fails here — before the gate silently
-    // rejects every live suggestion.
-    const request = {
-      model: "claude-sonnet-5",
-      max_tokens: 512,
-      system: "contract pin",
-      messages: [{ role: "user", content: "contract pin" }],
-      output_config: {
-        format: {
-          type: "json_schema",
-          schema: z.toJSONSchema(GateDecisionSchema) as { [key: string]: unknown },
-        },
-      },
-    } satisfies Anthropic.MessageCreateParamsNonStreaming;
-
-    expect(request.output_config.format.type).toBe("json_schema");
-    expect(request.output_config.format.schema).toBeTruthy();
+  it("extracts and validates a BARE JSON object from the transport", async () => {
+    const result = await classifyWithSonnet(
+      { transport: fixedTransport(RAW_JSON), maxRetries: 0 },
+      candidate("x"),
+    );
+    expect(result.decision).toBe("rejected");
+    expect(result.category).toBe("spam-malware");
   });
 
-  it("the parse response type still carries parsed_output", () => {
-    // Type-level pin: `parsed_output` must remain a key of ParsedMessage —
-    // classifier.ts reads `response.parsed_output` after every parse call.
-    const key: keyof ParsedMessage<unknown> = "parsed_output";
-    expect(key).toBe("parsed_output");
+  it("extracts JSON wrapped in a ```json code fence", async () => {
+    const fenced = "```json\n" + RAW_JSON + "\n```";
+    const result = await classifyWithSonnet(
+      { transport: fixedTransport(fenced), maxRetries: 0 },
+      candidate("x"),
+    );
+    expect(result.decision).toBe("rejected");
+    expect(result.category).toBe("spam-malware");
+  });
+
+  it("extracts JSON surrounded by prose", async () => {
+    const prose = `Sure — here is the verdict:\n${RAW_JSON}\nHope that helps!`;
+    const result = await classifyWithSonnet(
+      { transport: fixedTransport(prose), maxRetries: 0 },
+      candidate("x"),
+    );
+    expect(result.decision).toBe("rejected");
+  });
+
+  it("fails CLOSED on non-JSON transport output (never fail-open)", async () => {
+    const result = await classifyWithSonnet(
+      { transport: fixedTransport("I refuse to answer."), maxRetries: 0 },
+      candidate("x"),
+    );
+    expect(result.decision).toBe("rejected");
+    expect(result.category).toBe("classifier-unavailable");
+  });
+
+  it("fails CLOSED when the transport throws (plan credentials unavailable)", async () => {
+    const throwing: ClassifierTransport = async () => {
+      throw new Error("not logged in — run claude login");
+    };
+    const result = await classifyWithSonnet({ transport: throwing, maxRetries: 0 }, candidate("x"));
+    expect(result.decision).toBe("rejected");
+    expect(result.category).toBe("classifier-unavailable");
   });
 });
