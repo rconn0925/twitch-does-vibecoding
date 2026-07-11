@@ -1654,6 +1654,238 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
   });
 });
 
+describe("createBuildSession — distro workspace lifecycle (BL-01 / HI-01 / HI-03)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  /** A sandbox fake that ALSO implements the new optional ensure/probe methods. */
+  function fakeSandboxWithDir(over?: {
+    ensureWorkspaceDir?: (dir: string) => Promise<void>;
+    workspaceHasFiles?: (dir: string) => Promise<boolean>;
+  }) {
+    const ensureWorkspaceDir = vi.fn(over?.ensureWorkspaceDir ?? (async () => {}));
+    const spawn = vi.fn();
+    const terminate = vi.fn(async () => {});
+    const adapter = {
+      spawn,
+      terminate,
+      ensureWorkspaceDir,
+      ...(over?.workspaceHasFiles ? { workspaceHasFiles: vi.fn(over.workspaceHasFiles) } : {}),
+    } as unknown as SandboxAdapter;
+    return { adapter, ensureWorkspaceDir, spawn };
+  }
+
+  /** A runner that yields each message after a fixed delay (models steady progress). */
+  function intervalRunner(messages: unknown[], delayMs: number): AgentRunner {
+    return {
+      run(): AsyncIterable<AgentMessage> {
+        return (async function* () {
+          for (const message of messages) {
+            await new Promise((r) => setTimeout(r, delayMs));
+            yield message as AgentMessage;
+          }
+        })();
+      },
+    };
+  }
+
+  /** A runner whose stream NEVER yields — a genuinely stalled (silent) stream. */
+  function silentRunner(): AgentRunner {
+    return {
+      run(): AsyncIterable<AgentMessage> {
+        return (async function* () {
+          await new Promise<never>(() => {});
+          yield undefined as never;
+        })();
+      },
+    };
+  }
+
+  it("(BL-01) a rejecting ensureWorkspaceDir fails the build CLOSED: failed decision, NO spawn/agent turn/publish", async () => {
+    const { machine } = fakeMachine();
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const narr = fakeNarrator();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const onBuildDone = vi.fn();
+    const sandbox = fakeSandboxWithDir({
+      ensureWorkspaceDir: async () => {
+        throw new Error("mkdir -p failed: read-only distro");
+      },
+    });
+    const task = queuedTask("task-bl01", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: sandbox.adapter,
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+      onBuildDone,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(sandbox.ensureWorkspaceDir).toHaveBeenCalledWith("/home/builder/projects/app-1");
+    // Failed CLOSED: the agent turn NEVER ran — no spawn, no publish, no shared dir.
+    expect(calls).toHaveLength(0);
+    expect(onBuildDone).not.toHaveBeenCalled();
+    // Same route as the watchdog: narrated deciding + a frozen `failed` decision.
+    expect(stages(views)).toEqual(["building", "failed"]);
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS");
+    expect(narr.names).toContain("buildDeciding");
+    const teardown = listAuditRecords(db, { limit: 10, eventType: "sandbox_teardown" });
+    expect(teardown).toHaveLength(1);
+    expect(teardown[0]?.rationale).toContain("BL-01");
+  });
+
+  it("(BL-01) ensureWorkspaceDir is awaited BEFORE the agent runner's first turn", async () => {
+    const { machine } = fakeMachine();
+    const order: string[] = [];
+    const runner: AgentRunner = {
+      run(): AsyncIterable<AgentMessage> {
+        order.push("run");
+        return (async function* () {
+          for (const m of HAPPY_SCRIPT.build ?? []) yield m as AgentMessage;
+        })();
+      },
+    };
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const sandbox = fakeSandboxWithDir({
+      ensureWorkspaceDir: async () => {
+        order.push("ensure");
+      },
+    });
+    const task = queuedTask("task-bl01-order", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: sandbox.adapter,
+      comp02,
+      progress: sink,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+    expect(order[0]).toBe("ensure");
+    expect(order).toContain("run");
+    expect(order.indexOf("ensure")).toBeLessThan(order.indexOf("run"));
+  });
+
+  it("(HI-01) workspaceHasFiles=true with scaffolded()=false yields CONTINUE mode (never scaffold over debris)", async () => {
+    const { machine } = fakeMachine();
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const ws = fakeWorkspace(false);
+    const sandbox = fakeSandboxWithDir({ workspaceHasFiles: async () => true });
+    const task = queuedTask("task-hi01-continue", "add a button");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: sandbox.adapter,
+      comp02,
+      progress: sink,
+      workspace: ws.workspace,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+    expect(calls[0]?.systemPrompt).toBe(BUILD_SYSTEM_PROMPT_CONTINUE);
+  });
+
+  it("(HI-01) scaffolded()=false + an EMPTY dir yields SCAFFOLD mode", async () => {
+    const { machine } = fakeMachine();
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const ws = fakeWorkspace(false);
+    const sandbox = fakeSandboxWithDir({ workspaceHasFiles: async () => false });
+    const task = queuedTask("task-hi01-scaffold", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: sandbox.adapter,
+      comp02,
+      progress: sink,
+      workspace: ws.workspace,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+    expect(calls[0]?.systemPrompt).toBe(BUILD_SYSTEM_PROMPT_SCAFFOLD);
+  });
+
+  it("(HI-03) a steadily-yielding build past turnTimeoutMs is NOT killed — the stall timer re-arms on activity", async () => {
+    const { machine } = fakeMachine();
+    // 4 messages, 12ms apart → ~48ms total, well past the 30ms bound; but each
+    // gap (12ms) is under it, so a re-arming stall timer never fires. A one-shot
+    // timer would have aborted at 30ms.
+    const runner = intervalRunner(
+      [writeBatch("a.js", "x"), writeBatch("b.js", "y"), writeBatch("c.js", "z"), resultSuccess],
+      12,
+    );
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const sandbox = fakeSandboxWithDir();
+    const task = queuedTask("task-hi03-healthy", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: sandbox.adapter,
+      comp02,
+      progress: sink,
+      turnTimeoutMs: 30,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+    expect(stages(views).at(-1)).toBe("done");
+    expect(machine.mode).toBe("IDLE");
+  });
+
+  it("(HI-03) a silent (no-activity) stream trips the stall watchdog → narrated failed decision, no destructive reset", async () => {
+    const { machine } = fakeMachine();
+    const narr = fakeNarrator();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const sandbox = fakeSandboxWithDir();
+    const ws = fakeWorkspace(false);
+    const task = queuedTask("task-hi03-stall", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: silentRunner(),
+      sandboxAdapter: sandbox.adapter,
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+      workspace: ws.workspace,
+      turnTimeoutMs: 20,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+    expect(stages(views).at(-1)).toBe("failed");
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS"); // decision pending, not IDLE
+    expect(narr.names).toContain("buildDeciding");
+    // Non-destructive: the stall path never rotates/resets the workspace.
+    expect(ws.newProject).not.toHaveBeenCalled();
+  });
+});
+
 describe("createBuildSession — source discipline (single funnel)", () => {
   it("references no .enqueue / toQueuedTask / submitCandidate", async () => {
     const { readFileSync } = await import("node:fs");

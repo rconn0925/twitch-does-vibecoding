@@ -121,6 +121,27 @@ describe("createSandboxAdapter — spawn env isolation (SAND-03)", () => {
     }
   });
 
+  it("NEVER carries the gallery PAT (GALLERY_GITHUB_TOKEN / GH_TOKEN) in the sandbox spawn env (T-hak-01)", () => {
+    const { fn, calls } = captureSpawn();
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
+
+    adapter.spawn(spawnOpts());
+
+    const args = calls[0]?.args ?? [];
+    const envIdx = args.indexOf("/usr/bin/env");
+    const assignments = args.slice(envIdx + 1, args.indexOf("/usr/bin/claude"));
+    // Only PATH crosses on the primary path — no gallery token assignment at all.
+    expect(assignments).toEqual(["PATH=/usr/bin:/bin"]);
+    for (const assignment of assignments) {
+      expect(assignment.startsWith("GALLERY_GITHUB_TOKEN=")).toBe(false);
+      expect(assignment.startsWith("GH_TOKEN=")).toBe(false);
+    }
+    // The token names never appear anywhere in the spawn argv either.
+    const serialized = JSON.stringify(args);
+    expect(serialized).not.toContain("GALLERY_GITHUB_TOKEN");
+    expect(serialized).not.toContain("GH_TOKEN");
+  });
+
   it("never leaks a host TWITCH_/ANTHROPIC_API_KEY even when present on the SDK-supplied opts.env", () => {
     const { fn, calls } = captureSpawn();
     const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
@@ -279,6 +300,74 @@ describe("createSandboxAdapter — terminate (BUILD-04)", () => {
       expect.objectContaining({ err: expect.any(Error) }),
       expect.stringContaining("--terminate failed"),
     );
+  });
+});
+
+describe("createSandboxAdapter — ensureWorkspaceDir (BL-01 fail-closed distro bootstrap)", () => {
+  it("runs `mkdir -p <dir>` in the SAME distro/user via the execFileFn seam", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await adapter.ensureWorkspaceDir?.("/home/builder/projects/app-1");
+
+    expect(execFileFn).toHaveBeenCalledWith(WSL_EXE, [
+      "-d",
+      "vibecoding-build",
+      "-u",
+      "builder",
+      "--",
+      "mkdir",
+      "-p",
+      "/home/builder/projects/app-1",
+    ]);
+  });
+
+  it("REJECTS when execFileFn rejects — the fail-closed signal (NOT swallowed like terminate)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => {
+      throw new Error("mkdir: cannot create directory: Permission denied");
+    });
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await expect(adapter.ensureWorkspaceDir?.("/home/builder/projects/app-1")).rejects.toThrow(
+      "Permission denied",
+    );
+  });
+});
+
+describe("createSandboxAdapter — workspaceHasFiles (HI-01 emptiness probe)", () => {
+  it("runs `ls -A <dir>` in the SAME distro/user and maps non-empty stdout → true", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "index.html\n" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await expect(adapter.workspaceHasFiles?.("/home/builder/projects/app-1")).resolves.toBe(true);
+    expect(execFileFn).toHaveBeenCalledWith(WSL_EXE, [
+      "-d",
+      "vibecoding-build",
+      "-u",
+      "builder",
+      "--",
+      "sh",
+      "-lc",
+      "ls -A /home/builder/projects/app-1 2>/dev/null | head -1",
+    ]);
+  });
+
+  it("maps empty stdout → false (a genuinely empty dir scaffolds)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "  \n" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await expect(adapter.workspaceHasFiles?.("/home/builder/projects/app-2")).resolves.toBe(false);
+  });
+
+  it("resolves TRUE when the probe rejects — never assert 'empty' when unsure (fail toward continue)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => {
+      throw new Error("wsl.exe not found");
+    });
+    const logger = { error: vi.fn() } as unknown as NonNullable<SandboxAdapterDeps["logger"]>;
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn, logger });
+
+    await expect(adapter.workspaceHasFiles?.("/home/builder/projects/app-3")).resolves.toBe(true);
+    expect(logger.error).toHaveBeenCalled();
   });
 });
 

@@ -109,6 +109,20 @@ export interface AgentRunner {
 export interface SandboxAdapter {
   spawn(opts: SpawnOptions): SpawnedProcess;
   terminate(): Promise<void>;
+  /**
+   * BL-01 fail-closed distro-dir bootstrap. `wsl mkdir -p <dir>` via the same
+   * distro/user config as spawn(); REJECTS (throws) on a non-zero exit so the
+   * build fails CLOSED rather than spawning into a non-existent workspace or
+   * silently falling back to a shared dir. OPTIONAL so the ~8 existing test
+   * fakes need no change; the concrete production adapter implements it.
+   */
+  ensureWorkspaceDir?(dir: string): Promise<void>;
+  /**
+   * HI-01 emptiness probe. `wsl ls -A <dir>` — resolves true when the dir has
+   * ANY entry (so continue-mode runs over debris even without a prior `done`),
+   * false when empty. OPTIONAL (existing fakes fall back to scaffolded()-only).
+   */
+  workspaceHasFiles?(dir: string): Promise<boolean>;
 }
 
 /**
