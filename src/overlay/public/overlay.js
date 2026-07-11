@@ -135,7 +135,17 @@
 
   // --- queue strip (bottom-right, hidden entirely when empty) ---
 
+  // Scene-level opt-out: `?nextup=off` suppresses the strip for scenes that
+  // already show the dedicated what's-coming page (/queue) — frees the
+  // bottom-right band for a full-height chat column. Display-only; the
+  // queue itself is unaffected.
+  const NEXTUP_OFF = new URLSearchParams(location.search).get("nextup") === "off";
+
   function renderQueue(state) {
+    if (NEXTUP_OFF) {
+      queueStrip.hidden = true;
+      return;
+    }
     queueStrip.replaceChildren();
     const nextUp = Array.isArray(state.nextUp) ? state.nextUp.slice(0, 3) : [];
     if (nextUp.length === 0) {
