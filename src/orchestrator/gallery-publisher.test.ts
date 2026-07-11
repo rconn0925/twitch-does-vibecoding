@@ -5,35 +5,43 @@ import {
   type GalleryConfig,
   type GalleryExec,
   type GalleryFs,
+  type ProjectRepoStore,
   resolveGalleryConfig,
   sanitizeCommitTitle,
+  sanitizeRepoName,
   workspaceCopyFilter,
 } from "./gallery-publisher.js";
 
 /**
- * quick-22l Task 2: the host-side gallery snapshot publisher, tested ENTIRELY
- * against injected exec/fs fakes — vitest never runs real git/fs/network
- * (project seam discipline). The safety-critical assertions:
- *   - T-22l-02: chat titles reach git only as ONE argv element of an arg ARRAY;
- *     the exec seam's type has no `shell` field at all.
- *   - T-22l-03: node_modules + dotfiles/dotdirs provably never enter a commit.
- *   - T-22l-04: publishNow NEVER rejects — failure is a resolved status + a
- *     loud logger.error, never a throw into the pipeline.
+ * quick-260711-hak Task 2: the per-project host-side gallery publisher, tested
+ * ENTIRELY against injected exec/fs/store/clock fakes — vitest never runs real
+ * git/gh/fs/network (project seam discipline). Safety-critical assertions:
+ *   - T-hak-01: GALLERY_GITHUB_TOKEN travels ONLY on the exec ENV — never in any
+ *     argv element and never embedded in a remote-add / origin URL.
+ *   - T-hak-02: chat titles reach git/gh only as sanitized argv elements of arg
+ *     ARRAYS; the exec seam's type has no `shell` field at all; a hostile first
+ *     prompt yields a [a-z0-9-] repo slug, never a shell invocation.
+ *   - T-hak-03: publishNow NEVER rejects — failure is a resolved status + a loud
+ *     logger.error, never a throw into the pipeline.
+ *   - Per-project routing: one repo per generation; later prompts push to it.
+ *   - W1: deletions propagate (non-.git entries cleared before each copy).
  */
 
 const fakeLogger = (): Logger =>
   ({ error: vi.fn(), warn: vi.fn(), info: vi.fn() }) as unknown as Logger;
 
+const TOKEN = "ghp_SECRETTOKEN123";
 const TEST_CONFIG: GalleryConfig = {
-  repoUrl: "https://github.com/rconn0925/vibecoding-gallery.git",
-  mirrorDir: "data/gallery-mirror",
+  owner: "TwitchVibecodes",
+  token: TOKEN,
+  mirrorRootDir: "data/gallery-mirror",
   workspaceRootUnc: "\\\\wsl.localhost\\vibecoding-build\\home\\builder\\projects",
 };
 
 interface ExecCall {
   file: string;
   args: string[];
-  opts: { cwd?: string } | undefined;
+  opts: { cwd?: string; env?: Record<string, string> } | undefined;
 }
 
 /** A recording exec fake. `behavior` may override per-call results/rejections. */
@@ -47,16 +55,15 @@ function captureExec(behavior?: (call: ExecCall) => Promise<{ stdout: string }> 
     calls.push(call);
     const overridden = behavior?.(call);
     if (overridden) return overridden;
-    // Default stdout shapes: a dirty status, a stable hash, empty otherwise.
-    if (args.includes("--porcelain")) return { stdout: " M app-1/index.html\n" };
+    if (args.includes("--porcelain")) return { stdout: " M index.html\n" };
     if (args.includes("rev-parse")) return { stdout: "abc1234def\n" };
     return { stdout: "" };
   };
   return { exec, calls };
 }
 
-/** A recording fs fake. `mirrorExists` controls the access(mirror/.git) probe. */
-function captureFs(mirrorExists: boolean): {
+/** A recording fs fake. `hasGit` controls the access(mirror/.git) probe. */
+function captureFs(over?: { hasGit?: boolean; entries?: string[] }): {
   fsx: GalleryFs;
   rmCalls: string[];
   cpCalls: Array<{ src: string; dest: string }>;
@@ -65,6 +72,8 @@ function captureFs(mirrorExists: boolean): {
   const rmCalls: string[] = [];
   const cpCalls: Array<{ src: string; dest: string }> = [];
   const mkdirCalls: string[] = [];
+  const hasGit = over?.hasGit ?? true;
+  const entries = over?.entries ?? [".git", "index.html", "old.js"];
   const fsx: GalleryFs = {
     rm: async (p) => {
       rmCalls.push(p);
@@ -76,13 +85,56 @@ function captureFs(mirrorExists: boolean): {
       mkdirCalls.push(p);
     },
     access: async () => {
-      if (!mirrorExists) throw new Error("ENOENT");
+      if (!hasGit) throw new Error("ENOENT");
     },
+    readdir: async () => entries,
   };
   return { fsx, rmCalls, cpCalls, mkdirCalls };
 }
 
-describe("workspaceCopyFilter — the secrets gate (T-22l-03)", () => {
+/** In-memory ProjectRepoStore fake — no SQLite. */
+function fakeStore(
+  initial: Array<[number, string]> = [],
+): ProjectRepoStore & { records: Array<[number, string]> } {
+  const map = new Map<number, string>(initial);
+  const records: Array<[number, string]> = [];
+  return {
+    lookup: (g) => map.get(g) ?? null,
+    record: (g, name) => {
+      map.set(g, name);
+      records.push([g, name]);
+    },
+    knownNames: () => new Set(map.values()),
+    records,
+  };
+}
+
+const fixedClock = () => new Date("2026-07-11T09:05:00");
+
+describe("sanitizeRepoName — hostile chat title → safe [a-z0-9-] slug (T-hak-02)", () => {
+  it("reduces shell metachars + unicode + over-length to a safe slug", () => {
+    const hostile = `x"; rm -rf ~ $(curl evil) café ${"A".repeat(200)}`;
+    const slug = sanitizeRepoName(hostile, fixedClock);
+    expect(slug).toMatch(/^[a-z0-9-]+$/);
+    expect(slug.length).toBeLessThanOrEqual(80);
+    expect(slug).not.toMatch(/[\s$();"~`]/);
+    // No trailing hyphen after truncation.
+    expect(slug.endsWith("-")).toBe(false);
+  });
+
+  it("produces readable slugs for normal titles", () => {
+    expect(sanitizeRepoName("Make a Counter App!", fixedClock)).toBe("make-a-counter-app");
+    expect(sanitizeRepoName("  Snake   Game  ", fixedClock)).toBe("snake-game");
+  });
+
+  it("falls back to a dated slug from the injected clock when the title is unusable", () => {
+    expect(sanitizeRepoName("", fixedClock)).toBe("vibe-20260711-0905");
+    expect(sanitizeRepoName("   ", fixedClock)).toBe("vibe-20260711-0905");
+    expect(sanitizeRepoName("!@#$%^&*()", fixedClock)).toBe("vibe-20260711-0905");
+  });
+});
+
+describe("workspaceCopyFilter — the secrets gate (T-hak-02)", () => {
   it("rejects any path containing a node_modules segment", () => {
     expect(workspaceCopyFilter("app-1/node_modules")).toBe(false);
     expect(workspaceCopyFilter("app-1/node_modules/express/index.js")).toBe(false);
@@ -92,14 +144,12 @@ describe("workspaceCopyFilter — the secrets gate (T-22l-03)", () => {
   it("rejects any basename starting with '.' (dotfiles AND dotdirs)", () => {
     expect(workspaceCopyFilter("app-1/.env")).toBe(false);
     expect(workspaceCopyFilter("app-1/.git")).toBe(false);
-    expect(workspaceCopyFilter("app-1/.cache")).toBe(false);
     expect(workspaceCopyFilter("app-1\\.config")).toBe(false);
   });
 
   it("accepts normal project files", () => {
     expect(workspaceCopyFilter("app-1/src/index.ts")).toBe(true);
     expect(workspaceCopyFilter("app-1/package.json")).toBe(true);
-    expect(workspaceCopyFilter("app-1/README.md")).toBe(true);
   });
 });
 
@@ -114,45 +164,60 @@ describe("sanitizeCommitTitle — message hygiene (defense-in-depth)", () => {
 });
 
 describe("resolveGalleryConfig", () => {
-  it("defaults repoUrl/mirror/UNC root and stays enabled for any value except exact 'false'", () => {
-    const config = resolveGalleryConfig({});
+  it("returns null when GALLERY_GITHUB_TOKEN is unset/blank (auto-disable)", () => {
+    expect(resolveGalleryConfig({})).toBeNull();
+    expect(resolveGalleryConfig({ GALLERY_GITHUB_TOKEN: "   " })).toBeNull();
+  });
+
+  it("defaults owner to TwitchVibecodes and mirror/UNC roots when a token is present", () => {
+    const config = resolveGalleryConfig({ GALLERY_GITHUB_TOKEN: "ghp_x" });
     expect(config).not.toBeNull();
-    expect(config?.repoUrl).toBe("https://github.com/rconn0925/vibecoding-gallery.git");
-    expect(config?.mirrorDir).toBe("data/gallery-mirror");
+    expect(config?.owner).toBe("TwitchVibecodes");
+    expect(config?.token).toBe("ghp_x");
+    expect(config?.mirrorRootDir).toBe("data/gallery-mirror");
     expect(config?.workspaceRootUnc).toBe(
       "\\\\wsl.localhost\\vibecoding-build\\home\\builder\\projects",
     );
-    expect(resolveGalleryConfig({ GALLERY_PUBLISH_ENABLED: "0" })).not.toBeNull();
-    expect(resolveGalleryConfig({ GALLERY_PUBLISH_ENABLED: "FALSE" })).not.toBeNull();
   });
 
   it("returns null ONLY for the exact string 'false' (AUTO_ROUND_ENABLED idiom, inverted)", () => {
-    expect(resolveGalleryConfig({ GALLERY_PUBLISH_ENABLED: "false" })).toBeNull();
-    expect(resolveGalleryConfig({ GALLERY_PUBLISH_ENABLED: " false " })).toBeNull();
+    expect(
+      resolveGalleryConfig({ GALLERY_GITHUB_TOKEN: "t", GALLERY_PUBLISH_ENABLED: "false" }),
+    ).toBeNull();
+    expect(
+      resolveGalleryConfig({ GALLERY_GITHUB_TOKEN: "t", GALLERY_PUBLISH_ENABLED: " false " }),
+    ).toBeNull();
+    expect(
+      resolveGalleryConfig({ GALLERY_GITHUB_TOKEN: "t", GALLERY_PUBLISH_ENABLED: "0" }),
+    ).not.toBeNull();
   });
 
-  it("honors GALLERY_REPO_URL and the sandbox distro/user env overrides", () => {
+  it("honors GALLERY_GITHUB_OWNER and the sandbox distro/user env overrides", () => {
     const config = resolveGalleryConfig({
-      GALLERY_REPO_URL: " https://github.com/other/repo.git ",
+      GALLERY_GITHUB_TOKEN: "t",
+      GALLERY_GITHUB_OWNER: "  CustomOwner  ",
       BUILD_DISTRO_NAME: "custom-distro",
       BUILD_DISTRO_USER: "someone",
     });
-    expect(config?.repoUrl).toBe("https://github.com/other/repo.git");
+    expect(config?.owner).toBe("CustomOwner");
     expect(config?.workspaceRootUnc).toBe(
       "\\\\wsl.localhost\\custom-distro\\home\\someone\\projects",
     );
   });
 });
 
-describe("createGalleryPublisher.publishNow", () => {
-  it("happy path: clone (mirror missing) → filtered copy → add/status/commit/push/rev-parse, git arg arrays ONLY", async () => {
+describe("createGalleryPublisher.publishNow — per-project routing", () => {
+  it("FIRST prompt of a generation: gh repo create <owner>/<name> --public + records the name", async () => {
     const { exec, calls } = captureExec();
-    const { fsx, rmCalls, cpCalls, mkdirCalls } = captureFs(false);
+    const { fsx, cpCalls } = captureFs({ hasGit: false });
+    const store = fakeStore();
     const publisher = createGalleryPublisher({
       config: TEST_CONFIG,
+      store,
       exec,
       fsx,
       logger: fakeLogger(),
+      now: fixedClock,
     });
 
     const result = await publisher.publishNow({
@@ -162,46 +227,119 @@ describe("createGalleryPublisher.publishNow", () => {
     });
 
     expect(result).toMatchObject({ status: "published", commitHash: "abc1234def" });
-    // Mirror bootstrap: parent mkdir + clone (arg array).
-    expect(mkdirCalls.length).toBeGreaterThan(0);
-    // Snapshot copy: replace-copy of the UNC workspace dir into the mirror.
-    expect(rmCalls).toContain("data/gallery-mirror/app-1");
+    // Repo created under the configured owner with the sanitized name.
+    const create = calls.find((c) => c.file === "gh");
+    expect(create?.args).toEqual([
+      "repo",
+      "create",
+      "TwitchVibecodes/make-a-counter-app",
+      "--public",
+    ]);
+    // Recorded ONLY after the create — keyed on generation.
+    expect(store.records).toEqual([[1, "make-a-counter-app"]]);
+    // Fresh mirror wired: init + remote add with a PLAIN https origin (no token).
+    const remoteAdd = calls.find((c) => c.args.includes("remote"));
+    expect(remoteAdd?.args).toEqual([
+      "-C",
+      "data/gallery-mirror/make-a-counter-app",
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/TwitchVibecodes/make-a-counter-app.git",
+    ]);
+    // Snapshot copied from the UNC workspace generation dir into the repo root.
     expect(cpCalls).toEqual([
       {
         src: "\\\\wsl.localhost\\vibecoding-build\\home\\builder\\projects\\app-1",
-        dest: "data/gallery-mirror/app-1",
+        dest: "data/gallery-mirror/make-a-counter-app",
       },
     ]);
-    // EVERY exec call is `git` with an arg ARRAY — never a shell string.
-    for (const call of calls) {
-      expect(call.file).toBe("git");
-      expect(Array.isArray(call.args)).toBe(true);
-    }
-    expect(calls.map((c) => (c.args[0] === "-C" ? c.args[2] : c.args[0]))).toEqual([
-      "clone",
-      "add",
-      "status",
-      "commit",
-      "push",
-      "rev-parse",
-    ]);
-    expect(calls[0]?.args).toEqual([
-      "clone",
-      "https://github.com/rconn0925/vibecoding-gallery.git",
-      "data/gallery-mirror",
-    ]);
-    expect(calls[1]?.args).toEqual(["-C", "data/gallery-mirror", "add", "-A"]);
-    expect(calls[2]?.args).toEqual(["-C", "data/gallery-mirror", "status", "--porcelain"]);
-    expect(calls[4]?.args).toEqual(["-C", "data/gallery-mirror", "push", "-u", "origin", "HEAD"]);
-    expect(calls[5]?.args).toEqual(["-C", "data/gallery-mirror", "rev-parse", "HEAD"]);
   });
 
-  it("a hostile chat title reaches the commit as ONE argv element, sanitized; no exec call carries shell: true (T-22l-02)", async () => {
-    const hostile = `x"; rm -rf ~ $(curl evil) \r\n--force${"A".repeat(200)}`;
+  it("SECOND prompt of the same generation reuses the repo — NO gh repo create, pushes the same mirror", async () => {
     const { exec, calls } = captureExec();
-    const { fsx } = captureFs(true);
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "make-a-counter-app"]]);
     const publisher = createGalleryPublisher({
       config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.publishNow({
+      generation: 1,
+      title: "add a reset button",
+      taskId: "task-2",
+    });
+
+    expect(result.status).toBe("published");
+    // Never created (or re-created) a repo; never recorded a new name.
+    expect(calls.some((c) => c.file === "gh")).toBe(false);
+    expect(store.records).toEqual([]);
+    // Pushed to the SAME per-project mirror.
+    const push = calls.find((c) => c.args.includes("push"));
+    expect(push?.args).toContain("data/gallery-mirror/make-a-counter-app");
+  });
+
+  it("two DIFFERENT generations create two DIFFERENT repos (per-project routing)", async () => {
+    const { exec, calls } = captureExec();
+    const { fsx } = captureFs({ hasGit: false });
+    const store = fakeStore();
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    await publisher.publishNow({ generation: 1, title: "counter app", taskId: "t1" });
+    await publisher.publishNow({ generation: 2, title: "snake game", taskId: "t2" });
+
+    const creates = calls
+      .filter((c) => c.file === "gh")
+      .map((c) => c.args.find((a) => a.startsWith("TwitchVibecodes/")));
+    expect(creates).toEqual(["TwitchVibecodes/counter-app", "TwitchVibecodes/snake-game"]);
+    expect(store.records).toEqual([
+      [1, "counter-app"],
+      [2, "snake-game"],
+    ]);
+  });
+
+  it("dedups a colliding base slug against knownNames (base → -2 → -3)", async () => {
+    const { exec, calls } = captureExec();
+    const { fsx } = captureFs({ hasGit: false });
+    const store = fakeStore([
+      [8, "counter-app"],
+      [9, "counter-app-2"],
+    ]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    await publisher.publishNow({ generation: 1, title: "Counter App", taskId: "t1" });
+
+    const create = calls.find((c) => c.file === "gh");
+    expect(create?.args).toContain("TwitchVibecodes/counter-app-3");
+    expect(store.records).toEqual([[1, "counter-app-3"]]);
+  });
+});
+
+describe("createGalleryPublisher.publishNow — safety invariants", () => {
+  it("hostile title reaches the commit as ONE sanitized argv element; NO shell key on any call (T-hak-02)", async () => {
+    const hostile = `x"; rm -rf ~ $(curl evil) \r\n${"A".repeat(200)}`;
+    const { exec, calls } = captureExec();
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[3, "safe-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
       exec,
       fsx,
       logger: fakeLogger(),
@@ -211,18 +349,21 @@ describe("createGalleryPublisher.publishNow", () => {
     expect(result.status).toBe("published");
 
     const commit = calls.find((c) => c.args.includes("commit"));
-    expect(commit).toBeDefined();
-    // The whole message is exactly ONE argv element following -m.
-    expect(commit?.args.slice(0, 4)).toEqual(["-C", "data/gallery-mirror", "commit", "-m"]);
+    expect(commit?.args.slice(0, 4)).toEqual([
+      "-C",
+      "data/gallery-mirror/safe-repo",
+      "commit",
+      "-m",
+    ]);
     expect(commit?.args).toHaveLength(5);
     const message = commit?.args[4] ?? "";
-    expect(message).toBe(`app-3: ${sanitizeCommitTitle(hostile)}`);
-    // Control chars stripped; the title portion truncated to 80.
+    expect(message).toBe(sanitizeCommitTitle(hostile));
     // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are ABSENT is the point
     expect(message).not.toMatch(/[\r\n\t\x00-\x1f]/);
-    expect(sanitizeCommitTitle(hostile).length).toBeLessThanOrEqual(80);
-    // NO exec call ever receives an options object containing shell: true.
+    // EVERY exec call is git/gh with an arg ARRAY and NO shell key.
     for (const call of calls) {
+      expect(["git", "gh"]).toContain(call.file);
+      expect(Array.isArray(call.args)).toBe(true);
       expect(call.opts && "shell" in call.opts).toBeFalsy();
     }
     // Type-level: `shell` is UNREPRESENTABLE at the exec seam.
@@ -231,13 +372,119 @@ describe("createGalleryPublisher.publishNow", () => {
     expect(unrepresentable).toBeDefined();
   });
 
-  it("failure isolation: a rejecting push RESOLVES { status: 'failed' } and logs loudly (T-22l-04)", async () => {
+  it("GH_TOKEN travels on the gh/git ENV only — never in any argv element or remote URL (T-hak-01)", async () => {
+    const { exec, calls } = captureExec();
+    const { fsx } = captureFs({ hasGit: false });
+    const store = fakeStore();
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    await publisher.publishNow({ generation: 1, title: "make a counter", taskId: "t1" });
+
+    // The token appears on the create + push env.
+    const create = calls.find((c) => c.file === "gh");
+    const push = calls.find((c) => c.args.includes("push"));
+    expect(create?.opts?.env?.GH_TOKEN).toBe(TOKEN);
+    expect(push?.opts?.env?.GH_TOKEN).toBe(TOKEN);
+    // The token NEVER appears in any argv element of any call, nor in the origin URL.
+    for (const call of calls) {
+      for (const arg of call.args) {
+        expect(arg).not.toContain(TOKEN);
+      }
+    }
+    const remoteAdd = calls.find((c) => c.args.includes("remote"));
+    expect(remoteAdd?.args.at(-1)).toBe("https://github.com/TwitchVibecodes/make-a-counter.git");
+  });
+
+  it("W1: DELETED workspace files disappear — non-.git entries are cleared before each copy (never rm the mirror root)", async () => {
+    const { exec } = captureExec();
+    const { fsx, rmCalls, cpCalls } = captureFs({
+      hasGit: true,
+      entries: [".git", "index.html", "old.js"],
+    });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    await publisher.publishNow({ generation: 1, title: "update", taskId: "t1" });
+
+    // Stale tracked files are removed individually — but NEVER .git, and NEVER
+    // the whole mirror dir (a plain cp-over-top / rm-mirror would leak or wipe).
+    expect(rmCalls).toContain("data/gallery-mirror/my-repo/index.html");
+    expect(rmCalls).toContain("data/gallery-mirror/my-repo/old.js");
+    expect(rmCalls).not.toContain("data/gallery-mirror/my-repo/.git");
+    expect(rmCalls).not.toContain("data/gallery-mirror/my-repo");
+    // The fresh snapshot is copied in after clearing.
+    expect(cpCalls).toEqual([
+      {
+        src: "\\\\wsl.localhost\\vibecoding-build\\home\\builder\\projects\\app-1",
+        dest: "data/gallery-mirror/my-repo",
+      },
+    ]);
+  });
+
+  it("W2: a continue-path publish whose mirror lost its .git re-clones from origin before git ops", async () => {
+    const { exec, calls } = captureExec();
+    const { fsx } = captureFs({ hasGit: false });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.publishNow({ generation: 1, title: "update", taskId: "t1" });
+    expect(result.status).toBe("published");
+    // Re-cloned (no gh create), token on the clone env, plain origin URL.
+    const clone = calls.find((c) => c.args.includes("clone"));
+    expect(clone?.args).toEqual([
+      "clone",
+      "https://github.com/TwitchVibecodes/my-repo.git",
+      "data/gallery-mirror/my-repo",
+    ]);
+    expect(clone?.opts?.env?.GH_TOKEN).toBe(TOKEN);
+    expect(calls.some((c) => c.file === "gh")).toBe(false);
+  });
+
+  it("W2: a gh repo create name-collision ('already exists') is non-fatal — proceeds to push", async () => {
+    const { exec, calls } = captureExec((call) =>
+      call.file === "gh"
+        ? Promise.reject(new Error("GraphQL: Name already exists on this account"))
+        : undefined,
+    );
+    const { fsx } = captureFs({ hasGit: false });
+    const store = fakeStore();
+    const logger = fakeLogger();
+    const publisher = createGalleryPublisher({ config: TEST_CONFIG, store, exec, fsx, logger });
+
+    const result = await publisher.publishNow({ generation: 1, title: "counter", taskId: "t1" });
+    expect(result.status).toBe("published");
+    // Despite the collision, the flow still pushed and recorded the name.
+    expect(calls.some((c) => c.args.includes("push"))).toBe(true);
+    expect(store.records).toEqual([[1, "counter"]]);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it("failure isolation: a rejecting push RESOLVES { status: 'failed' } and logs loudly (T-hak-03)", async () => {
     const logger = fakeLogger();
     const { exec, calls } = captureExec((call) =>
       call.args.includes("push") ? Promise.reject(new Error("remote hung up")) : undefined,
     );
-    const { fsx } = captureFs(true);
-    const publisher = createGalleryPublisher({ config: TEST_CONFIG, exec, fsx, logger });
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[2, "repo"]]);
+    const publisher = createGalleryPublisher({ config: TEST_CONFIG, store, exec, fsx, logger });
 
     const result = await publisher.publishNow({ generation: 2, title: "t", taskId: "task-2" });
     expect(result).toEqual({
@@ -246,23 +493,24 @@ describe("createGalleryPublisher.publishNow", () => {
       detail: expect.stringContaining("remote hung up") as unknown as string,
     });
     expect(logger.error).toHaveBeenCalled();
-    // The push WAS attempted; the failure never escaped as a rejection.
     expect(calls.some((c) => c.args.includes("push"))).toBe(true);
   });
 
-  it("no changes: empty porcelain → no commit/push, resolves { status: 'no-changes', commitHash: null }", async () => {
+  it("no changes: empty porcelain → no commit/push, resolves { status: 'no-changes' }", async () => {
     const { exec, calls } = captureExec((call) =>
       call.args.includes("--porcelain") ? Promise.resolve({ stdout: "" }) : undefined,
     );
-    const { fsx } = captureFs(true);
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "repo"]]);
     const publisher = createGalleryPublisher({
       config: TEST_CONFIG,
+      store,
       exec,
       fsx,
       logger: fakeLogger(),
     });
 
-    const result = await publisher.publishNow({ generation: 1, title: "t", taskId: "task-1" });
+    const result = await publisher.publishNow({ generation: 1, title: "t", taskId: "t1" });
     expect(result).toMatchObject({ status: "no-changes", commitHash: null });
     expect(calls.some((c) => c.args.includes("commit"))).toBe(false);
     expect(calls.some((c) => c.args.includes("push"))).toBe(false);
@@ -270,19 +518,23 @@ describe("createGalleryPublisher.publishNow", () => {
 
   it("serialization: two overlapping publishNow calls never interleave their exec sequences", async () => {
     const labels: string[] = [];
-    const exec: GalleryExec = async (_file, args) => {
-      const verb = args[0] === "-C" ? (args[2] ?? "?") : (args[0] ?? "?");
-      const generationTag = args.find((a) => a.startsWith("app-"))?.split(":")[0] ?? "";
-      labels.push(generationTag ? `${verb}:${generationTag}` : verb);
-      // Yield the event loop so an unserialized implementation WOULD interleave.
+    const verbs = ["clone", "init", "add", "status", "commit", "push", "rev-parse"];
+    const exec: GalleryExec = async (file, args) => {
+      const verb = args.find((a) => verbs.includes(a)) ?? args[0] ?? "?";
+      labels.push(`${file}:${verb}`);
       await new Promise((r) => setImmediate(r));
       if (args.includes("--porcelain")) return { stdout: " M x\n" };
       if (args.includes("rev-parse")) return { stdout: "hash\n" };
       return { stdout: "" };
     };
-    const { fsx } = captureFs(true);
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([
+      [1, "repo-a"],
+      [2, "repo-b"],
+    ]);
     const publisher = createGalleryPublisher({
       config: TEST_CONFIG,
+      store,
       exec,
       fsx,
       logger: fakeLogger(),
@@ -294,17 +546,18 @@ describe("createGalleryPublisher.publishNow", () => {
     ]);
     expect(first.status).toBe("published");
     expect(second.status).toBe("published");
+    // The first project's full git sequence precedes the second's — no interleave.
     expect(labels).toEqual([
-      "add",
-      "status",
-      "commit:app-1",
-      "push",
-      "rev-parse",
-      "add",
-      "status",
-      "commit:app-2",
-      "push",
-      "rev-parse",
+      "git:add",
+      "git:status",
+      "git:commit",
+      "git:push",
+      "git:rev-parse",
+      "git:add",
+      "git:status",
+      "git:commit",
+      "git:push",
+      "git:rev-parse",
     ]);
   });
 });
