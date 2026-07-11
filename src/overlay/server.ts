@@ -5,6 +5,7 @@ import express from "express";
 import type { Logger } from "pino";
 import { WebSocketServer } from "ws";
 import {
+  AUTO_CYCLE_CHANGED,
   ROUND_CLOSED,
   ROUND_OPENED,
   STATE_CHANGED,
@@ -91,6 +92,14 @@ export interface OverlayState {
    * on its 1s tick (the server never streams timer frames).
    */
   controlWindow: { donorDisplayName: string; endsAtMs: number } | null;
+  /**
+   * The auto-cycle suggestion-phase guidance countdown source (quick-t5k A2),
+   * or null when no suggestion phase is running. The ONLY field is the
+   * absolute phase deadline — the client ticks the countdown itself on its 1s
+   * tick (the server never streams per-second frames), and the scheduler's
+   * enabled flag is console detail that never crosses the broadcast wire.
+   */
+  suggestPhase: { endsAtMs: number } | null;
 }
 
 /**
@@ -160,6 +169,27 @@ const NULL_CONTROL_WINDOW_SOURCE: OverlayControlWindowSource = {
   on: () => {},
 };
 
+/**
+ * The auto-cycle sliver the overlay needs (mirrors OverlayBuildSource): the
+ * scheduler snapshot plus an AUTO_CYCLE_CHANGED subscription. The source may
+ * carry richer fields (the console sees `enabled`); buildOverlayState narrows
+ * the wire shape down to suggestPhase:{endsAtMs} only (quick-t5k A2).
+ */
+export interface OverlayAutoCycleSource {
+  snapshot(): { phase: "suggest" | null; phaseEndsAtMs: number | null };
+  on(event: string, handler: (...args: unknown[]) => void): void;
+}
+
+/**
+ * A no-op auto-cycle source: no suggestion phase ever active, no events.
+ * Mirrors NULL_BUILD_SOURCE — the composition root can wire the overlay
+ * without a scheduler and the guidance simply stays absent (suggestPhase null).
+ */
+const NULL_AUTO_CYCLE_SOURCE: OverlayAutoCycleSource = {
+  snapshot: () => ({ phase: null, phaseEndsAtMs: null }),
+  on: () => {},
+};
+
 export interface OverlayServerDeps {
   machine: OverlayModeSource;
   round: OverlayRoundSource;
@@ -168,6 +198,8 @@ export interface OverlayServerDeps {
   build?: OverlayBuildSource;
   /** Optional until Phase 4 wires the window engine; defaults to no window active. */
   controlWindow?: OverlayControlWindowSource;
+  /** Optional until quick-t5k wires the scheduler; defaults to no phase active. */
+  autoCycle?: OverlayAutoCycleSource;
   port: number;
   /** Tally push debounce; defaults to the UI-SPEC 300ms. */
   debounceMs?: number;
@@ -210,6 +242,7 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   const { machine, round, taskQueue, logger } = deps;
   const build = deps.build ?? NULL_BUILD_SOURCE;
   const controlWindow = deps.controlWindow ?? NULL_CONTROL_WINDOW_SOURCE;
+  const autoCycle = deps.autoCycle ?? NULL_AUTO_CYCLE_SOURCE;
   const app = express();
 
   // ── DNS-rebinding defense (CR-02, shared with the console) ──────────
@@ -234,12 +267,17 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
     // trigger), this explicit narrowing guarantees only donorDisplayName +
     // endsAtMs ever reach the wire (T-04-13 coarse-surface, defence-in-depth).
     const cw = controlWindow.snapshot();
+    // Explicit narrowing (quick-t5k A2): only the phase deadline crosses the
+    // wire — never the scheduler's enabled flag or any richer field.
+    const ac = autoCycle.snapshot();
     return {
       pill: PILL_BY_MODE[machine.mode],
       round: round.snapshot(),
       buildStatus: build.snapshot(),
       controlWindow:
         cw === null ? null : { donorDisplayName: cw.donorDisplayName, endsAtMs: cw.endsAtMs },
+      suggestPhase:
+        ac.phase === "suggest" && ac.phaseEndsAtMs !== null ? { endsAtMs: ac.phaseEndsAtMs } : null,
       nextUp: taskQueue
         .list()
         .slice(0, 3)
@@ -318,6 +356,13 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
       pushState();
     });
   }
+
+  // Auto-cycle phase transitions are lifecycle beats (a handful per cycle) →
+  // push IMMEDIATELY, exactly like ROUND_OPENED — never the vote-tally
+  // debounce (quick-t5k A2: the countdown itself ticks client-side).
+  autoCycle.on(AUTO_CYCLE_CHANGED, () => {
+    pushState();
+  });
 
   // High-frequency tally events collapse into one push per debounce window:
   // the first vote arms ONE unref'd timer; every vote inside the window rides
