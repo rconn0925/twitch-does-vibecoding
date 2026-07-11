@@ -5,7 +5,7 @@ milestone_name: milestone
 status: executing
 stopped_at: Phase 1 UAT gates recorded PASS 2026-07-10. Remaining gates - Phase 2 UAT items, Phase 4 live gate 04-08, Phase 5 dry run.
 last_updated: "2026-07-11T04:20:57.000Z"
-last_activity: 2026-07-10 -- Phase 1 human-UAT recorded PASS 3/3 (quick 260710-uyl); gate batch section A closed
+last_activity: 2026-07-11 -- Straight-to-build era: suggestions are prompts vs a persistent workspace; sandbox spawn fixed (first real build); classifier loosened (live eval 0 SAFETY FAIL)
 progress:
   total_phases: 5
   completed_phases: 2
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-09)
 Phase: 05 (build-history-stream-night-dry-run) — CODE COMPLETE (closeout green). ALL phases code-side done.
 Plan: All buildable plans across Phases 1–5 merged to master + 1 quick task (gate plan-billing). Suite **679 pass**, tsc + biome clean.
 Status: Phase 05 built (2 code waves + runbook doc) → reviewed (0 blocker, 4 warning + 4 info; all 4 warnings + IN-01/IN-03 fixed, IN-02/IN-04 accepted deferrals) → verified 1/1 code criterion PASS (3/3 criteria correctly deferred to the human dry run) → secured 13/13 threats, 0 open.
-Last activity: 2026-07-10 -- Phase 1 human-UAT recorded PASS 3/3 (quick 260710-uyl); gate batch section A closed
+Last activity: 2026-07-11 -- Straight-to-build era: suggestions are prompts vs a persistent workspace; sandbox spawn fixed (first real build); classifier loosened (live eval 0 SAFETY FAIL)
 
 Progress: [█████████▓] 95% (code-complete; remaining 5% = human-action gates)
 
@@ -85,6 +85,10 @@ Everything buildable is built and green. These are the human-action gates, defer
 | 2026-07-10 | `260710-sfl` — Flag-gated SE `event:test` listener (no-money tip smoke tests) | ✅ Done. `SE_ACCEPT_TEST_EVENTS=true` (default off, zero delta) routes SE dashboard simulated tips through the SAME fail-closed TipEvent pipeline; boot TEST-MODE warning + per-event warn + `se-test-*` audit tipIds; smoke-test runbook = docs/OPERATIONS.md §9. 688 tests green. NEVER enable on broadcast. |
 | 2026-07-10 | `260710-t5k` — Auto-cycling round loop (40s suggest / 20s vote, hands-free) | ✅ Done, **Verified 11/11**. Continuous cadence w/ voting-while-building (winners enqueue FIFO, `drainVoteQueue` head-only vote-origin-aware); viewer-visible queue + per-phase guidance/countdowns on overlay; console pause/resume toggle ON at boot; HALT/free-reign park the cycle (halt.ts untouched, 3-recovery matrix tested); empty pool restarts window; zero votes → earliest wins; `VOTE_QUEUE_MAX=10` parks scheduler at cap (winners never dropped, manual start exempt). 724 tests, tsc+biome clean. Checker 2-blocker revision loop closed pre-build. |
 | 2026-07-10 | `260710-uyl` — Record Phase 1 human-UAT results | ✅ Done. 01-HUMAN-UAT.md 3/3 PASS (panic hotkey on ScrollLock, console halt/recover, live plan-billed classifier w/ key UNSET); Pause-key anomaly logged OPERATIONS.md §5; gate batch section A closed. Open: console triage path (no held item yet). |
+| 2026-07-11 | `debug` — Sandbox spawn fix (sandbox-build-spawn-binary) | ✅ Fixed + live-verified. Four stacked launch bugs (Windows-side env killed wsl.exe lookup; host binary passed verbatim; shell arg-mangling → --exec; env/cwd never translated). Adapter now maps to distro /usr/bin/claude, empty host env (stronger), Linux-side allowlist env, cwd→--cd. First real sandboxed build wrote files. bubblewrap+socat added to distro. FLAGS: WR-07 5min watchdog tight; builder-account MCP exposure → lockdown queued. |
+| 2026-07-11 | `260711-0ms` — Classifier retune (prompts-not-apps, reduced strictness) | ✅ Done. ToS/CG-only judgment (feasibility retired); chance≠gambling (coin flip/dice/no-stakes approved; payment↔chance still rejected); gray zone leans approve; hard rejects + SAND-04 unchanged; sub-400-char rationale rule. LIVE eval 57 PASS / 1 safe-direction WARN / 0 SAFETY FAIL. |
+| 2026-07-11 | `260711-0iu` — Straight-to-build + suggestions-are-prompts | ✅ Done, **Verified 7/7**. Research/plan turns REMOVED (structurally — no model field); pre-build screen re-points at suggestion text (rejected/held never reach the runner, test-proven); persistent workspace /home/builder/projects/app-<N> w/ SQLite generation rotation → SDK cwd → sandbox --cd; console POST /api/workspace/new-project (CSRF, 409 mid-build, audited); single-step Build display; tweak-inviting copy. SAND-04 sweep green in scaffold+continue. 784 tests. Deferred to dry run: real --cd handoff observation; classifier eval vs tweak prompts (done in 0ms corpus). |
+| 2026-07-11 | `fast` — Loser-drop + intake knob + queue-page polish | ✅ Vote losers now DROPPED at close (halt-recovery repool unchanged); INTAKE_MAX_POOLED_PER_USER knob (default 1, local .env 10 for testing); /queue page +N-more counters + stacked usernames; ?nextup=off overlay param; chat frame ticks. |
 | 2026-07-10 | `fast` — Overlay guidance moved to a top-center phase banner | ✅ Done. New `.phase-banner` (top-center, backed panel): SUGGESTIONS OPEN / VOTE NOW + how-to + countdown; vote panel tallies-only during rounds (winner beat keeps "Round over"); guidance stays visible during concurrent builds. Client-only; 724 tests + tsc + biome green. Commit ce8deb3. |
 | 2026-07-10 | `260710-v4e` — "What's coming" overlay page (pool + full queue) at /queue | ✅ Done. Second OBS browser source on 4901: approved-suggestion pool (top) + full FIFO build queue to the 10-cap (bottom); display-fields-only wire ({text, username} — rationale/category/donor data test-asserted absent, RoundSnapshot residual NOT widened); approved-only pool invariant throws on rejected/held; POOL_CHANGED live push; textContent-only, Host-allowlist inherited, GET-only. 733 tests, tsc+biome clean. |
 
