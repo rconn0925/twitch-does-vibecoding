@@ -42,29 +42,32 @@
     font-size:20px;font-weight:600;letter-spacing:1.5px;line-height:1;white-space:nowrap;
     box-shadow:0 0 0 1px rgba(148,163,184,0.10)}
 
-  /* ---- ZONE A · APP PREVIEW (star)  rect 620,150,900,540 ---------------- */
-  #a-tl{left:620px;top:150px}
-  #a-tr{left:1504px;top:150px}
-  #a-bl{left:620px;top:674px}
-  #a-br{left:1504px;top:674px}
-  #a-lbl{left:634px;top:164px}
+  /* ---- ZONE A · APP PREVIEW (star)  rect 510,150,900,540 ----------------
+     Canvas-centered (center x=960) directly under the phase banner.        */
+  #a-tl{left:510px;top:150px}
+  #a-tr{left:1394px;top:150px}
+  #a-bl{left:510px;top:674px}
+  #a-br{left:1394px;top:674px}
+  #a-lbl{left:524px;top:164px}
 
-  /* ---- ZONE B · AI TERMINAL (widened to match app: rect 620,710,900,300) -
-     BR tick omitted — that corner (1520,1010) is inside R3/NEXT UP.         */
-  #b-tl{left:620px;top:710px}
-  #b-tr{left:1520px;top:710px}
-  #b-bl{left:620px;top:1010px}
-  #b-lbl{left:634px;top:724px}
+  /* ---- ZONE B · AI TERMINAL  rect 510,710,900,300 ------------------------
+     Same left/right edges as the preview. BR tick omitted (R3/NEXT UP
+     band — harmless even on scenes running ?nextup=off).                   */
+  #b-tl{left:510px;top:710px}
+  #b-tr{left:1394px;top:710px}
+  #b-bl{left:510px;top:994px}
+  #b-lbl{left:524px;top:724px}
 
   /* ---- ZONE C · TWITCH CHAT (lightest)  rect 1550,150,360,780 ----------
      TL tick only (right/bottom sit at the canvas edge & R3).               */
   #c-tl{left:1550px;top:150px}
   #c-lbl{left:1564px;top:164px}
 
-  /* ---- ZONE D · WHAT'S COMING / QUEUE  rect 48,150,550,420 -------------
+  /* ---- ZONE D · WHAT'S COMING / QUEUE  rect 48,150,440,420 -------------
+     Narrowed 550→440 (left rail ends x=488; centered preview starts 510).
      Top ticks only; open bottom (below flows into the R2 vote-panel area). */
   #d-tl{left:50px;top:150px}
-  #d-tr{left:582px;top:150px}
+  #d-tr{left:472px;top:150px}
   #d-lbl{left:64px;top:164px}
 </style>
 </head>

@@ -220,13 +220,16 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Vote panel — lower-left, 560px fixed width ─────────────────────── */
+/* ── Vote panel — lower-left, 440px fixed width ─────────────────────── */
+/* (Narrowed 560→440 for the centered-preview scene layout: the left rail
+   must end by x≈488 so the canvas-centered preview/terminal at x=510 stays
+   clear. Titles still truncate at 80 chars JS-side; ellipsis backstop.) */
 
 .vote-panel {
   position: fixed;
   left: var(--safe-margin);
   bottom: var(--safe-margin);
-  width: 560px;
+  width: 440px;
   box-sizing: border-box;
   background: var(--dominant);
   border-radius: 12px;
@@ -364,7 +367,7 @@ body {
   position: fixed;
   left: var(--safe-margin);
   bottom: var(--safe-margin);
-  width: 560px;
+  width: 440px; /* matches .vote-panel (shared slot) — see note there */
   box-sizing: border-box;
   background: var(--dominant);
   border-radius: 12px;
