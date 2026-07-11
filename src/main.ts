@@ -258,7 +258,14 @@ function envPositive(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-const DEFAULT_POOL_MAX_SIZE = 50;
+/**
+ * D2-13 bounded pool, re-capped at 5 (quick-l2a user amendment): the pool, the
+ * early-close threshold, and the vote-option draw all align at 5 by default —
+ * a full pool becomes exactly one full vote round. Kept as SEPARATE knobs
+ * (POOL_MAX_SIZE / EARLY_CLOSE_POOL_SIZE / ROUND_MAX_OPTIONS) so they can
+ * diverge later.
+ */
+const DEFAULT_POOL_MAX_SIZE = 5;
 /**
  * WR-07 (quick-22l): the single sandboxed build turn's watchdog budget in
  * seconds — env-tunable via BUILD_TURN_TIMEOUT_SECONDS. Default 900 (15 min):
@@ -272,6 +279,14 @@ const DEFAULT_CHAT_SEND_INTERVAL_CAP = 15;
 const DEFAULT_CHAT_SEND_INTERVAL_MS = 30_000;
 /** quick-t5k D-01: suggestion-collection window between voting rounds. */
 const DEFAULT_SUGGEST_PHASE_SECONDS = 40;
+/**
+ * quick-l2a: pool size that ends an active suggest phase early — voting starts
+ * the moment this many approved suggestions are pooled, through the SAME
+ * eligibility-checked phase-end path as timer expiry. A named knob of its own
+ * (EARLY_CLOSE_POOL_SIZE) even though it defaults equal to POOL_MAX_SIZE and
+ * ROUND_MAX_OPTIONS — the three can diverge later.
+ */
+const DEFAULT_EARLY_CLOSE_POOL_SIZE = 5;
 /** VOTE_QUEUE_MAX amendment: pause new rounds when this many vote winners wait. */
 const DEFAULT_VOTE_QUEUE_MAX = 10;
 
@@ -706,6 +721,17 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     },
     isChaosOn: () => chaos.enabled(),
     isVoteQueueFull,
+    // quick-l2a pool-full early close: the pool sliver + threshold. The pool
+    // is approved-only by construction (CandidatePool.add throws, COMP-01);
+    // the scheduler funnels the close through its own #onPhaseEnd, so the
+    // compliance gate and halt parking are untouched.
+    pool: {
+      size: () => pool.list().length,
+      on: (event, handler) => pool.on(event, handler),
+    },
+    earlyCloseSize: Math.floor(
+      envPositive(process.env.EARLY_CLOSE_POOL_SIZE, DEFAULT_EARLY_CLOSE_POOL_SIZE),
+    ),
     suggestPhaseMs: suggestPhaseSeconds * 1_000,
     enabledAtBoot: autoRoundEnabled,
     narrate: {

@@ -22,6 +22,14 @@
  *    buildQueueFull narration beat per park; the cycle resumes on the first
  *    STATE_CHANGED after the queue drains below the cap. Manual round starts
  *    are NOT capped (operator override goes through the console route).
+ *  - Pool-full early close (quick-l2a): when the OPTIONAL pool dep is wired
+ *    and the pool reaches earlyCloseSize mid-suggest-phase, the phase ends
+ *    NOW — but exclusively by cancelling the timer and calling #onPhaseEnd(),
+ *    the exact method the timer expiry calls. Every eligibility re-check
+ *    (halt parking, queue-full, window/chaos, mode) and the pool-too-small
+ *    restart apply unmodified; the pool itself stays approved-only by
+ *    construction (CandidatePool.add throws for non-approved, COMP-01), so
+ *    early close changes WHEN the vote starts, never what enters it.
  *
  * This module never touches the queue, the gate, or the mode table — it only
  * calls the injected startRound (RoundManager owns all transitions). COMP-01
@@ -33,6 +41,7 @@ import type { Logger } from "pino";
 import {
   AUTO_CYCLE_CHANGED,
   HALT_TRIGGERED,
+  POOL_CHANGED,
   ROUND_CLOSED,
   STATE_CHANGED,
 } from "../shared/events.js";
@@ -75,6 +84,21 @@ export interface AutoCycleDeps {
    * over the cap — the scheduler defers new suggestion phases until it drains.
    */
   isVoteQueueFull?: () => boolean;
+  /**
+   * OPTIONAL pool sliver (quick-l2a early close): current approved-pool size
+   * plus a POOL_CHANGED subscription. When absent, the scheduler behaves
+   * exactly as before — timer-expiry only.
+   */
+  pool?: {
+    size(): number;
+    on(event: string, handler: (...args: unknown[]) => void): void;
+  };
+  /**
+   * Pool size that ends an ACTIVE suggest phase early (EARLY_CLOSE_POOL_SIZE,
+   * default 5 in main.ts — a SEPARATE knob from ROUND_MAX_OPTIONS/POOL_MAX_SIZE
+   * even though all three default to 5). Only meaningful when `pool` is wired.
+   */
+  earlyCloseSize?: number;
   /** Suggestion-window length (SUGGEST_PHASE_SECONDS, default 40s). */
   suggestPhaseMs: number;
   /** AUTO_ROUND_ENABLED boot state (only the exact string "false" disables). */
@@ -118,6 +142,12 @@ export class AutoCycleScheduler {
     // the next suggestion window starts.
     deps.round.on(ROUND_CLOSED, () => {
       this.#maybeBegin("fresh");
+    });
+    // Pool-full early close (quick-l2a): POOL_CHANGED fires on add AND remove;
+    // the active-phase + size>=cap guard in #maybeEarlyClose makes removes and
+    // below-cap adds harmless no-ops (O(1) size check, T-l2a-04).
+    deps.pool?.on(POOL_CHANGED, () => {
+      this.#maybeEarlyClose();
     });
   }
 
@@ -197,6 +227,34 @@ export class AutoCycleScheduler {
       this.#onPhaseEnd();
     }, this.#deps.suggestPhaseMs);
     this.#timer.unref();
+    // A phase that OPENS onto an already-full pool closes immediately —
+    // through the same #onPhaseEnd funnel as every other close (quick-l2a).
+    this.#maybeEarlyClose();
+  }
+
+  /**
+   * Pool-full early close (quick-l2a): no-op unless a suggest phase is ACTIVE
+   * and the wired pool has reached earlyCloseSize; otherwise cancel the timer
+   * and run #onPhaseEnd() — the EXACT method the timer expiry calls, so the
+   * halt/mode/window/chaos/queue-full eligibility re-check and the
+   * pool-too-small restart all apply unmodified. Never calls startRound
+   * directly (the "same code path" rule).
+   */
+  #maybeEarlyClose(): void {
+    const pool = this.#deps.pool;
+    const cap = this.#deps.earlyCloseSize;
+    if (pool === undefined || cap === undefined) return;
+    if (this.#phaseEndsAtMs === null || this.#timer === null) return; // no active phase
+    // Math.max(cap, 2): D2-04 needs 2 candidates to open a round. Without this
+    // floor, a misconfigured earlyCloseSize of 1 would loop forever — early
+    // close → startRound throws pool-too-small → restart phase → early close…
+    if (pool.size() < Math.max(cap, 2)) return;
+    this.#deps.logger?.info(
+      { poolSize: pool.size(), earlyCloseSize: cap },
+      "auto-cycle suggestion phase closed early — pool full",
+    );
+    this.#clearTimer();
+    this.#onPhaseEnd();
   }
 
   #onPhaseEnd(): void {

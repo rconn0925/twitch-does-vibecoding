@@ -10,7 +10,7 @@ import type {
   SuggestionCandidate,
 } from "../shared/types.js";
 import type { EnqueueWinnerResult } from "./round.js";
-import { RoundManager, RoundStartError, roundDurationMs } from "./round.js";
+import { RoundManager, RoundStartError, roundDurationMs, roundMaxOptions } from "./round.js";
 import { StreamModeMachine } from "./stream-mode.js";
 
 /** A typed enqueueWinner spy matching the injected three-argument contract. */
@@ -97,27 +97,62 @@ describe("roundDurationMs (D2-02 env knob)", () => {
     else process.env.ROUND_DURATION_SECONDS = saved;
   });
 
-  it("defaults to 60 seconds", () => {
+  it("defaults to 30 seconds (quick-l2a: 40/30 suggest/vote cadence)", () => {
     delete process.env.ROUND_DURATION_SECONDS;
-    expect(roundDurationMs()).toBe(60_000);
+    expect(roundDurationMs()).toBe(30_000);
   });
 
   it("honors ROUND_DURATION_SECONDS and rejects garbage", () => {
-    process.env.ROUND_DURATION_SECONDS = "30";
-    expect(roundDurationMs()).toBe(30_000);
+    process.env.ROUND_DURATION_SECONDS = "60";
+    expect(roundDurationMs()).toBe(60_000);
     process.env.ROUND_DURATION_SECONDS = "not-a-number";
-    expect(roundDurationMs()).toBe(60_000);
+    expect(roundDurationMs()).toBe(30_000);
     process.env.ROUND_DURATION_SECONDS = "-5";
-    expect(roundDurationMs()).toBe(60_000);
+    expect(roundDurationMs()).toBe(30_000);
+  });
+});
+
+describe("roundMaxOptions (quick-l2a draw-cap knob; user amendment: default 5)", () => {
+  const saved = process.env.ROUND_MAX_OPTIONS;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.ROUND_MAX_OPTIONS;
+    else process.env.ROUND_MAX_OPTIONS = saved;
+  });
+
+  it("defaults to 5", () => {
+    delete process.env.ROUND_MAX_OPTIONS;
+    expect(roundMaxOptions()).toBe(5);
+  });
+
+  it("honors ROUND_MAX_OPTIONS, integer-floored", () => {
+    process.env.ROUND_MAX_OPTIONS = "3";
+    expect(roundMaxOptions()).toBe(3);
+    process.env.ROUND_MAX_OPTIONS = "4.9";
+    expect(roundMaxOptions()).toBe(4);
+  });
+
+  it("falls back to 5 on garbage, negative, and zero", () => {
+    process.env.ROUND_MAX_OPTIONS = "not-a-number";
+    expect(roundMaxOptions()).toBe(5);
+    process.env.ROUND_MAX_OPTIONS = "-2";
+    expect(roundMaxOptions()).toBe(5);
+    process.env.ROUND_MAX_OPTIONS = "0";
+    expect(roundMaxOptions()).toBe(5);
   });
 });
 
 describe("RoundManager.startRound (D2-01/D2-04)", () => {
   beforeEach(() => {
     delete process.env.ROUND_DURATION_SECONDS;
+    delete process.env.ROUND_MAX_OPTIONS;
+  });
+  afterEach(() => {
+    delete process.env.ROUND_MAX_OPTIONS; // never leak the per-test pin
   });
 
   it("opens a round over 3 pooled candidates: transition, pool draw, persistence, audit, emit", () => {
+    // ROUND_MAX_OPTIONS=3 pins the historical draw shape this test asserts.
+    process.env.ROUND_MAX_OPTIONS = "3";
     const h = makeHarness({ candidates: 4 });
     let emitted: RoundSnapshot | null = null;
     h.manager.on(ROUND_OPENED, (snap) => {
@@ -148,6 +183,27 @@ describe("RoundManager.startRound (D2-01/D2-04)", () => {
     expect(snap.endsAtMs).toBe(snap.openedAtMs + roundDurationMs());
     expect(snap.candidates).toHaveLength(3);
     expect(snap.status).toBe("open");
+    h.db.close();
+  });
+
+  it("draws up to roundMaxOptions (default 5) in insertion order; the rest stay pooled (quick-l2a)", () => {
+    const h = makeHarness({ candidates: 7 });
+
+    const snap = h.manager.startRound();
+
+    expect(snap.candidates).toHaveLength(5);
+    expect(snap.candidates.map((c) => c.candidate.id)).toEqual([
+      "cand-1",
+      "cand-2",
+      "cand-3",
+      "cand-4",
+      "cand-5",
+    ]);
+    // The undrawn tail stays pooled for the next round.
+    expect(h.pool.list().map((a) => a.candidate.id)).toEqual(["cand-6", "cand-7"]);
+    // Votes for all 5 drawn options count; option 6 is silently ignored (D2-15).
+    expect(h.manager.recordVote("111", 5)).toBe(true);
+    expect(h.manager.recordVote("222", 6)).toBe(false);
     h.db.close();
   });
 
@@ -515,7 +571,7 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
       unknown
     >;
     expect(row.status).toBe("open");
-    expect(row.frozen_remaining_ms).toBe(40_000);
+    expect(row.frozen_remaining_ms).toBe(10_000);
     expect(h.enqueueWinner).not.toHaveBeenCalled();
     expect(h.manager.snapshot()?.frozen).toBe(true);
     h.db.close();
@@ -553,19 +609,19 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
 describe("RoundManager halt-freeze (D2-16)", () => {
   it("a halt mid-round freezes the timer and persists frozen_remaining_ms", () => {
     const h = makeHarness();
-    const snap = h.manager.startRound(); // opened at 1000, ends at 61000
+    const snap = h.manager.startRound(); // opened at 1000, ends at 31000 (30s default)
     h.setNow(21_000);
     h.machine.forceTransition("HALTED", haltCtx(h.machine));
 
     const mem = h.manager.snapshot();
     expect(mem?.frozen).toBe(true);
-    expect(mem?.remainingMs).toBe(40_000);
+    expect(mem?.remainingMs).toBe(10_000);
 
     const row = h.db.prepare("SELECT * FROM rounds WHERE id = ?").get(snap.roundId) as Record<
       string,
       unknown
     >;
-    expect(row.frozen_remaining_ms).toBe(40_000);
+    expect(row.frozen_remaining_ms).toBe(10_000);
     expect(row.status).toBe("open");
     h.db.close();
   });
@@ -581,7 +637,7 @@ describe("RoundManager halt-freeze (D2-16)", () => {
     const mem = h.manager.snapshot();
     expect(mem?.frozen).toBe(false);
     expect(mem?.remainingMs).toBeNull();
-    expect(mem?.endsAtMs).toBe(540_000);
+    expect(mem?.endsAtMs).toBe(510_000); // 500_000 + the 10s frozen remainder
     // votes accepted again after resume
     expect(h.manager.recordVote("111", 1)).toBe(true);
     h.db.close();
@@ -629,7 +685,7 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
       machine: machine2,
       pool: new CandidatePool(),
       enqueueWinner: enqueueWinnerSpy(),
-      now: () => 30_000, // round still live (ends at 61000)
+      now: () => 15_000, // round still live (ends at 31000, 30s default)
     });
     manager2.restore();
 
@@ -664,7 +720,7 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
       machine: machine2,
       pool: new CandidatePool(),
       enqueueWinner: enqueue2,
-      now: () => 100_000, // past ends_at_ms 61000
+      now: () => 100_000, // past ends_at_ms 31000
     });
     manager2.restore();
 
@@ -681,9 +737,9 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
 
   it("restored-frozen triage RESUME: boot re-enters HALTED, recoverTo VOTING_ROUND re-arms the frozen remainder and accepts votes (CR-01)", () => {
     const h = makeHarness();
-    h.manager.startRound(); // opened at 1000, ends at 61000
+    h.manager.startRound(); // opened at 1000, ends at 31000 (30s default)
     h.setNow(21_000);
-    h.machine.forceTransition("HALTED", haltCtx(h.machine)); // freezes 40s remainder
+    h.machine.forceTransition("HALTED", haltCtx(h.machine)); // freezes 10s remainder
 
     // "Restart": fresh machine, restore() loads frozen, then main.ts
     // re-enters HALTED so the D-04 triage exits are reachable (CR-01).
@@ -704,7 +760,7 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
     const resumed = manager2.snapshot();
     expect(resumed?.frozen).toBe(false);
     expect(resumed?.remainingMs).toBeNull();
-    expect(resumed?.endsAtMs).toBe(540_000); // 500_000 + the 40s frozen remainder
+    expect(resumed?.endsAtMs).toBe(510_000); // 500_000 + the 10s frozen remainder
     expect(manager2.recordVote("111", 1)).toBe(true);
     h.db.close();
   });
@@ -775,7 +831,7 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
 
     const restored = manager2.snapshot();
     expect(restored?.frozen).toBe(true);
-    expect(restored?.remainingMs).toBe(40_000);
+    expect(restored?.remainingMs).toBe(10_000);
     h.db.close();
   });
 });
@@ -850,10 +906,10 @@ describe("halt during a CONCURRENT round × all three recovery targets (BLOCKER-
   function haltedConcurrent(): Harness {
     const h = makeHarness();
     h.machine.transition("BUILD_IN_PROGRESS");
-    h.manager.startRound(); // opened at 1000, ends at 61000
+    h.manager.startRound(); // opened at 1000, ends at 31000 (30s default)
     h.manager.recordVote("111", 1);
     h.setNow(21_000);
-    h.machine.forceTransition("HALTED", haltCtx(h.machine)); // freezes 40s remainder
+    h.machine.forceTransition("HALTED", haltCtx(h.machine)); // freezes 10s remainder
     expect(h.manager.snapshot()?.frozen).toBe(true);
     return h;
   }
@@ -867,7 +923,7 @@ describe("halt during a CONCURRENT round × all three recovery targets (BLOCKER-
 
     const resumed = h.manager.snapshot();
     expect(resumed?.frozen).toBe(false);
-    expect(resumed?.endsAtMs).toBe(140_000); // 100_000 + the 40s frozen remainder
+    expect(resumed?.endsAtMs).toBe(110_000); // 100_000 + the 10s frozen remainder
     expect(resumed?.totalVotes).toBe(1); // acknowledged votes kept (D2-14 spirit)
     expect(h.manager.recordVote("222", 2)).toBe(true); // votes flow again
 
@@ -914,10 +970,11 @@ describe("halt during a CONCURRENT round × all three recovery targets (BLOCKER-
 
 describe("recordRoundOpened initiator (quick-t5k audit honesty)", () => {
   it("startRound() defaults to operator; startRound('auto') records the auto initiator", () => {
-    const h = makeHarness({ candidates: 4 });
+    const h = makeHarness({ candidates: 4 }); // round 1 draws all 4 (cap 5)
     h.manager.startRound();
     h.manager.closeRound();
     h.pool.add(candidate("cand-5"), approved);
+    h.pool.add(candidate("cand-6"), approved); // D2-04 needs 2 pooled again
     h.manager.startRound("auto");
 
     const audit = listAuditRecords(h.db, { limit: 10, eventType: "round_opened" });

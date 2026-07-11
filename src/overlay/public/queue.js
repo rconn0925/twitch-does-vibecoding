@@ -18,10 +18,13 @@
   const TEXT_MAX = 80;
   const USER_MAX = 24;
   const QUEUE_MAX = 10;
-  // Display caps for the fixed 440x420 browser source: show the head of each
-  // list plus an honest "+N more" line — never silently clip (D2-16 honesty).
-  const POOL_SHOW = 3;
-  const QUEUE_SHOW = 4;
+  // Display caps for the full-height ~460x1080 browser source (quick-l2a):
+  // show up to 10 of each list plus an honest "+N more" line past that —
+  // never silently clip (D2-16 honesty). The pool caps at POOL_MAX_SIZE
+  // (default 5) so it normally fits whole; 10 keeps headroom for a raised
+  // knob. The build queue caps at VOTE_QUEUE_MAX (10), so 10 shows it whole.
+  const POOL_SHOW = 10;
+  const QUEUE_SHOW = 10;
 
   /** Latest OverlayState from the ws push (full state every message). */
   let latest = null;

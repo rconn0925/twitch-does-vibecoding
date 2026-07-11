@@ -337,6 +337,35 @@ body {
   transition: width 300ms ease-out;
 }
 
+/*
+ * Compact vote panel (quick-l2a) — applied by overlay.js when a round carries
+ * MORE than 5 options (a custom ROUND_MAX_OPTIONS above the default). Tightens
+ * vertical rhythm only; the binding type contract holds: NOTHING below 20px,
+ * no new colors, no red, width stays 440px. Budget: 10 compact rows + padding
+ * stay under ~740px so the bottom-anchored panel's top edge remains below the
+ * ~160px top-banner band at 1080p.
+ */
+
+.vote-panel-compact .vote-rows {
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.vote-panel-compact .vote-candidate-title {
+  font-size: 20px;
+}
+
+.vote-panel-compact .vote-badge {
+  width: 28px;
+  height: 28px;
+  font-size: 20px; /* type floor — the badge shrinks, its digits do not */
+}
+
+.vote-panel-compact .tally-track {
+  height: 8px;
+  margin-top: 4px;
+}
+
 /* Winner beat (8s after close) */
 
 .vote-row-winner {

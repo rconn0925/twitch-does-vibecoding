@@ -20,9 +20,14 @@ const SuggestCommand = z.object({
   text: z.string().min(1).max(2000),
 });
 
+// Why 5: matches DEFAULT_ROUND_MAX_OPTIONS (state-machine/round.ts, quick-l2a
+// user amendment — vote options cap at 5 even when the pool holds 10).
+// recordVote() remains the authoritative bound against the LIVE option count:
+// an in-range-but-unused vote (e.g. "!vote 5" in a 3-option round) is silently
+// ignored per D2-15, so a custom ROUND_MAX_OPTIONS below 5 stays safe.
 const VoteCommand = z.object({
   kind: z.literal("vote"),
-  option: z.number().int().min(1).max(3),
+  option: z.number().int().min(1).max(5),
 });
 
 /** Discriminated result of parsing a chat message as a command. */
@@ -42,7 +47,7 @@ export function parseCommand(messageText: string): ParsedCommand | null {
     return parsed.success ? parsed.data : null;
   }
 
-  const voteMatch = /^!vote\s+([1-3])$/i.exec(trimmed);
+  const voteMatch = /^!vote\s+([1-5])$/i.exec(trimmed);
   if (voteMatch?.[1]) {
     const parsed = VoteCommand.safeParse({ kind: "vote", option: Number(voteMatch[1]) });
     return parsed.success ? parsed.data : null;

@@ -90,14 +90,30 @@ export interface RoundManagerDeps {
   rng?: () => number;
 }
 
-const DEFAULT_ROUND_DURATION_SECONDS = 60;
+const DEFAULT_ROUND_DURATION_SECONDS = 30;
 
-/** D2-02 round length from ROUND_DURATION_SECONDS env (default 60s), in milliseconds. */
+/** D2-02 round length from ROUND_DURATION_SECONDS env (default 30s, quick-l2a), in milliseconds. */
 export function roundDurationMs(): number {
   const raw = process.env.ROUND_DURATION_SECONDS;
   const parsed = raw === undefined ? Number.NaN : Number.parseFloat(raw);
   const seconds = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ROUND_DURATION_SECONDS;
   return seconds * 1_000;
+}
+
+const DEFAULT_ROUND_MAX_OPTIONS = 5;
+
+/**
+ * Max candidates drawn into a vote round, from ROUND_MAX_OPTIONS env (default
+ * 5 — user amendment quick-l2a: keeps the vote panel scannable; the pool-full
+ * early-close threshold in auto-cycle is a SEPARATE knob). Integer-floored so
+ * "4.9" draws 4; garbage/negative/zero fall back to the default, mirroring the
+ * roundDurationMs() env-parse idiom.
+ */
+export function roundMaxOptions(): number {
+  const raw = process.env.ROUND_MAX_OPTIONS;
+  const parsed = raw === undefined ? Number.NaN : Number.parseFloat(raw);
+  const floored = Math.floor(parsed);
+  return Number.isFinite(parsed) && floored > 0 ? floored : DEFAULT_ROUND_MAX_OPTIONS;
 }
 
 /** One drawn option with its full identity and live vote count. */
@@ -225,8 +241,8 @@ export class RoundManager {
    * the audit ledger. Opens from IDLE (owns the mode: IDLE→VOTING_ROUND as
    * always) OR from BUILD_IN_PROGRESS (a CONCURRENT round per A1: no mode
    * transition — the running build owns the mode; the winner queues). Draws
-   * the first min(3, pool size) candidates in pool insertion order; requires
-   * at least 2 (D2-04).
+   * the first min(roundMaxOptions(), pool size) candidates in pool insertion
+   * order (ROUND_MAX_OPTIONS knob, default 5); requires at least 2 (D2-04).
    */
   startRound(initiator: "auto" | "operator" = "operator"): RoundSnapshot {
     // CR-01: refuse while ANY round is still loaded — mode alone is not
@@ -244,7 +260,7 @@ export class RoundManager {
     if (pooled.length < 2) {
       throw new RoundStartError("pool-too-small");
     }
-    const drawn = pooled.slice(0, 3);
+    const drawn = pooled.slice(0, roundMaxOptions());
     const openedAtMs = this.#now();
     const durationMs = roundDurationMs();
     const endsAtMs = openedAtMs + durationMs;

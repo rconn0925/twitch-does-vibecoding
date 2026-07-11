@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AUTO_CYCLE_CHANGED, ROUND_CLOSED } from "../shared/events.js";
+import { AUTO_CYCLE_CHANGED, POOL_CHANGED, ROUND_CLOSED } from "../shared/events.js";
 import type { RoundSnapshot } from "../shared/types.js";
 import { AutoCycleScheduler } from "./auto-cycle.js";
 import { RoundStartError } from "./round.js";
@@ -50,17 +50,27 @@ interface Harness {
   setWindowLive(live: boolean): void;
   setChaosOn(on: boolean): void;
   setQueueFull(full: boolean): void;
+  setPoolSize(size: number): void;
+  emitPoolChanged(): void;
 }
 
 function make(
-  opts: { enabledAtBoot?: boolean; startRoundImpl?: () => RoundSnapshot } = {},
+  opts: {
+    enabledAtBoot?: boolean;
+    startRoundImpl?: () => RoundSnapshot;
+    /** Wire the optional pool dep (quick-l2a early close) with this cap. */
+    earlyCloseSize?: number;
+    poolSizeAtBoot?: number;
+  } = {},
 ): Harness {
   const machine = new StreamModeMachine();
   const roundEmitter = new EventEmitter();
+  const poolEmitter = new EventEmitter();
   let roundSnap: RoundSnapshot | null = null;
   let windowLive = false;
   let chaosOn = false;
   let queueFull = false;
+  let poolSize = opts.poolSizeAtBoot ?? 0;
 
   const startRound = vi.fn(
     opts.startRoundImpl ??
@@ -92,6 +102,19 @@ function make(
     enabledAtBoot: opts.enabledAtBoot ?? true,
     narrate,
     onToggled,
+    // The optional pool dep (quick-l2a): only wired when the test asks for it,
+    // so every pre-existing test also proves the no-pool back-compat path.
+    ...(opts.earlyCloseSize !== undefined
+      ? {
+          pool: {
+            size: () => poolSize,
+            on: (event: string, handler: (...args: unknown[]) => void) => {
+              poolEmitter.on(event, handler);
+            },
+          },
+          earlyCloseSize: opts.earlyCloseSize,
+        }
+      : {}),
   });
   const changed = vi.fn();
   scheduler.on(AUTO_CYCLE_CHANGED, changed);
@@ -117,6 +140,12 @@ function make(
     },
     setQueueFull: (full) => {
       queueFull = full;
+    },
+    setPoolSize: (size) => {
+      poolSize = size;
+    },
+    emitPoolChanged: () => {
+      poolEmitter.emit(POOL_CHANGED);
     },
   };
 }
@@ -338,5 +367,99 @@ describe("AutoCycleScheduler (fake-timer matrix, quick-t5k)", () => {
   it("event-driven, zero polling: auto-cycle.ts contains no setInterval", () => {
     const source = readFileSync(fileURLToPath(new URL("./auto-cycle.ts", import.meta.url)), "utf8");
     expect(source).not.toMatch(/setInterval/);
+  });
+
+  // ── quick-l2a: pool-full early close of the suggestion phase ────────────
+  // The pool hitting EARLY_CLOSE_POOL_SIZE mid-suggest-phase must funnel
+  // through #onPhaseEnd — the EXACT timer-expiry code path — so every
+  // eligibility re-check (halt parking, queue-full, window/chaos, mode) and
+  // the pool-too-small restart apply unmodified. Never startRound directly.
+  describe("pool-full early close (quick-l2a)", () => {
+    const CAP = 5;
+
+    it("pool reaching the cap mid-phase cancels the timer and starts the round IMMEDIATELY via the phase-end path", () => {
+      const h = track(make({ earlyCloseSize: CAP }));
+      h.scheduler.start();
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+      h.changed.mockClear();
+
+      // Well BEFORE the phase deadline the pool fills to the cap.
+      vi.advanceTimersByTime(5_000);
+      h.setPoolSize(CAP);
+      h.emitPoolChanged();
+
+      // startRound fired NOW — not at the 40s deadline.
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledWith("auto");
+      expect(h.scheduler.snapshot().phase).toBeNull();
+      expect(h.changed).toHaveBeenCalled(); // AUTO_CYCLE_CHANGED emitted
+
+      // The cancelled timer stays dead: nothing double-fires at the deadline.
+      vi.advanceTimersByTime(SUGGEST_MS * 2);
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+    });
+
+    it("early close re-checks eligibility: a full vote queue at that moment parks instead of starting", () => {
+      const h = track(make({ earlyCloseSize: CAP }));
+      h.scheduler.start();
+
+      h.setQueueFull(true); // arrives mid-phase, before the pool fills
+      h.setPoolSize(CAP);
+      h.emitPoolChanged();
+
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBeNull(); // parked, same as timer expiry
+    });
+
+    it("HALT parks first: POOL_CHANGED at the cap after HALT_TRIGGERED fires nothing", () => {
+      const h = track(make({ earlyCloseSize: CAP }));
+      h.scheduler.start();
+
+      h.machine.forceTransition("HALTED", haltCtx(h.machine)); // parks the phase
+      h.setPoolSize(CAP);
+      h.emitPoolChanged();
+
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBeNull();
+      vi.advanceTimersByTime(SUGGEST_MS * 3);
+      expect(h.startRound).not.toHaveBeenCalled();
+    });
+
+    it("pool events BELOW the cap leave the timer path completely unchanged", () => {
+      const h = track(make({ earlyCloseSize: CAP }));
+      h.scheduler.start();
+
+      h.setPoolSize(CAP - 1);
+      h.emitPoolChanged();
+      h.emitPoolChanged(); // removes fire POOL_CHANGED too — still harmless
+
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+      vi.advanceTimersByTime(SUGGEST_MS - 1);
+      expect(h.startRound).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1); // startRound only at the deadline
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+    });
+
+    it("a suggest phase that BEGINS with the pool already at the cap closes immediately through the same path", () => {
+      const h = track(make({ earlyCloseSize: CAP, poolSizeAtBoot: CAP }));
+
+      h.scheduler.start();
+
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledWith("auto");
+      expect(h.scheduler.snapshot().phase).toBeNull();
+    });
+
+    it("POOL_CHANGED outside any active phase is a no-op (no phantom rounds while parked)", () => {
+      const h = track(make({ enabledAtBoot: false, earlyCloseSize: CAP }));
+      h.scheduler.start(); // disabled → parked, no phase
+
+      h.setPoolSize(CAP);
+      h.emitPoolChanged();
+
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBeNull();
+    });
   });
 });
