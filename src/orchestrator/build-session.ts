@@ -137,9 +137,18 @@ export interface BuildSessionDeps {
   /**
    * WR-07 per-turn watchdog bound (ms); defaults to DEFAULT_TURN_TIMEOUT_MS.
    * Injectable so tests can drive the hung-stream path deterministically without
-   * waiting on the production-scale default.
+   * waiting on the production-scale default. The live composition injects
+   * BUILD_TURN_TIMEOUT_SECONDS * 1000 (quick-22l, default 900s).
    */
   turnTimeoutMs?: number;
+  /**
+   * Done-build hook (quick-22l gallery publish seam). Called ONLY when a build
+   * finalizes `done` — never on failed/refused/comp02-rejected/aborted/skipped
+   * exits. Optional — absent in unit tests that don't assert on it (mirrors
+   * onHeldForReview). Invoked inside its own try/catch: a throwing hook can
+   * NEVER disturb finalize, the IDLE transition, or the dequeue.
+   */
+  onBuildDone?: (task: QueuedTask) => void;
   logger?: Logger;
 }
 
@@ -434,6 +443,21 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     // in this generation, the next attempt scaffolds again.
     if (stage === "done") {
       deps.workspace.markBuilt();
+      // quick-22l gallery publish seam: fire the done-hook HERE — the ONLY
+      // correct done seam (finalizeAborted/enterDecision/skipTask are the
+      // failure/abort paths and never reach this branch). Called synchronously
+      // while the machine is still BUILD_IN_PROGRESS, so a workspace rotation
+      // (console 409s mid-build) cannot race the caller's workspace.generation()
+      // read. Own try/catch: a publisher callback error must NEVER disturb
+      // finalize, the IDLE transition, or the dequeue (T-22l-04).
+      try {
+        deps.onBuildDone?.(task);
+      } catch (err) {
+        deps.logger?.error(
+          { err, taskId: task.id },
+          "onBuildDone hook threw — publish skipped, finalize continues untouched",
+        );
+      }
     }
     // HIST-01: a COMPLETED build persists exactly ONE append-only changelog row,
     // carrying the gate-APPROVED task.text (D-03), the stored provenance, and the
