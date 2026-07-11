@@ -12,7 +12,9 @@ import {
   recordHalt,
   recordReviewResolution,
   recordVeto,
+  recordWorkspaceReset,
 } from "../audit/record.js";
+import type { WorkspaceView } from "../orchestrator/types.js";
 import { submitCandidate } from "../pipeline/submit.js";
 import type { CandidatePool } from "../queue/pool.js";
 import type { TaskQueue } from "../queue/task-queue.js";
@@ -117,6 +119,12 @@ export interface ConsoleServerDeps {
    * (the expected pre-StreamElements state; the show runs without it).
    */
   donationsStatus?: () => DonationsStatus;
+  /**
+   * quick-0iu persistent-workspace seam: POST /api/workspace/new-project calls
+   * newProject() to rotate the generation (streamer-only "New project" action).
+   * Absent when no build engine is composed — the route then answers 503.
+   */
+  workspace?: WorkspaceView;
   logger?: Logger;
 }
 
@@ -768,6 +776,39 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
     }
     pushState();
     res.json({ chaos: deps.chaos?.enabled() ?? false });
+  });
+
+  // quick-0iu "New project" — EXACT mirror of the /api/chaos/toggle pattern:
+  // strict-empty zod body (rejects smuggled keys), inherits the shared
+  // CSRF/DNS-rebinding middleware (NO new middleware), terse 409s. Rotates the
+  // persistent build workspace to a fresh generation (the old distro dir stays
+  // archived in place — rotation IS the archive; nothing is deleted). NEVER
+  // rotates under an active/frozen build: BUILD_IN_PROGRESS (including a
+  // pending retry/skip decision, which keeps the machine in that mode) and
+  // HALTED both 409. Audited via workspace_reset (T-0iu-07).
+  app.post("/api/workspace/new-project", (req, res) => {
+    const parsed = RoundStartBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid new-project request body" });
+      return;
+    }
+    const workspace = deps.workspace;
+    if (!workspace) {
+      res.status(503).json({ error: "no build engine composed" });
+      return;
+    }
+    if (machine.mode === "BUILD_IN_PROGRESS") {
+      res.status(409).json({ reason: "build-active" });
+      return;
+    }
+    if (machine.mode === "HALTED") {
+      res.status(409).json({ reason: "halted" });
+      return;
+    }
+    const generation = workspace.newProject();
+    recordWorkspaceReset(db, { generation, streamMode: machine.mode });
+    pushState();
+    res.json({ generation });
   });
 
   // quick-t5k D-04 auto-cycle pause/resume — EXACT mirror of /api/chaos/toggle:

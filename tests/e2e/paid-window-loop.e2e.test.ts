@@ -28,10 +28,6 @@ import type { AgentRunner, DevServerProbe, SandboxAdapter } from "../../src/orch
 type AppHandle = Awaited<ReturnType<typeof createApp>>;
 
 // ── SDK-ish message fixtures (plain objects; no SDK type import) ──────────────
-const assistantText = (text: string) => ({
-  type: "assistant",
-  message: { content: [{ type: "text", text }] },
-});
 const writeBatch = (filePath: string, content: string) => ({
   type: "assistant",
   message: {
@@ -40,22 +36,13 @@ const writeBatch = (filePath: string, content: string) => ({
 });
 const resultSuccess = { type: "result", subtype: "success", is_error: false };
 
-/** A fast happy-path AgentRunner: research → plan → sandboxed build write → done. */
+/** A fast happy-path AgentRunner: the single sandboxed build write → done (quick-0iu). */
 function happyRunner(): AgentRunner {
   return {
-    run(spec) {
-      const sandboxed = spec.sandbox !== undefined;
+    run() {
       return (async function* () {
-        if (spec.agent === "research") {
-          yield assistantText("research notes") as never;
-          yield resultSuccess as never;
-        } else if (spec.agent === "build" && !sandboxed) {
-          yield assistantText("Build plan: make a small page.") as never;
-          yield resultSuccess as never;
-        } else {
-          yield writeBatch("index.html", "<b>hi</b>") as never;
-          yield resultSuccess as never;
-        }
+        yield writeBatch("index.html", "<b>hi</b>") as never;
+        yield resultSuccess as never;
       })();
     },
   };

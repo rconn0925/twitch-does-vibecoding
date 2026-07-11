@@ -39,20 +39,56 @@ export type AgentMessage = SDKMessage | SubagentStartHookInput | SubagentStopHoo
  * concatenated into `systemPrompt`).
  */
 export interface AgentRunSpec {
-  /** D3-03 model policy: research always runs on Sonnet; build inherits Fable. */
-  agent: "research" | "build";
-  /** "sonnet" for research; undefined for build (omitted → inherits Fable). */
-  model: "sonnet" | undefined;
+  /**
+   * D3-03 model policy (updated quick-0iu): research turns no longer exist in
+   * the live pipeline — every pipeline turn is the sandboxed BUILD turn, which
+   * inherits the Fable session default. No `model` field exists, so the
+   * pipeline structurally cannot request an override. The Sonnet compliance
+   * gate (classifier-runner.ts, documented D-1 exception) is a SEPARATE
+   * surface, untouched by this narrowing.
+   */
+  agent: "build";
   /** Orchestrator-authored agent instructions — never contains chat text. */
   systemPrompt: string;
-  /** The per-turn user content: delimited chat-derived task/plan text as DATA. */
+  /** The per-turn user content: delimited chat-derived task text as DATA. */
   userPrompt: string;
-  /** Present for the sandboxed build agent; absent for host-side research. */
+  /**
+   * POSIX-absolute path INSIDE the distro the build turn cds into
+   * (`/home/builder/projects/app-<generation>`, quick-0iu persistent
+   * workspace). sdk-runner sets `Options.cwd` from this; sandbox-process.ts
+   * translates a POSIX-absolute SpawnOptions.cwd to `wsl --cd`.
+   */
+  workspaceDir: string;
+  /** Present for the sandboxed build agent (always, in the live pipeline). */
   sandbox?: SandboxAdapter;
   /** Redirects Claude Code execution into WSL2 (03-05); absent → native spawn. */
   spawnClaudeCodeProcess?: (opts: SpawnOptions) => SpawnedProcess;
   /** Registered into AbortRegistry for the streamer veto (BUILD-04 / D3-10). */
   abortController: AbortController;
+}
+
+/**
+ * The persistent-workspace seam (quick-0iu amendment A/B). ONE workspace
+ * directory persists across builds inside the WSL2 distro: the first winner in
+ * a generation scaffolds, later winners CONTINUE the same project. "New
+ * project" rotates the generation — the previous dir stays on disk untouched
+ * (archive-by-construction; no deletion path exists). Backed by a single-row
+ * SQLite table so state survives a host-process crash mid-stream; the distro
+ * filesystem itself survives `wsl --terminate` (plain files, nothing wipes
+ * per-task). Implemented by src/orchestrator/workspace.ts; vitest injects a
+ * fake like every other seam.
+ */
+export interface WorkspaceView {
+  /** `/home/builder/projects/app-<generation>` — POSIX-absolute inside the distro. */
+  dir(): string;
+  /** True once ANY build finalized `done` in the current generation. */
+  scaffolded(): boolean;
+  /** A build finalized `done` — the workspace is now an existing project. */
+  markBuilt(): void;
+  /** Rotate to a fresh generation (old dir archived in place); returns the new generation. */
+  newProject(): number;
+  /** The current generation number (1-based). */
+  generation(): number;
 }
 
 /**

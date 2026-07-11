@@ -62,6 +62,7 @@ import type {
   ProgressSink,
   SandboxAdapter,
 } from "./orchestrator/types.js";
+import { createWorkspaceState } from "./orchestrator/workspace.js";
 import { createBuilderFeed } from "./overlay/builder-feed.js";
 import { type OverlayServerHandle, startOverlayServer } from "./overlay/server.js";
 import { type ChaosPickResult, submitChaosPick } from "./pipeline/chaos.js";
@@ -265,6 +266,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   const db = openDb(opts.dbPath);
   const machine = new StreamModeMachine();
   const registry = new AbortRegistry();
+  // quick-0iu: ONE persistent-workspace state for the whole app — the SAME
+  // WorkspaceView is wired into the build session (scaffold/continue + dir)
+  // AND the operator console ("New project" rotation). SQLite-backed so the
+  // generation/scaffolded state survives a mid-stream crash.
+  const workspace = createWorkspaceState(db);
   // Bounded pool (D2-13): past POOL_MAX_SIZE the oldest candidate drops with
   // an audit row — memory stays bounded under a !suggest flood.
   const pool = new CandidatePool({
@@ -965,6 +971,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       on: (event, handler) => autoCycle.on(event, handler),
     },
     donationsStatus: () => donationsStatus,
+    // quick-0iu: the streamer's "New project" workspace-rotation seam — the
+    // SAME WorkspaceView instance the build session consumes below.
+    workspace,
     logger,
   });
   logger.info(
@@ -997,8 +1006,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       registry,
       agentRunner: opts.agentRunner,
       sandboxAdapter: opts.sandboxAdapter,
+      // quick-0iu persistent workspace: scaffold/continue mode + the distro
+      // dir the sandboxed build turn cds into.
+      workspace,
       // COMP-02's classify is the SAME app gate, pre-bound to gateDeps (03-04) —
-      // drives BOTH the pre-write plan re-screen and the in-flight output re-screen.
+      // drives BOTH the pre-build suggestion re-screen and the in-flight output re-screen.
       comp02: { classify: (candidate) => classify(gateDeps, candidate) },
       progress,
       // WR-03 / D-08: routing a held plan into the console review queue is

@@ -2,7 +2,9 @@ import http from "node:http";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../audit/db.js";
+import { listAuditRecords } from "../audit/record.js";
 import { ControlWindow } from "../control-window/control-window.js";
+import type { WorkspaceView } from "../orchestrator/types.js";
 import { CandidatePool } from "../queue/pool.js";
 import { TaskQueue } from "../queue/task-queue.js";
 import type { BuildStatusView, ControlWindowSnapshot } from "../shared/types.js";
@@ -371,6 +373,103 @@ describe("console chaos-mode toggle route (CHAOS-01 / D-05)", () => {
     const res = await postJson(`${base(server)}/api/chaos/toggle`, {});
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ chaos: false });
+  });
+});
+
+/** quick-0iu fake workspace seam: generation counter + a spied newProject(). */
+function fakeWorkspaceSeam(): WorkspaceView & { newProject: ReturnType<typeof vi.fn> } {
+  let generation = 1;
+  let scaffolded = true;
+  const newProject = vi.fn(() => {
+    generation += 1;
+    scaffolded = false;
+    return generation;
+  });
+  return {
+    dir: () => `/home/builder/projects/app-${generation}`,
+    generation: () => generation,
+    scaffolded: () => scaffolded,
+    markBuilt: () => {
+      scaffolded = true;
+    },
+    newProject,
+  };
+}
+
+describe("console workspace new-project route (quick-0iu, T-0iu-07)", () => {
+  it("POST /api/workspace/new-project rotates from IDLE: 200 { generation: 2 } + workspace_reset audit row", async () => {
+    const workspace = fakeWorkspaceSeam();
+    const server = await startServer({ workspace });
+
+    const res = await postJson(`${base(server)}/api/workspace/new-project`, {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ generation: 2 });
+    expect(workspace.newProject).toHaveBeenCalledOnce();
+
+    // biome-ignore lint/style/noNonNullAssertion: startServer always sets db
+    const rows = listAuditRecords(db!, { limit: 10, eventType: "workspace_reset" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.source).toBe("operator");
+    expect(rows[0]?.rationale).toContain("generation 2");
+  });
+
+  it("409 { reason: 'build-active' } while BUILD_IN_PROGRESS — never rotates under an active build", async () => {
+    const workspace = fakeWorkspaceSeam();
+    const machine = new StreamModeMachine();
+    machine.transition("BUILD_IN_PROGRESS");
+    const server = await startServer({ workspace, machine });
+
+    const res = await postJson(`${base(server)}/api/workspace/new-project`, {});
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ reason: "build-active" });
+    expect(workspace.newProject).not.toHaveBeenCalled();
+  });
+
+  it("409 { reason: 'halted' } while HALTED — never rotates under a frozen show", async () => {
+    const workspace = fakeWorkspaceSeam();
+    const machine = new StreamModeMachine();
+    machine.forceTransition("HALTED", {
+      source: "console",
+      reasonTag: null,
+      frozen: machine.snapshot(),
+    });
+    const server = await startServer({ workspace, machine });
+
+    const res = await postJson(`${base(server)}/api/workspace/new-project`, {});
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ reason: "halted" });
+    expect(workspace.newProject).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-empty body with 400 (strict-empty zod, smuggled keys refused)", async () => {
+    const workspace = fakeWorkspaceSeam();
+    const server = await startServer({ workspace });
+    const res = await postJson(`${base(server)}/api/workspace/new-project`, { evil: true });
+    expect(res.status).toBe(400);
+    expect(workspace.newProject).not.toHaveBeenCalled();
+  });
+
+  it("answers 503 when no workspace seam is composed (no build engine)", async () => {
+    const server = await startServer();
+    const res = await postJson(`${base(server)}/api/workspace/new-project`, {});
+    expect(res.status).toBe(503);
+  });
+
+  it("refuses a forged cross-origin new-project POST (inherited CSRF middleware) — never rotates", async () => {
+    const workspace = fakeWorkspaceSeam();
+    const server = await startServer({ workspace });
+    const res = await rawRequest(server.port, {
+      method: "POST",
+      path: "/api/workspace/new-project",
+      headers: {
+        host: `127.0.0.1:${server.port}`,
+        origin: "http://evil.example",
+        "content-type": "application/json",
+      },
+      body: "{}",
+    });
+    expect(res.status).toBe(403);
+    expect(workspace.newProject).not.toHaveBeenCalled();
   });
 });
 

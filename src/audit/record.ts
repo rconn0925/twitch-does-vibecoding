@@ -557,6 +557,31 @@ export function recordChaosToggled(
   });
 }
 
+/**
+ * One row per workspace ROTATION (quick-0iu): the streamer started a new
+ * project — the persistent build workspace rotated to a fresh generation (the
+ * old distro dir stays archived in place). Mirrors recordChaosToggled's
+ * shape/idiom; the rationale interpolates the internally-generated integer
+ * generation only — never chat text.
+ */
+export function recordWorkspaceReset(
+  db: Database.Database,
+  args: { generation: number; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "workspace_reset",
+    source: "operator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: `Streamer started a new project — workspace rotated to generation ${args.generation}`,
+    streamMode: args.streamMode,
+    taskId: null,
+  });
+}
+
 /** One row per chaos PICK (CHAOS-01): a uniform-random selection from the filtered pool. */
 export function recordChaosPick(
   db: Database.Database,

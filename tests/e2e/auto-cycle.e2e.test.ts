@@ -30,10 +30,6 @@ import type { GateResult, SuggestionCandidate } from "../../src/shared/types.js"
 type AppHandle = Awaited<ReturnType<typeof createApp>>;
 
 // ── SDK-ish message fixtures (chaos-mode e2e pattern) ─────────────────────────
-const assistantText = (text: string) => ({
-  type: "assistant",
-  message: { content: [{ type: "text", text }] },
-});
 const writeBatch = (filePath: string, content: string) => ({
   type: "assistant",
   message: {
@@ -43,29 +39,21 @@ const writeBatch = (filePath: string, content: string) => ({
 const resultSuccess = { type: "result", subtype: "success", is_error: false };
 
 /**
- * A gated runner: research + host plan turns pass immediately; every SANDBOXED
- * build turn awaits its own release gate, so tests can hold a build in
- * BUILD_IN_PROGRESS while rounds open/close around it.
+ * A gated runner (quick-0iu: there is ONE sandboxed build turn per pipeline —
+ * no research/plan turns exist): every build turn awaits its own release gate,
+ * so tests can hold a build in BUILD_IN_PROGRESS while rounds open/close
+ * around it.
  */
 function gatedRunner() {
   const gates: Array<() => void> = [];
   const runner: AgentRunner = {
-    run(spec) {
-      const sandboxed = spec.sandbox !== undefined;
+    run() {
       return (async function* () {
-        if (spec.agent === "research") {
-          yield assistantText("research notes") as never;
-          yield resultSuccess as never;
-        } else if (spec.agent === "build" && !sandboxed) {
-          yield assistantText("Build plan: make a small page.") as never;
-          yield resultSuccess as never;
-        } else {
-          await new Promise<void>((resolve) => {
-            gates.push(resolve);
-          });
-          yield writeBatch("index.html", "<b>hi</b>") as never;
-          yield resultSuccess as never;
-        }
+        await new Promise<void>((resolve) => {
+          gates.push(resolve);
+        });
+        yield writeBatch("index.html", "<b>hi</b>") as never;
+        yield resultSuccess as never;
       })();
     },
   };
@@ -118,7 +106,7 @@ function capturingSink() {
   return { sent, sink };
 }
 
-/** Track every build START (stage researching) and completion (done), in order. */
+/** Track every build START (stage building — quick-0iu) and completion (done), in order. */
 function trackBuilds(app: AppHandle): { started: string[]; done: string[] } {
   const started: string[] = [];
   const done: string[] = [];
@@ -127,7 +115,7 @@ function trackBuilds(app: AppHandle): { started: string[]; done: string[] } {
   orch.on(BUILD_STAGE_CHANGED, () => {
     const snap = orch.snapshot();
     if (!snap) return;
-    if (snap.stage === "researching" && started[started.length - 1] !== snap.title) {
+    if (snap.stage === "building" && started[started.length - 1] !== snap.title) {
       started.push(snap.title);
     }
     if (snap.stage === "done") done.push(snap.title);

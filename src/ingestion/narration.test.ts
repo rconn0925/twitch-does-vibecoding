@@ -258,7 +258,7 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       n.buildHeld("a counter app");
       n.buildVetoed("a counter app");
       expect(sent).toEqual([
-        'Building "a counter app" now — researching how to pull it off.',
+        'Building "a counter app" now — straight to the code.',
         'Plan\'s coming together for "a counter app"…',
         'Writing the code for "a counter app" now — watch it come alive.',
         '"a counter app" is built — it\'s live on screen. GG.',
@@ -397,7 +397,9 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       const { sent, sender } = capturingSender();
       const narrator = createNarrator({ sender });
       narrator.suggestionsOpen(40);
-      expect(sent).toEqual(["Suggestions open — type !suggest <your idea>. 40s until voting."]);
+      expect(sent).toEqual([
+        "Suggestions open — type !suggest — new idea or a tweak to what's on screen. 40s until voting.",
+      ]);
     });
 
     it("stillCollecting renders the pool-too-small restart template with the seconds count", () => {
@@ -405,7 +407,7 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       const narrator = createNarrator({ sender });
       narrator.stillCollecting(40);
       expect(sent).toEqual([
-        "Still collecting suggestions — type !suggest <your idea>. Another 40s.",
+        "Still collecting suggestions — type !suggest — new idea or a tweak to what's on screen. Another 40s.",
       ]);
     });
 

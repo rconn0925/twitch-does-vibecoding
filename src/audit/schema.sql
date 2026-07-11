@@ -145,3 +145,19 @@ CREATE TABLE IF NOT EXISTS build_history (
   created_at_ms INTEGER NOT NULL                  -- Date.now() at completion; night grouping derived on read (D-02)
 );
 CREATE INDEX IF NOT EXISTS idx_build_history_created_at ON build_history(created_at_ms);
+
+-- quick-0iu persistent-workspace state (amendment A/B). SINGLE-ROW table (id
+-- CHECKed to 1): the current workspace generation + whether any build has
+-- finalized `done` in it. Durable in SQLite (same crash-survival rationale as
+-- the task queue) so a mid-stream host-process crash never loses which
+-- generation is live or whether the next build scaffolds vs. continues. The
+-- distro directory itself (/home/builder/projects/app-<generation>) survives
+-- `wsl --terminate` as plain filesystem; "New project" ROTATES the generation
+-- (old dir archived in place — no deletion path exists anywhere). Additive:
+-- IF NOT EXISTS, no migration of existing tables.
+CREATE TABLE IF NOT EXISTS workspace_state (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  generation    INTEGER NOT NULL,                  -- 1-based; "New project" increments
+  scaffolded    INTEGER NOT NULL DEFAULT 0,        -- 1 once any build finalized done in this generation
+  updated_at_ms INTEGER NOT NULL
+);
