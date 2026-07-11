@@ -1,6 +1,5 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import type { Logger } from "pino";
@@ -358,9 +357,12 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   // The what's-coming page (quick-v4e) — a second OBS browser-source URL on
   // this SAME read-only server. GET only; the Host-allowlist middleware above
   // is app-level FIRST middleware, so /queue inherits the CR-02 DNS-rebinding
-  // posture automatically.
+  // posture automatically. The `root` option (rather than an absolute join)
+  // matters twice over: send() applies its dotfile policy to the WHOLE
+  // absolute path otherwise (a checkout under a dot-directory would 404),
+  // and root containment is the stronger send() posture anyway.
   app.get("/queue", (_req, res) => {
-    res.sendFile(path.join(publicDir, "queue.html"));
+    res.sendFile("queue.html", { root: publicDir });
   });
 
   app.get("/api/state", (_req, res) => {

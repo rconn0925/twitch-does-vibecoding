@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import {
   AUTO_CYCLE_CHANGED,
+  POOL_CHANGED,
   ROUND_CLOSED,
   ROUND_OPENED,
   VOTE_RECORDED,
@@ -184,6 +185,68 @@ function makeFakeAutoCycle(
   };
 }
 
+/**
+ * Minimal pool source (mirrors makeFakeControlWindow's RichWindowSnapshot
+ * trick): list() returns DELIBERATELY-RICH ApprovedCandidate-shaped items —
+ * full candidate plus the GateResult and addedAtMs that must NEVER reach the
+ * public wire — proving the server narrows each item down to {text, username}
+ * (T-v4e-01 defence-in-depth). setItems() mutates then emits POOL_CHANGED.
+ */
+interface RichPoolItem {
+  candidate: {
+    id: string;
+    source: "chat";
+    kind: string;
+    twitchUsername: string | null;
+    text: string;
+    submittedAtMs: number;
+  };
+  // Gate fields that must NEVER reach the public wire:
+  result: { decision: string; category: string; rationale: string };
+  addedAtMs: number;
+}
+
+interface FakePool {
+  list(): RichPoolItem[];
+  on(event: string, handler: (...args: unknown[]) => void): void;
+  setItems(next: RichPoolItem[]): void;
+}
+
+function makeFakePool(initial: RichPoolItem[] = []): FakePool {
+  const emitter = new EventEmitter();
+  let current = initial;
+  return {
+    list: () => current,
+    on: (event, handler) => {
+      emitter.on(event, handler);
+    },
+    setItems: (next) => {
+      current = next;
+      emitter.emit(POOL_CHANGED);
+    },
+  };
+}
+
+function richPoolItem(overrides: Partial<RichPoolItem["candidate"]> = {}): RichPoolItem {
+  return {
+    candidate: {
+      id: "p1",
+      source: "chat",
+      kind: "suggestion",
+      twitchUsername: "viewer9",
+      text: "build a drum machine",
+      submittedAtMs: 5_000,
+      ...overrides,
+    },
+    result: {
+      decision: "approved",
+      category: "weapons",
+      rationale: "classifier-rationale-sentinel",
+    },
+    addedAtMs: 6_000,
+  };
+}
+
 function sampleWindow(overrides: Partial<RichWindowSnapshot> = {}): RichWindowSnapshot {
   return {
     donorDisplayName: "GenerousViewer",
@@ -236,6 +299,8 @@ describe("overlay server (read-only broadcast surface)", () => {
       build?: FakeBuild;
       controlWindow?: FakeControlWindow;
       autoCycle?: FakeAutoCycle;
+      pool?: FakePool;
+      queueDisplayMax?: number;
       nextUpTexts?: string[];
       debounceMs?: number;
     } = {},
@@ -245,6 +310,7 @@ describe("overlay server (read-only broadcast surface)", () => {
     const build = opts.build ?? makeFakeBuild();
     const controlWindow = opts.controlWindow ?? makeFakeControlWindow();
     const autoCycle = opts.autoCycle ?? makeFakeAutoCycle();
+    const pool = opts.pool ?? makeFakePool();
     const taskQueue = {
       list: () => (opts.nextUpTexts ?? []).map((text) => ({ text })),
     };
@@ -254,12 +320,14 @@ describe("overlay server (read-only broadcast surface)", () => {
       build,
       controlWindow,
       autoCycle,
+      pool,
       taskQueue,
       port: 0,
+      ...(opts.queueDisplayMax !== undefined ? { queueDisplayMax: opts.queueDisplayMax } : {}),
       ...(opts.debounceMs !== undefined ? { debounceMs: opts.debounceMs } : {}),
     });
     handles.push(handle);
-    return { machine, round, build, controlWindow, autoCycle, handle };
+    return { machine, round, build, controlWindow, autoCycle, pool, handle };
   }
 
   /** Connect a ws client and collect every parsed push into `messages`. */
@@ -434,7 +502,7 @@ describe("overlay server (read-only broadcast surface)", () => {
 
     // No mutation routes exist AT ALL — the strongest read-only control.
     for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
-      for (const path of ["/api/state", "/api/halt", "/", "/anything"]) {
+      for (const path of ["/api/state", "/api/halt", "/", "/anything", "/queue"]) {
         const attempt = await fetch(`${base}${path}`, {
           method,
           headers: { "content-type": "application/json" },
@@ -690,5 +758,88 @@ describe("overlay server (read-only broadcast surface)", () => {
       expect(JSON.stringify(messages[1])).not.toContain("revoked");
       expect(JSON.stringify(messages[1])).not.toContain("expired");
     }
+  });
+
+  it("pool projects DISPLAY FIELDS ONLY — no GateResult/rationale/category/decision/addedAtMs reaches the new wire fields (T-v4e-01)", async () => {
+    const pool = makeFakePool([richPoolItem()]);
+    const { handle } = await start({ pool });
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const state = (await res.json()) as OverlayState;
+    expect(state.pool).toEqual([{ text: "build a drum machine", username: "viewer9" }]);
+    expect(Object.keys(state.pool[0] ?? {}).sort()).toEqual(["text", "username"]);
+
+    // Assert against the raw serialized JSON of the NEW fields only — `round`
+    // still carries GateResult per the known STATE.md residual this task is
+    // explicitly NOT fixing, so a whole-payload assertion would false-fail.
+    const rawNewFields = JSON.stringify(state.pool) + JSON.stringify(state.queue);
+    for (const forbidden of [
+      "rationale",
+      "classifier-rationale-sentinel",
+      "weapons",
+      "addedAtMs",
+      "decision",
+    ]) {
+      expect(
+        rawNewFields,
+        `"${forbidden}" must never reach the pool/queue wire fields`,
+      ).not.toContain(forbidden);
+    }
+  });
+
+  it("POOL_CHANGED triggers an IMMEDIATE push carrying the fresh pool projection (never the tally debounce)", async () => {
+    const pool = makeFakePool();
+    const { handle } = await start({ pool });
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.pool).toEqual([]);
+
+    // No fake timers, no debounce advance: the push must land on its own.
+    pool.setItems([richPoolItem()]);
+    await until(() => messages.length >= 2, "immediate POOL_CHANGED push");
+    await flushIo();
+    expect(messages).toHaveLength(2);
+    expect(messages[1]?.pool).toEqual([{ text: "build a drum machine", username: "viewer9" }]);
+  });
+
+  it("queue carries the FULL FIFO queue capped at 10 while nextUp stays capped at 3 (quick-v4e)", async () => {
+    const texts = Array.from({ length: 11 }, (_, i) => `t${i + 1}`);
+    const { handle } = await start({ nextUpTexts: texts });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const state = (await res.json()) as OverlayState;
+    expect(state.queue).toEqual(["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10"]);
+    // The main overlay strip is unchanged.
+    expect(state.nextUp).toEqual(["t1", "t2", "t3"]);
+  });
+
+  it("GET /queue serves the what's-coming page; a DNS-rebound GET /queue 403s (CR-02)", async () => {
+    const { handle } = await start();
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/queue`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+
+    // Rebound GET: the socket reaches 127.0.0.1 but Host names the attacker —
+    // the app-level Host allowlist covers /queue too (raw request; fetch()
+    // forbids Host overrides).
+    const http = await import("node:http");
+    const rebound = await new Promise<{ status: number }>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: handle.port,
+          method: "GET",
+          path: "/queue",
+          headers: { host: `attacker.example:${handle.port}` },
+        },
+        (response) => {
+          response.resume();
+          response.on("end", () => resolve({ status: response.statusCode ?? 0 }));
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    expect(rebound.status).toBe(403);
   });
 });
