@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Wave 0 WSL2 go/no-go recorded GO (2026-07-10). Remaining gates - Phase 1/2 UAT items, Phase 4 live gate 04-08, Phase 5 dry run.
-last_updated: "2026-07-11T02:25:17.000Z"
-last_activity: 2026-07-10 -- Auto-cycling round loop shipped + verified (quick 260710-t5k); SE test-event listener shipped (260710-sfl)
+stopped_at: Phase 1 UAT gates recorded PASS 2026-07-10. Remaining gates - Phase 2 UAT items, Phase 4 live gate 04-08, Phase 5 dry run.
+last_updated: "2026-07-11T04:20:57.000Z"
+last_activity: 2026-07-10 -- Phase 1 human-UAT recorded PASS 3/3 (quick 260710-uyl); gate batch section A closed
 progress:
   total_phases: 5
   completed_phases: 2
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-09)
 Phase: 05 (build-history-stream-night-dry-run) — CODE COMPLETE (closeout green). ALL phases code-side done.
 Plan: All buildable plans across Phases 1–5 merged to master + 1 quick task (gate plan-billing). Suite **679 pass**, tsc + biome clean.
 Status: Phase 05 built (2 code waves + runbook doc) → reviewed (0 blocker, 4 warning + 4 info; all 4 warnings + IN-01/IN-03 fixed, IN-02/IN-04 accepted deferrals) → verified 1/1 code criterion PASS (3/3 criteria correctly deferred to the human dry run) → secured 13/13 threats, 0 open.
-Last activity: 2026-07-10 -- Auto-cycling round loop shipped + verified (quick 260710-t5k); SE test-event listener shipped (260710-sfl)
+Last activity: 2026-07-10 -- Phase 1 human-UAT recorded PASS 3/3 (quick 260710-uyl); gate batch section A closed
 
 Progress: [█████████▓] 95% (code-complete; remaining 5% = human-action gates)
 
@@ -42,9 +42,9 @@ Progress: [█████████▓] 95% (code-complete; remaining 5% = hu
 Everything buildable is built and green. These are the human-action gates, deferred by directive into one batch. Recommended order is top-to-bottom — the Phase 5 dry run exercises and depends on all the ones above it. The dry run's runbook (`05-DRY-RUN.md`) is the single consolidated driver; this list is the inventory.
 
 **A. Phase 1 — kill switch & console (streaming PC)**
-- [ ] Physical panic-hotkey test on the streaming PC (armed-log + double-tap → HALTED; single-tap no-op); log any anomaly in `docs/OPERATIONS.md` §5 (`01-HUMAN-UAT.md`).
-- [ ] Operator-console browser walkthrough (Halt / triage / recover).
-- [ ] Live Sonnet `gate:eval` pass (bills the Claude plan via `claude login`; needs NO `ANTHROPIC_API_KEY` — the key must stay UNSET on the streaming machine).
+- [x] Physical panic-hotkey test on the streaming PC (armed-log + double-tap → HALTED; single-tap no-op); log any anomaly in `docs/OPERATIONS.md` §5 (`01-HUMAN-UAT.md`). (✅ PASS 2026-07-10 — ScrollLock via .env; Pause-key fallback anomaly logged in OPERATIONS.md §5)
+- [x] Operator-console browser walkthrough (Halt / triage / recover). (✅ PASS 2026-07-10 — halt via hotkey, recover via console; triage/review-queue path still unexercised — no held item yet; dry-run kill-switch test covers it)
+- [x] Live Sonnet `gate:eval` pass (bills the Claude plan via `claude login`; needs NO `ANTHROPIC_API_KEY` — the key must stay UNSET on the streaming machine). (✅ PASS 2026-07-10 — live in-app classification of a real chat suggestion via plan-billed Agent SDK Sonnet, decision approved; ANTHROPIC_API_KEY confirmed UNSET in process/User/Machine; stronger evidence than the scripted gate:eval. Watch-item: 3 retry attempts on schema validation "rationale >500 chars", ~12s latency — tighten prompt if it recurs at dry run)
 
 **B. Phase 2 — live Twitch loop**
 - [ ] Live Twitch OAuth bootstrap + one real-channel vote round (`02-HUMAN-UAT.md`; runbook `docs/OPERATIONS.md` §6).
@@ -84,6 +84,7 @@ Everything buildable is built and green. These are the human-action gates, defer
 | 2026-07-10 | `260710-sa0` — Descope channel-points (PAID-02) windows from v1 (docs/tracking only) | ✅ Done. Real channel is non-affiliate — Helix 403 on custom-rewards verified 2026-07-10. Tips-only paid influence for v1; PAID-02 code stays dormant behind the main.ts degradation path; revisit at affiliate. |
 | 2026-07-10 | `260710-sfl` — Flag-gated SE `event:test` listener (no-money tip smoke tests) | ✅ Done. `SE_ACCEPT_TEST_EVENTS=true` (default off, zero delta) routes SE dashboard simulated tips through the SAME fail-closed TipEvent pipeline; boot TEST-MODE warning + per-event warn + `se-test-*` audit tipIds; smoke-test runbook = docs/OPERATIONS.md §9. 688 tests green. NEVER enable on broadcast. |
 | 2026-07-10 | `260710-t5k` — Auto-cycling round loop (40s suggest / 20s vote, hands-free) | ✅ Done, **Verified 11/11**. Continuous cadence w/ voting-while-building (winners enqueue FIFO, `drainVoteQueue` head-only vote-origin-aware); viewer-visible queue + per-phase guidance/countdowns on overlay; console pause/resume toggle ON at boot; HALT/free-reign park the cycle (halt.ts untouched, 3-recovery matrix tested); empty pool restarts window; zero votes → earliest wins; `VOTE_QUEUE_MAX=10` parks scheduler at cap (winners never dropped, manual start exempt). 724 tests, tsc+biome clean. Checker 2-blocker revision loop closed pre-build. |
+| 2026-07-10 | `260710-uyl` — Record Phase 1 human-UAT results | ✅ Done. 01-HUMAN-UAT.md 3/3 PASS (panic hotkey on ScrollLock, console halt/recover, live plan-billed classifier w/ key UNSET); Pause-key anomaly logged OPERATIONS.md §5; gate batch section A closed. Open: console triage path (no held item yet). |
 
 ## Performance Metrics
 
@@ -129,7 +130,7 @@ Recent decisions affecting current work:
 - **[Phase 4 — BLOCKING before any real paid use] Live gate 04-08** (`04-08-PLAN.md`, autonomous:false; accepted risks AR-04-01/02): StreamElements JWT binding + `channel:read:redemptions` broadcaster re-auth DONE 2026-07-10. Remaining: a real tip smoke test, a manual re-read of the MEDIUM-confidence Bits AUP + chargeback claims, and the CR-03 human-check (paid/chaos build-execution loop — window drain, chaos re-pick — under a REAL WSL2 build engine). Channel-points reward/redemption items removed — DESCOPED for v1 (non-affiliate channel; see PROJECT.md Key Decisions).
 - [Phase 3] Human UAT / judgment items from review-fix: CR-01 terminal-state on a real veto; WR-05 shutdown-drain race (fix present, no dedicated automated test); WR-07 watchdog bounds — confirm DEFAULT_TURN_TIMEOUT_MS=5min / CLOSE_DRAIN_MS=2s suit the live-show timing envelope.
 - [Phase 3 — deferred ticket] COMP-02 `held` plans are narrated + audited but DROPPED, not routed to a console review queue — `main.ts` onHeldForReview carries a documented `TODO(D-08)`; implement review-queue routing (WR-03).
-- Human UAT (01-HUMAN-UAT.md): physical panic-hotkey test, live Sonnet gate:eval (bills the Claude plan via `claude login`; no ANTHROPIC_API_KEY), console browser run-through
+- Watch-item (from 01 UAT): live classifier needed 3 attempts on one real call (schema validation "rationale >500 chars" on attempts 1-2; fail-closed retry worked, ~12s latency) — tighten the classifier prompt if it recurs during the Phase 5 dry run. Console triage/review-queue path still unexercised (covered by the dry-run kill-switch test).
 - Human UAT (02-HUMAN-UAT.md): live Twitch smoke test (OAuth bootstrap + real-channel round, deferred 02-06 checkpoint; runbook docs/OPERATIONS.md §6), OBS overlay browser-source check
 - Stale `TODO(01-02)` at src/shared/types.ts:43 — GateCategory never narrowed to the categories.ts union (type-looseness only)
 - Review Info findings IN-02..IN-08 in 02-REVIEW.md remain open by scope decision (non-blocking)
