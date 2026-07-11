@@ -62,6 +62,7 @@ import type {
   ProgressSink,
   SandboxAdapter,
 } from "./orchestrator/types.js";
+import { createBuilderFeed } from "./overlay/builder-feed.js";
 import { type OverlayServerHandle, startOverlayServer } from "./overlay/server.js";
 import { type ChaosPickResult, submitChaosPick } from "./pipeline/chaos.js";
 import { submitDuringWindow } from "./pipeline/paid-window.js";
@@ -972,6 +973,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     console_.port,
   );
 
+  // ── Builder-view feed (quick-x7d) ──────────────────────────────────────
+  // ONE instance, created unconditionally: the /builder page must exist and
+  // show its standing-by state even when no orchestrator is composed. The
+  // same instance is both the build session's sink and the overlay's source.
+  const builderFeed = createBuilderFeed();
+
   // ── Build orchestrator composition (plan 03-06) ────────────────────────
   // Composed whenever an agentRunner + sandboxAdapter pair exists (injected
   // fakes in tests, real SDK/WSL2 adapters from the entrypoint) — both take the
@@ -1008,6 +1015,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // Build-pipeline chat narration (BUILD-03/D3-08/D3-09); absent when no chat
       // pipeline is composed — the build still runs, just without chat beats.
       ...(buildNarrator ? { narrator: buildNarrator } : {}),
+      // quick-x7d: the broadcast /builder feed sink — every call site inside
+      // the session is post-screening by construction (T-x7d-01).
+      builderFeed,
       logger,
     });
     orchestrator = buildSession;
@@ -1218,6 +1228,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     // the wire. queueDisplayMax mirrors the scheduler's VOTE_QUEUE_MAX cap.
     pool,
     queueDisplayMax: voteQueueMax,
+    // quick-x7d builder view: the SAME feed instance the build session sinks
+    // into. The server re-narrows each line to {kind, text} display fields.
+    builderFeed,
     logger,
   });
   logger.info(
@@ -1228,6 +1241,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   logger.info(
     { port: overlay.port },
     "what's-coming page at http://127.0.0.1:%d/queue — optional OBS browser source",
+    overlay.port,
+  );
+  logger.info(
+    { port: overlay.port },
+    "builder view at http://127.0.0.1:%d/builder — OBS browser source for THE AI slot",
     overlay.port,
   );
 

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import {
   AUTO_CYCLE_CHANGED,
+  BUILDER_FEED_CHANGED,
   POOL_CHANGED,
   ROUND_CLOSED,
   ROUND_OPENED,
@@ -227,6 +228,45 @@ function makeFakePool(initial: RichPoolItem[] = []): FakePool {
   };
 }
 
+/**
+ * Minimal builder-feed source (mirrors makeFakePool's rich-item trick): list()
+ * returns DELIBERATELY-RICH lines — {kind, text} plus secret/rationale keys
+ * that must NEVER reach the public wire — proving the server narrows each line
+ * down to exactly {kind, text} (T-x7d-04 defence-in-depth). setLines() mutates
+ * then emits BUILDER_FEED_CHANGED.
+ */
+interface RichFeedLine {
+  kind: string;
+  text: string;
+  secret: string;
+  rationale: string;
+}
+
+interface FakeBuilderFeed {
+  list(): RichFeedLine[];
+  on(event: string, handler: (...args: unknown[]) => void): void;
+  setLines(next: RichFeedLine[]): void;
+}
+
+function makeFakeBuilderFeed(initial: RichFeedLine[] = []): FakeBuilderFeed {
+  const emitter = new EventEmitter();
+  let current = initial;
+  return {
+    list: () => current,
+    on: (event, handler) => {
+      emitter.on(event, handler);
+    },
+    setLines: (next) => {
+      current = next;
+      emitter.emit(BUILDER_FEED_CHANGED);
+    },
+  };
+}
+
+function richFeedLine(kind: string, text: string): RichFeedLine {
+  return { kind, text, secret: "donor", rationale: "x" };
+}
+
 function richPoolItem(overrides: Partial<RichPoolItem["candidate"]> = {}): RichPoolItem {
   return {
     candidate: {
@@ -300,6 +340,7 @@ describe("overlay server (read-only broadcast surface)", () => {
       controlWindow?: FakeControlWindow;
       autoCycle?: FakeAutoCycle;
       pool?: FakePool;
+      builderFeed?: FakeBuilderFeed;
       queueDisplayMax?: number;
       nextUpTexts?: string[];
       debounceMs?: number;
@@ -323,6 +364,7 @@ describe("overlay server (read-only broadcast surface)", () => {
       pool,
       taskQueue,
       port: 0,
+      ...(opts.builderFeed !== undefined ? { builderFeed: opts.builderFeed } : {}),
       ...(opts.queueDisplayMax !== undefined ? { queueDisplayMax: opts.queueDisplayMax } : {}),
       ...(opts.debounceMs !== undefined ? { debounceMs: opts.debounceMs } : {}),
     });
@@ -502,7 +544,7 @@ describe("overlay server (read-only broadcast surface)", () => {
 
     // No mutation routes exist AT ALL — the strongest read-only control.
     for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
-      for (const path of ["/api/state", "/api/halt", "/", "/anything", "/queue"]) {
+      for (const path of ["/api/state", "/api/halt", "/", "/anything", "/queue", "/builder"]) {
         const attempt = await fetch(`${base}${path}`, {
           method,
           headers: { "content-type": "application/json" },
@@ -841,5 +883,107 @@ describe("overlay server (read-only broadcast surface)", () => {
       req.end();
     });
     expect(rebound.status).toBe(403);
+  });
+
+  it("a DNS-rebound GET /builder 403s — the app-level Host allowlist covers the builder route (CR-02)", async () => {
+    const { handle } = await start();
+
+    // Rebound GET: the socket reaches 127.0.0.1 but Host names the attacker
+    // (raw request; fetch() forbids Host overrides).
+    const http = await import("node:http");
+    const rebound = await new Promise<{ status: number }>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: handle.port,
+          method: "GET",
+          path: "/builder",
+          headers: { host: `attacker.example:${handle.port}` },
+        },
+        (response) => {
+          response.resume();
+          response.on("end", () => resolve({ status: response.statusCode ?? 0 }));
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    expect(rebound.status).toBe(403);
+  });
+
+  it("builderFeed defaults to [] on HTTP and ws when no source is wired (standing-by state)", async () => {
+    const { handle } = await start();
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.builderFeed).toEqual([]);
+
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.builderFeed).toEqual([]);
+  });
+
+  it("builderFeed projects EXACTLY {kind,text} — a richer source's extra keys never reach the wire (T-x7d-04)", async () => {
+    const builderFeed = makeFakeBuilderFeed([
+      richFeedLine("title", "NOW BUILDING: snake game"),
+      richFeedLine("activity", "Writing app.js"),
+    ]);
+    const { handle } = await start({ builderFeed });
+
+    // HTTP surface: exactly the two public keys per line, nothing else.
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.builderFeed).toEqual([
+      { kind: "title", text: "NOW BUILDING: snake game" },
+      { kind: "activity", text: "Writing app.js" },
+    ]);
+    for (const line of httpState.builderFeed) {
+      expect(Object.keys(line).sort()).toEqual(["kind", "text"]);
+    }
+    // Assert against the raw serialized JSON so a leaked key anywhere in the
+    // wire bytes fails (the pool-wire forbidden-strings pattern). round is
+    // null here, so the whole payload is safe to scan.
+    const rawText = JSON.stringify(httpState);
+    for (const forbidden of ["secret", "donor", "rationale"]) {
+      expect(rawText, `"${forbidden}" must never reach the public wire`).not.toContain(forbidden);
+    }
+
+    // ws connect push carries the same narrowed projection.
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.builderFeed).toEqual([
+      { kind: "title", text: "NOW BUILDING: snake game" },
+      { kind: "activity", text: "Writing app.js" },
+    ]);
+    expect(JSON.stringify(messages[0])).not.toContain("secret");
+  });
+
+  it("BUILDER_FEED_CHANGED pushes IMMEDIATELY and a NEW connection's FIRST message replays the full buffer (OBS reload)", async () => {
+    const builderFeed = makeFakeBuilderFeed();
+    const { handle } = await start({ builderFeed });
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.builderFeed).toEqual([]);
+
+    // No fake timers, no debounce advance: the push must land on its own.
+    builderFeed.setLines([
+      richFeedLine("title", "NOW BUILDING: paint app"),
+      richFeedLine("stage", "Writing the code"),
+    ]);
+    await until(() => messages.length >= 2, "immediate BUILDER_FEED_CHANGED push");
+    await flushIo();
+    expect(messages).toHaveLength(2);
+    expect(messages[1]?.builderFeed).toEqual([
+      { kind: "title", text: "NOW BUILDING: paint app" },
+      { kind: "stage", text: "Writing the code" },
+    ]);
+
+    // A fresh connection (an OBS scene-switch reload) reconstructs the whole
+    // feed from its FIRST message — full-buffer replay on connect.
+    const fresh = connectWs(handle.port);
+    await until(() => fresh.messages.length >= 1, "fresh-connection replay push");
+    expect(fresh.messages[0]?.builderFeed).toEqual([
+      { kind: "title", text: "NOW BUILDING: paint app" },
+      { kind: "stage", text: "Writing the code" },
+    ]);
   });
 });
