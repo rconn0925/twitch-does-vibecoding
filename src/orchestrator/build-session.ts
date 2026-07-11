@@ -548,24 +548,37 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     let outcome: TurnOutcome = "ok";
     let timedOut = false;
 
-    // WR-07: a per-turn watchdog. If the stream stalls without yielding and
-    // without honoring the abort signal, the watchdog aborts the controller and
-    // wins the race below, resolving the turn as `failed` — the pipeline can
-    // never stay pinned in BUILD_IN_PROGRESS on a hung stream.
+    // HI-03: a per-turn STALL/idle watchdog. The timer is RE-ARMED on every
+    // yielded message (activity resets the clock), so a healthy, steadily-
+    // progressing build is never killed — only a stream with NO activity for
+    // turnTimeoutMs trips it. On trip it aborts the controller and wins the race
+    // below, resolving the turn as `failed` so the pipeline can never stay
+    // pinned in BUILD_IN_PROGRESS on a hung stream. NO workspace reset happens
+    // on abort — the stall timer is the whole HI-03 fix (non-destructive).
     let watchdog: NodeJS.Timeout | undefined;
+    let resolveWatchdog: (() => void) | undefined;
     const watchdogFired = new Promise<void>((resolve) => {
-      watchdog = setTimeout(() => {
-        timedOut = true;
-        ac.abort();
-        resolve();
-      }, turnTimeoutMs);
-      watchdog.unref?.();
+      resolveWatchdog = resolve;
     });
+    // A single, stable fire closure — re-armed timers all share it.
+    const fire = (): void => {
+      timedOut = true;
+      ac.abort();
+      resolveWatchdog?.();
+    };
+    const armWatchdog = (): void => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(fire, turnTimeoutMs);
+      watchdog.unref?.();
+    };
+    armWatchdog();
 
     const consume = (async (): Promise<void> => {
       try {
         for await (const message of stream) {
           if (ac.signal.aborted) break;
+          // Activity — re-arm the stall timer so a progressing build survives.
+          armWatchdog();
 
           const text = extractAssistantText(message);
           if (text !== null) texts.push(text);
@@ -714,11 +727,40 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     allowAutoRetry: boolean,
   ): Promise<void> {
     emitStage(task, "building");
+    // BL-01: the distro workspace dir MUST exist before the build turn spawns.
+    // A rejection fails the build CLOSED — the SAME narrated-decision route as
+    // the watchdog path — never proceeding to spawn and never silently falling
+    // back to a shared dir / weakened isolation.
+    try {
+      await deps.sandboxAdapter.ensureWorkspaceDir?.(deps.workspace.dir());
+    } catch (err) {
+      deps.logger?.error(
+        { err, taskId: task.id },
+        "workspace dir ensure failed — build failed closed (BL-01)",
+      );
+      auditIfOpen(() =>
+        recordSandboxTeardown(deps.db, {
+          taskId: task.id,
+          streamMode: streamMode(),
+          rationale: "workspace dir ensure failed — build failed closed (BL-01)",
+        }),
+      );
+      deps.narrator?.buildDeciding(task.text);
+      enterDecision(task, taskText, "failed");
+      return;
+    }
     // Scaffold vs. continue is computed FRESH per attempt (quick-0iu): a prior
     // `done` build in this generation flips future attempts to continue mode.
-    // The build inherits the Fable session default (AgentRunSpec has no model
-    // field — the pipeline structurally cannot request an override).
-    const mode = deps.workspace.scaffolded() ? "continue" : "scaffold";
+    // HI-01: a NON-EMPTY dir also forces continue even without a prior `done`
+    // (never scaffold over debris). A probe error resolves to hasFiles=true —
+    // never assert "empty" when unsure. This composes with forced rotation: a
+    // rotated-to new generation has a fresh empty dir → scaffold. The build
+    // inherits the Fable session default (AgentRunSpec has no model field — the
+    // pipeline structurally cannot request an override).
+    const hasFiles = deps.sandboxAdapter.workspaceHasFiles
+      ? await deps.sandboxAdapter.workspaceHasFiles(deps.workspace.dir()).catch(() => true)
+      : false;
+    const mode = deps.workspace.scaffolded() || hasFiles ? "continue" : "scaffold";
     const build = buildBuildPrompt(taskText, mode);
     const buildTurn = await runTurn(
       {

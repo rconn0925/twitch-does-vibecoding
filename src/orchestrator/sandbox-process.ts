@@ -207,6 +207,59 @@ export function createSandboxAdapter(deps: SandboxAdapterDeps = {}): SandboxAdap
         logger?.error({ err }, "wsl.exe --terminate failed — sandbox distro may still be running");
       }
     },
+    /**
+     * BL-01: create the persistent-workspace dir INSIDE the distro before a
+     * build turn. `wsl.exe -d <distro> -u <user> -- mkdir -p <dir>` via the
+     * SAME distro/user config as spawn() — NO new env, NO widening of
+     * buildSandboxEnv (the spawn env allowlist is untouched; this is a distinct
+     * wsl invocation, not part of the sandboxed engine spawn). Unlike
+     * terminate() (fire-and-forget), a non-zero exit is deliberately NOT
+     * swallowed: it REJECTS so build-session fails the build CLOSED rather than
+     * spawning into a missing dir or silently sharing one.
+     *
+     * The WSL boundary already lives in THIS adapter, so dir bootstrap/stat
+     * belong here, not in the pure-SQLite workspace.ts.
+     */
+    async ensureWorkspaceDir(dir: string): Promise<void> {
+      await execFileFn(wslExePath, [
+        "-d",
+        config.distroName,
+        "-u",
+        config.distroUser,
+        "--",
+        "mkdir",
+        "-p",
+        dir,
+      ]);
+    },
+    /**
+     * HI-01: is the distro workspace dir non-empty? `ls -A <dir> | head -1` via
+     * a login shell; returns true when stdout has any content. A probe FAILURE
+     * resolves to true (fail toward continue) — never assert "empty" when
+     * unsure, so scaffold never runs over possible debris. Same distro/user
+     * config; no env widening (separate wsl invocation from the engine spawn).
+     */
+    async workspaceHasFiles(dir: string): Promise<boolean> {
+      try {
+        const result = (await execFileFn(wslExePath, [
+          "-d",
+          config.distroName,
+          "-u",
+          config.distroUser,
+          "--",
+          "sh",
+          "-lc",
+          `ls -A ${dir} 2>/dev/null | head -1`,
+        ])) as { stdout?: string } | undefined;
+        return (result?.stdout ?? "").trim().length > 0;
+      } catch (err) {
+        logger?.error(
+          { err, dir },
+          "workspaceHasFiles probe failed — assuming non-empty (fail toward continue, HI-01)",
+        );
+        return true;
+      }
+    },
   };
 }
 

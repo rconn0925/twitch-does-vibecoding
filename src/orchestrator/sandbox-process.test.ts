@@ -282,6 +282,74 @@ describe("createSandboxAdapter — terminate (BUILD-04)", () => {
   });
 });
 
+describe("createSandboxAdapter — ensureWorkspaceDir (BL-01 fail-closed distro bootstrap)", () => {
+  it("runs `mkdir -p <dir>` in the SAME distro/user via the execFileFn seam", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await adapter.ensureWorkspaceDir?.("/home/builder/projects/app-1");
+
+    expect(execFileFn).toHaveBeenCalledWith(WSL_EXE, [
+      "-d",
+      "vibecoding-build",
+      "-u",
+      "builder",
+      "--",
+      "mkdir",
+      "-p",
+      "/home/builder/projects/app-1",
+    ]);
+  });
+
+  it("REJECTS when execFileFn rejects — the fail-closed signal (NOT swallowed like terminate)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => {
+      throw new Error("mkdir: cannot create directory: Permission denied");
+    });
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await expect(adapter.ensureWorkspaceDir?.("/home/builder/projects/app-1")).rejects.toThrow(
+      "Permission denied",
+    );
+  });
+});
+
+describe("createSandboxAdapter — workspaceHasFiles (HI-01 emptiness probe)", () => {
+  it("runs `ls -A <dir>` in the SAME distro/user and maps non-empty stdout → true", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "index.html\n" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await expect(adapter.workspaceHasFiles?.("/home/builder/projects/app-1")).resolves.toBe(true);
+    expect(execFileFn).toHaveBeenCalledWith(WSL_EXE, [
+      "-d",
+      "vibecoding-build",
+      "-u",
+      "builder",
+      "--",
+      "sh",
+      "-lc",
+      "ls -A /home/builder/projects/app-1 2>/dev/null | head -1",
+    ]);
+  });
+
+  it("maps empty stdout → false (a genuinely empty dir scaffolds)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "  \n" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await expect(adapter.workspaceHasFiles?.("/home/builder/projects/app-2")).resolves.toBe(false);
+  });
+
+  it("resolves TRUE when the probe rejects — never assert 'empty' when unsure (fail toward continue)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => {
+      throw new Error("wsl.exe not found");
+    });
+    const logger = { error: vi.fn() } as unknown as NonNullable<SandboxAdapterDeps["logger"]>;
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn, logger });
+
+    await expect(adapter.workspaceHasFiles?.("/home/builder/projects/app-3")).resolves.toBe(true);
+    expect(logger.error).toHaveBeenCalled();
+  });
+});
+
 describe("buildSandboxOptions — defense-in-depth (T-03-14)", () => {
   it("fails loud if unavailable and never silently runs unsandboxed", () => {
     const opts = buildSandboxOptions();
