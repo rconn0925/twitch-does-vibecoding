@@ -145,7 +145,10 @@ export function createBuilderFeed(opts?: { maxLines?: number }): BuilderFeed {
             append({ kind: "reasoning", text: truncate(item.text, CONTENT_MAX_CHARS) });
             break;
           case "tool-call":
-            append({ kind: "tool-call", text: `${item.tool}(${truncate(item.arg, TOOL_ARG_MAX)})` });
+            append({
+              kind: "tool-call",
+              text: `${item.tool}(${truncate(item.arg, TOOL_ARG_MAX)})`,
+            });
             break;
           case "file-change":
             append({ kind: "activity", text: `${item.verb} ${item.path}` });

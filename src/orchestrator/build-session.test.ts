@@ -14,7 +14,12 @@ import type {
   StreamMode,
   SuggestionCandidate,
 } from "../shared/types.js";
-import { type BuildSessionDeps, createBuildSession } from "./build-session.js";
+import {
+  type BuildSessionDeps,
+  createBuildSession,
+  extractApprovedContent,
+  extractScreenableText,
+} from "./build-session.js";
 import type { Comp02Deps } from "./comp02.js";
 import { BUILD_SYSTEM_PROMPT_CONTINUE, BUILD_SYSTEM_PROMPT_SCAFFOLD } from "./prompt-boundary.js";
 import type {
@@ -1549,9 +1554,10 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
   it("(b) an APPROVED Write batch lands 'Writing <path>' plus the FULL diff (old 200-char snippet cap is gone)", async () => {
     const { machine } = fakeMachine();
     // >200 chars and >3 lines — would have been truncated by the old snippet cap.
-    const fullContent = Array.from({ length: 8 }, (_, i) => `const line${i} = "${"x".repeat(40)}";`).join(
-      "\n",
-    );
+    const fullContent = Array.from(
+      { length: 8 },
+      (_, i) => `const line${i} = "${"x".repeat(40)}";`,
+    ).join("\n");
     expect(fullContent.length).toBeGreaterThan(200);
     const { runner } = fakeAgentRunner({
       build: [writeBatch("sandbox/app.js", fullContent), resultSuccess],
@@ -2189,6 +2195,103 @@ describe("createBuildSession — EMPTY-01 done-guard (no phantom done for an emp
 
     expect(stages(views).at(-1)).toBe("done");
     expect(onBuildDone).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("extractScreenableText / extractApprovedContent — containment-boundary narrowers (quick-nhv)", () => {
+  const toolUseMessage = (blocks: unknown[]) => ({
+    type: "assistant",
+    message: { content: blocks },
+  });
+
+  it("extractScreenableText includes the WR-02 NotebookEdit keys (notebook_path + new_source)", () => {
+    const msg = toolUseMessage([
+      {
+        type: "tool_use",
+        name: "NotebookEdit",
+        input: { notebook_path: "analysis.ipynb", new_source: "print('cells')" },
+      },
+    ]);
+    const screened = extractScreenableText(msg);
+    expect(screened).toContain("analysis.ipynb");
+    expect(screened).toContain("print('cells')");
+  });
+
+  it("extractScreenableText includes ALL edits[].new_string, not just the first", () => {
+    const msg = toolUseMessage([
+      {
+        type: "tool_use",
+        name: "MultiEdit",
+        input: {
+          file_path: "app.js",
+          edits: [
+            { old_string: "a", new_string: "FIRST-EDIT" },
+            { old_string: "b", new_string: "SECOND-EDIT" },
+          ],
+        },
+      },
+    ]);
+    const screened = extractScreenableText(msg);
+    expect(screened).toContain("FIRST-EDIT");
+    expect(screened).toContain("SECOND-EDIT");
+  });
+
+  it("extractScreenableText returns null for non-screenable messages (result frames, empty content)", () => {
+    expect(extractScreenableText({ type: "result", subtype: "success" })).toBeNull();
+    expect(extractScreenableText(toolUseMessage([]))).toBeNull();
+    expect(extractScreenableText(null)).toBeNull();
+  });
+
+  it("extractApprovedContent joins ALL MultiEdit new_strings with \\n (full-fidelity diff)", () => {
+    const items = extractApprovedContent(
+      toolUseMessage([
+        {
+          type: "tool_use",
+          name: "MultiEdit",
+          input: {
+            file_path: "app.js",
+            edits: [
+              { old_string: "a", new_string: "FIRST-EDIT" },
+              { old_string: "b", new_string: "SECOND-EDIT" },
+            ],
+          },
+        },
+      ]),
+    );
+    expect(items).toEqual([
+      { type: "file-change", verb: "Editing", path: "app.js", text: "FIRST-EDIT\nSECOND-EDIT" },
+    ]);
+  });
+
+  it("extractApprovedContent maps NotebookEdit to an Editing file-change with the notebook keys", () => {
+    const items = extractApprovedContent(
+      toolUseMessage([
+        {
+          type: "tool_use",
+          name: "NotebookEdit",
+          input: { notebook_path: "analysis.ipynb", new_source: "print('cells')" },
+        },
+      ]),
+    );
+    expect(items).toEqual([
+      {
+        type: "file-change",
+        verb: "Editing",
+        path: "analysis.ipynb",
+        text: "print('cells')",
+      },
+    ]);
+  });
+
+  it("extractApprovedContent SKIPS a write block with no string path entirely (fail closed)", () => {
+    const items = extractApprovedContent(
+      toolUseMessage([
+        { type: "tool_use", name: "Write", input: { content: "orphan content, no path" } },
+        { type: "tool_use", name: "Bash", input: { command: "ls" } },
+      ]),
+    );
+    // The pathless Write vanished; the Bash tool-call survived.
+    expect(items).toEqual([{ type: "tool-call", tool: "Bash", arg: "ls" }]);
   });
 });
 

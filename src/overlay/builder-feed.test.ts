@@ -171,7 +171,9 @@ describe("createBuilderFeed", () => {
   it("a file-change with empty text lands the activity line only — no empty diff line", () => {
     const feed = createBuilderFeed();
     feed.buildStarted("no-diff test");
-    feed.contentApproved([{ type: "file-change", verb: "Editing", path: "src/style.css", text: "" }]);
+    feed.contentApproved([
+      { type: "file-change", verb: "Editing", path: "src/style.css", text: "" },
+    ]);
     expect(feed.list().slice(1)).toEqual([{ kind: "activity", text: "Editing src/style.css" }]);
   });
 
