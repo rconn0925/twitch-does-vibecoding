@@ -18,6 +18,10 @@
   const TEXT_MAX = 80;
   const USER_MAX = 24;
   const QUEUE_MAX = 10;
+  // Display caps for the fixed 440x420 browser source: show the head of each
+  // list plus an honest "+N more" line — never silently clip (D2-16 honesty).
+  const POOL_SHOW = 3;
+  const QUEUE_SHOW = 4;
 
   /** Latest OverlayState from the ws push (full state every message). */
   let latest = null;
@@ -47,7 +51,7 @@
       poolPanel.appendChild(el("div", "wc-empty", "waiting for suggestions…"));
       return;
     }
-    for (const item of pool) {
+    for (const item of pool.slice(0, POOL_SHOW)) {
       // Stacked layout (440px panel): suggestion text on its own line, the
       // suggester's name muted underneath — both too wide to share a row.
       const row = el("div", "wc-row wc-row-stacked");
@@ -56,6 +60,9 @@
         row.appendChild(el("span", "wc-user", truncate(item.username, USER_MAX)));
       }
       poolPanel.appendChild(row);
+    }
+    if (pool.length > POOL_SHOW) {
+      poolPanel.appendChild(el("div", "wc-more", `+${pool.length - POOL_SHOW} more ideas`));
     }
   }
 
@@ -69,12 +76,15 @@
       queuePanel.appendChild(el("div", "wc-empty", "queue is empty"));
       return;
     }
-    queue.forEach((text, index) => {
+    queue.slice(0, QUEUE_SHOW).forEach((text, index) => {
       const row = el("div", "wc-row");
       row.appendChild(el("span", "wc-pos", String(index + 1)));
       row.appendChild(el("span", "wc-text", truncate(text, TEXT_MAX)));
       queuePanel.appendChild(row);
     });
+    if (queue.length > QUEUE_SHOW) {
+      queuePanel.appendChild(el("div", "wc-more", `+${queue.length - QUEUE_SHOW} more queued`));
+    }
   }
 
   function handleState(state) {

@@ -77,6 +77,15 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Honest overflow line — "+N more ideas" / "+N more queued" (D2-16). */
+.wc-more {
+  margin-top: 10px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
 /* Pool rows stack vertically (440px panel): suggestion text full-width on
    the first line, suggester name muted underneath. Queue rows stay inline. */
 .wc-row-stacked {
