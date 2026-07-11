@@ -6,6 +6,7 @@ import type { Logger } from "pino";
 import { WebSocketServer } from "ws";
 import {
   AUTO_CYCLE_CHANGED,
+  BUILDER_FEED_CHANGED,
   POOL_CHANGED,
   ROUND_CLOSED,
   ROUND_OPENED,
@@ -121,6 +122,16 @@ export interface OverlayState {
    * wire (T-v4e-01 display-fields-only).
    */
   queue: string[];
+  /**
+   * The builder-view feed (quick-x7d, the /builder page). SAFETY CONTRACT:
+   * every line is orchestrator-authored fixed copy (stage captions, the
+   * "Writing/Editing <path>" verbs) or COMP-02-APPROVED path/snippet content,
+   * appended only past the screenOutputBatch proceed guard in
+   * build-session.ts — the raw SDK stream is NEVER tapped pre-screening
+   * (T-x7d-01). The server re-projects each line down to exactly {kind, text}
+   * regardless of source richness (T-x7d-04, the T-v4e-01 narrowing idiom).
+   */
+  builderFeed: { kind: string; text: string }[];
 }
 
 /**
@@ -234,6 +245,30 @@ const NULL_POOL_SOURCE: OverlayPoolSource = {
 };
 
 /**
+ * The builder-feed sliver the overlay needs (quick-x7d, mirrors
+ * OverlayPoolSource): the current line list plus a BUILDER_FEED_CHANGED
+ * subscription. The real BuilderFeed's list() already carries display-shaped
+ * lines; the server re-projects each item down to exactly {kind, text} in
+ * buildOverlayState anyway (T-x7d-04 defence-in-depth) so a richer source
+ * could never leak extra keys onto the wire.
+ */
+export interface OverlayBuilderFeedSource {
+  list(): readonly { kind: string; text: string }[];
+  on(event: string, handler: (...args: unknown[]) => void): void;
+}
+
+/**
+ * A no-op builder-feed source: empty feed, no change events. Mirrors
+ * NULL_POOL_SOURCE — the composition root can wire the overlay without an
+ * orchestrator and the /builder page simply shows its standing-by state
+ * (builderFeed: []).
+ */
+const NULL_BUILDER_FEED_SOURCE: OverlayBuilderFeedSource = {
+  list: () => [],
+  on: () => {},
+};
+
+/**
  * Default cap on the what's-coming page's full-queue projection. Tied to
  * VOTE_QUEUE_MAX (main.ts DEFAULT_VOTE_QUEUE_MAX = 10): the scheduler parks
  * at that many queued vote winners, so 10 covers the whole queue on stream.
@@ -252,6 +287,12 @@ export interface OverlayServerDeps {
   autoCycle?: OverlayAutoCycleSource;
   /** Optional (quick-v4e what's-coming page); defaults to an empty pool. */
   pool?: OverlayPoolSource;
+  /**
+   * Optional (quick-x7d builder view); defaults to an empty feed — the
+   * /builder page shows its standing-by state until the orchestrator's
+   * BuilderFeed is composed in.
+   */
+  builderFeed?: OverlayBuilderFeedSource;
   /** Cap on the full-queue projection; defaults to 10 (VOTE_QUEUE_MAX). */
   queueDisplayMax?: number;
   port: number;
@@ -298,6 +339,7 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   const controlWindow = deps.controlWindow ?? NULL_CONTROL_WINDOW_SOURCE;
   const autoCycle = deps.autoCycle ?? NULL_AUTO_CYCLE_SOURCE;
   const poolSource = deps.pool ?? NULL_POOL_SOURCE;
+  const feedSource = deps.builderFeed ?? NULL_BUILDER_FEED_SOURCE;
   const queueDisplayMax = deps.queueDisplayMax ?? DEFAULT_QUEUE_DISPLAY_MAX;
   const app = express();
 
@@ -351,6 +393,10 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
         .list()
         .slice(0, queueDisplayMax)
         .map((task) => task.text),
+      // Explicit narrowing (T-x7d-04, the T-v4e-01/controlWindow idiom): even
+      // a richer feed source can never leak extra keys onto the wire — only
+      // {kind, text} is ever constructed for the /builder page.
+      builderFeed: feedSource.list().map((l) => ({ kind: l.kind, text: l.text })),
     };
   }
 
@@ -363,6 +409,15 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   // and root containment is the stronger send() posture anyway.
   app.get("/queue", (_req, res) => {
     res.sendFile("queue.html", { root: publicDir });
+  });
+
+  // The builder-view page (quick-x7d) — a third OBS browser-source URL on this
+  // SAME read-only server (THE AI slot). GET only; the app-level Host-allowlist
+  // middleware above covers /builder automatically (CR-02 DNS-rebinding
+  // posture), and no mutation route exists by construction. Same `root`-option
+  // rationale as /queue.
+  app.get("/builder", (_req, res) => {
+    res.sendFile("builder.html", { root: publicDir });
   });
 
   app.get("/api/state", (_req, res) => {
@@ -449,6 +504,14 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   // removes are round-open/chaos beats — never the vote-tally debounce
   // (T-v4e-06 accepted: worst burst is a handful of small localhost frames).
   poolSource.on(POOL_CHANGED, () => {
+    pushState();
+  });
+
+  // Builder-feed changes push IMMEDIATELY like the lifecycle events: batch
+  // approvals are serialized behind COMP-02 classifier latency and stage beats
+  // are a handful per build — never the vote-tally debounce (T-x7d-07
+  // accepted: low-frequency by construction).
+  feedSource.on(BUILDER_FEED_CHANGED, () => {
     pushState();
   });
 
