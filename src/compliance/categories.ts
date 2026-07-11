@@ -21,6 +21,10 @@ export const TAXONOMY_CATEGORIES = [
   "misinformation",
   "unsafe-build-target",
   "prompt-injection-attempt",
+  // RETIRED from the classifier prompt (2026-07-11 streamer decision, quick
+  // 260711-0ms): the gate judges ToS/CG risk ONLY — feasibility is no longer
+  // offered to the model. Kept in the union for schema/audit back-compat and
+  // the dormant main.ts feasibility branch. Do NOT remove.
   "feasibility",
 ] as const;
 
@@ -97,6 +101,9 @@ export const CATEGORY_META: Record<
     label: "Prompt injection attempt",
     disposition: "block",
   },
+  // RETIRED category (2026-07-11): no longer in CLASSIFIER_SYSTEM_PROMPT; the
+  // classifier never emits it in the retuned policy. Metadata retained for
+  // audit back-compat with historical rows and the dormant main.ts branch.
   feasibility: {
     label: "Too big for a live build",
     disposition: "block",
