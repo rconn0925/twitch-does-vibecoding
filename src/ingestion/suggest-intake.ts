@@ -37,9 +37,12 @@ interface UserIntakeState {
 export function createSuggestIntake(deps: {
   pool: CandidatePool;
   cooldownMs: number;
+  /** Max POOLED candidates one user may hold at once (D2-11). Default 1. */
+  maxPooledPerUser?: number;
   now?: () => number;
 }): SuggestIntake {
   const now = deps.now ?? Date.now;
+  const maxPooledPerUser = deps.maxPooledPerUser ?? 1;
   const users = new Map<string, UserIntakeState>();
 
   return {
@@ -53,15 +56,17 @@ export function createSuggestIntake(deps: {
 
       const pooled = deps.pool.list();
 
-      // (2) Max 1 pooled candidate per user (D2-11). A rejected/held candidate
-      // never lands in the pool, so it naturally frees the slot; a candidate
-      // drawn into a round or evicted leaves the pool and frees it too.
+      // (2) Max N pooled candidates per user (D2-11; default 1, configurable
+      // via INTAKE_MAX_POOLED_PER_USER for testing/solo streams). A rejected/
+      // held candidate never lands in the pool, so it naturally frees a slot;
+      // a candidate drawn into a round or evicted leaves the pool and frees
+      // it too.
       if (state) {
         const pooledIds = new Set(pooled.map((entry) => entry.candidate.id));
         for (const id of state.pendingCandidateIds) {
           if (!pooledIds.has(id)) state.pendingCandidateIds.delete(id);
         }
-        if (state.pendingCandidateIds.size > 0) {
+        if (state.pendingCandidateIds.size >= maxPooledPerUser) {
           return { ok: false, reason: "pending-exists" };
         }
       }

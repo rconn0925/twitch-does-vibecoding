@@ -277,7 +277,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     process.env.INTAKE_COOLDOWN_SECONDS,
     DEFAULT_INTAKE_COOLDOWN_SECONDS,
   );
-  const intake = createSuggestIntake({ pool, cooldownMs: intakeCooldownSeconds * 1_000 });
+  const intake = createSuggestIntake({
+    pool,
+    cooldownMs: intakeCooldownSeconds * 1_000,
+    maxPooledPerUser: envPositive(process.env.INTAKE_MAX_POOLED_PER_USER, 1),
+  });
 
   // Session-start hygiene, BEFORE the console accepts a single request:
   // D-07 clean slate (every leftover pending review expires as
