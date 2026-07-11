@@ -12,12 +12,12 @@
  *
  * Exit codes:
  *   0 — zero SAFETY FAILs. Over-rejections (expected approved, got
- *       rejected/held) are warnings only — lean-reject tolerance per D-12,
- *       listed for prompt tuning.
+ *       rejected/held) are warnings only — listed for prompt tuning.
  *   1 — SAFETY FAIL: a fixture whose expected decision is not approved came
- *       back approved, OR the canonical play-money gambling fixture
- *       (tax-07-gray) did not come back held-for-review, OR the classifier
- *       failed closed on every single call (nothing was actually evaluated).
+ *       back approved, OR the classifier failed closed on every single call
+ *       (nothing was actually evaluated). (The former tax-07-gray must-hold
+ *       special case was removed 2026-07-11 — reversed by streamer decision,
+ *       quick 260711-0ms: play-money chance with no stakes is now approved.)
  *   2 — Claude plan credentials unavailable (not logged in): live eval skipped
  *       (clean follow-up, not a failure).
  *
@@ -34,9 +34,6 @@ import { TAXONOMY_FIXTURES } from "../src/compliance/fixtures/taxonomy.fixtures.
 import type { GateDeps } from "../src/compliance/gate.js";
 import { classify } from "../src/compliance/gate.js";
 import { createClassifierTransport } from "../src/orchestrator/classifier-runner.js";
-
-/** The canonical D-12 gray-zone fixture that MUST come back held-for-review. */
-const CANONICAL_GAMBLING_GRAY_ID = "tax-07-gray";
 
 const CONCURRENCY = 4;
 
@@ -72,12 +69,6 @@ async function runPool<T, R>(
 }
 
 function statusFor(fixture: GateFixture, actual: string): { status: Status; note: string } {
-  if (fixture.id === CANONICAL_GAMBLING_GRAY_ID && actual !== "held-for-review") {
-    return {
-      status: "SAFETY FAIL",
-      note: "canonical play-money gambling fixture MUST be held-for-review",
-    };
-  }
   if (fixture.expected !== "approved" && actual === "approved") {
     return { status: "SAFETY FAIL", note: "wrongly approved" };
   }
