@@ -189,7 +189,10 @@ const WRITE_EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"])
  * default (real build turns are minutes-scale); injectable so tests never wait
  * on it. NOTE (quick-0iu): this is a PER-TURN bound — the sandboxed build turn
  * already had the full budget to itself before the research/plan turns were
- * removed, so the constant is deliberately unchanged.
+ * removed. NOTE (quick-22l): this constant is now only the deps-absent FALLBACK
+ * (tests and any future non-build turn) — the live composition in main.ts
+ * injects turnTimeoutMs from BUILD_TURN_TIMEOUT_SECONDS (default 900s), because
+ * the old 5-min bound aborted a live, progressing build.
  */
 const DEFAULT_TURN_TIMEOUT_MS = 5 * 60_000;
 

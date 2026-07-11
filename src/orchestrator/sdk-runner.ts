@@ -23,57 +23,33 @@
 
 import { type Options, query } from "@anthropic-ai/claude-agent-sdk";
 import { buildSandboxOptions } from "./sandbox-process.js";
+import { assembleHostTurnOptions, assembleSandboxedBuildOptions } from "./turn-options.js";
 import type { AgentMessage, AgentRunner, AgentRunSpec } from "./types.js";
-
-/**
- * Tools structurally FORBIDDEN on any unsandboxed host turn: network egress
- * plus host write/exec. The live pipeline no longer runs host-side turns, but
- * the denylist stays as structural defense-in-depth (CR-02 / WR-01) — if a
- * future spec ever reaches the unsandboxed fallback branch below, the host
- * tool boundary never depends on an SDK default.
- */
-const HOST_TURN_DISALLOWED = [
-  "WebFetch",
-  "WebSearch",
-  "Write",
-  "Edit",
-  "MultiEdit",
-  "NotebookEdit",
-  "Bash",
-];
 
 /**
  * Construct the real AgentRunner. Called ONLY from main.ts's guarded entrypoint;
  * if the SDK import or a turn throws, the caller degrades loudly and the vote
  * loop keeps running.
+ *
+ * Options assembly lives in turn-options.ts (quick-22l) so the MCP lockdown
+ * triple (strictMcpConfig + mcpServers: {} + disableClaudeAiConnectors) and the
+ * host-turn denylist (HOST_TURN_DISALLOWED, moved there) are unit-tested —
+ * this file is never loaded in a vitest run.
  */
 export function createSdkAgentRunner(): AgentRunner {
   return {
     async *run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
-      const options: Options = {
-        systemPrompt: spec.systemPrompt,
-        abortController: spec.abortController,
-      };
-      if (spec.sandbox && spec.spawnClaudeCodeProcess) {
-        // Sandboxed build turn: WSL2 process isolation IS the boundary — the
-        // Claude Code engine runs inside the distro (SAND-01/02/03).
-        options.sandbox = buildSandboxOptions();
-        options.spawnClaudeCodeProcess = spec.spawnClaudeCodeProcess;
-        // Persistent workspace (quick-0iu): Options.cwd flows into the
-        // SpawnOptions the SDK hands spawnClaudeCodeProcess (verified against
-        // the installed SDK's sdk.mjs — the transport destructures `cwd` from
-        // its options and passes `{ command, args, cwd, env, signal }`).
-        // sandbox-process.ts:184 translates a POSIX-absolute cwd to
-        // `wsl --cd <cwd>` (anything else falls back to `~`) — that file is
-        // untouched; this line is the only new hand-off.
-        options.cwd = spec.workspaceDir;
-      } else {
-        // Unsandboxed host turn (unreachable from the live pipeline): text-only
-        // — NO tools reachable on the host (WR-01). Kept as defense-in-depth;
-        // do not depend on an SDK default for this safety boundary.
-        options.allowedTools = [];
-        options.disallowedTools = HOST_TURN_DISALLOWED;
-      }
+      const options: Options =
+        spec.sandbox && spec.spawnClaudeCodeProcess
+          ? // Sandboxed build turn: WSL2 process isolation IS the boundary — the
+            // Claude Code engine runs inside the distro (SAND-01/02/03), cwd is
+            // the persistent workspace (quick-0iu: Options.cwd flows into the
+            // SpawnOptions the SDK hands spawnClaudeCodeProcess; sandbox-process
+            // translates a POSIX-absolute cwd to `wsl --cd <cwd>`).
+            assembleSandboxedBuildOptions(spec, buildSandboxOptions())
+          : // Unsandboxed host turn (unreachable from the live pipeline):
+            // text-only, NO tools reachable on the host (WR-01) — defense-in-depth.
+            assembleHostTurnOptions(spec);
       const turn = query({ prompt: spec.userPrompt, options });
       for await (const message of turn) {
         yield message;

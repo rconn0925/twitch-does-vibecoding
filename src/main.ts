@@ -243,6 +243,14 @@ function envPositive(raw: string | undefined, fallback: number): number {
 }
 
 const DEFAULT_POOL_MAX_SIZE = 50;
+/**
+ * WR-07 (quick-22l): the single sandboxed build turn's watchdog budget in
+ * seconds — env-tunable via BUILD_TURN_TIMEOUT_SECONDS. Default 900 (15 min):
+ * the old hardcoded 5-min bound aborted a live, progressing build. Re-check at
+ * the Phase 5 dry run (WR-07 judgment item). The fail-closed abort path in
+ * build-session.ts is unchanged — only the budget is injected here.
+ */
+const DEFAULT_BUILD_TURN_TIMEOUT_SECONDS = 900;
 const DEFAULT_INTAKE_COOLDOWN_SECONDS = 60;
 const DEFAULT_CHAT_SEND_INTERVAL_CAP = 15;
 const DEFAULT_CHAT_SEND_INTERVAL_MS = 30_000;
@@ -1030,6 +1038,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // quick-x7d: the broadcast /builder feed sink — every call site inside
       // the session is post-screening by construction (T-x7d-01).
       builderFeed,
+      // WR-07 (quick-22l): the live build turn's env-tunable watchdog budget
+      // (default 900s). build-session.ts's DEFAULT_TURN_TIMEOUT_MS stays the
+      // deps-absent fallback for tests/non-build turns.
+      turnTimeoutMs:
+        envPositive(process.env.BUILD_TURN_TIMEOUT_SECONDS, DEFAULT_BUILD_TURN_TIMEOUT_SECONDS) *
+        1_000,
       logger,
     });
     orchestrator = buildSession;
