@@ -1,26 +1,37 @@
 /*
- * What's-coming page (quick-v4e) — page-specific LAYOUT only; the palette
- * tokens and transparent body come from overlay.css :root (loaded first).
+ * What's-coming page (quick-v4e; compacted quick-l2a) — page-specific LAYOUT
+ * only; the palette tokens and transparent body come from overlay.css :root
+ * (loaded first).
+ *
+ * Recommended OBS browser-source size: ~460x1080 (a FULL-HEIGHT column — was
+ * 440x420). Worst-case budget at that height: 10 stacked pool suggestions
+ * (text + username lines, ~54px each) in the top panel AND 10 queued builds
+ * (~32px each) in the bottom panel — ~1056px total with the compact paddings
+ * below, so nothing is cut off (quick-l2a legibility target; the DEFAULT
+ * pool cap is 5, which sits well inside the budget).
  *
  * Design language: two stacked Dominant backing panels — every text node
  * sits on a backed panel, no bare text over video. Type scale per the
  * binding contract: section labels 24px/700, rows 20px/600, nothing under
- * 20px. No red anywhere; no new accent colors — Secondary number badges
- * only, staying inside the 60/30/10 budget.
+ * 20px — the quick-l2a compaction tightens ONLY paddings, line-heights, and
+ * badge boxes, never font sizes. No red anywhere; no new accent colors —
+ * Secondary number badges only, staying inside the 60/30/10 budget.
  */
 
 body {
   display: flex;
   flex-direction: column;
-  gap: var(--block-gap);
-  padding: var(--safe-margin);
+  /* Page-specific compaction (quick-l2a): tighter than the shared tokens so
+     the 10+10 worst case fits a 1080-tall column. */
+  gap: 16px;
+  padding: 24px;
   box-sizing: border-box;
 }
 
 .wc-panel {
   background: var(--dominant);
   border-radius: 12px;
-  padding: var(--panel-pad);
+  padding: 16px;
 }
 
 .wc-label {
@@ -35,13 +46,17 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 12px;
+  /* 12px -> 4px (quick-l2a): 10 pool rows + 10 queue rows must fit one
+     1080-tall column; fonts stay >= 20px — only the rhythm tightens. */
+  margin-top: 4px;
 }
 
 .wc-pos {
   flex: none;
-  width: 36px;
-  height: 36px;
+  /* 36px -> 28px box (quick-l2a; matches the compact vote badge) — the
+     digits inside stay 20px, only the chrome shrinks. */
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -57,7 +72,7 @@ body {
   min-width: 0;
   font-size: 20px;
   font-weight: 600;
-  line-height: 1.5;
+  line-height: 1.3;
   /* CSS backstop behind the JS-side 80-char truncation */
   white-space: nowrap;
   overflow: hidden;
@@ -68,7 +83,7 @@ body {
   flex: none;
   font-size: 20px;
   font-weight: 600;
-  line-height: 1.5;
+  line-height: 1.2;
   color: var(--muted);
   /* CSS backstop behind the JS-side 24-char truncation */
   max-width: 320px;
@@ -79,19 +94,20 @@ body {
 
 /* Honest overflow line — "+N more ideas" / "+N more queued" (D2-16). */
 .wc-more {
-  margin-top: 10px;
+  margin-top: 6px;
   font-size: 20px;
   font-weight: 600;
   line-height: 1.5;
   color: var(--muted);
 }
 
-/* Pool rows stack vertically (440px panel): suggestion text full-width on
-   the first line, suggester name muted underneath. Queue rows stay inline. */
+/* Pool rows stack vertically (~460px panel): suggestion text full-width on
+   the first line, suggester name muted underneath (no extra line gap — the
+   1.3/1.2 line-heights keep the pair readable). Queue rows stay inline. */
 .wc-row-stacked {
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
+  gap: 0;
 }
 
 .wc-row-stacked .wc-text {

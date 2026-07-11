@@ -195,9 +195,14 @@
 
   // --- vote panel (lower-left; visible while a round is open or the winner beat runs) ---
 
-  // A2 (quick-t5k) how-to-vote line: "type !vote 1 / !vote 2 …" derived from
-  // the candidate count. Fixed copy, never chat-derived.
+  // A2 (quick-t5k) how-to-vote line, fixed copy, never chat-derived. Up to 3
+  // options the explicit list reads best ("type !vote 1 / !vote 2 / !vote 3");
+  // above 3 the per-option list would overflow the 900px banner, so it
+  // compresses to the range form ("type !vote 1–5") — quick-l2a.
   function voteHint(candidateCount) {
+    if (candidateCount > 3) {
+      return `type !vote 1–${candidateCount}`;
+    }
     const options = [];
     for (let i = 1; i <= candidateCount; i += 1) {
       options.push(`!vote ${i}`);
@@ -315,6 +320,10 @@
       return;
     }
     votePanel.hidden = false;
+    // Compact spacing above 5 rows (quick-l2a): the default ROUND_MAX_OPTIONS
+    // is 5 and fits at full size; a custom knob above 5 tightens the rows so
+    // the panel never collides with the top-banner band at 1080p.
+    votePanel.classList.toggle("vote-panel-compact", round.candidates.length > 5);
 
     // The participation guidance (title / how-to / countdown) lives on the
     // top-center phase banner (renderPhaseBanner) — while a round runs this
