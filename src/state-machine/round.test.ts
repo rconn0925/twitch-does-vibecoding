@@ -970,10 +970,11 @@ describe("halt during a CONCURRENT round × all three recovery targets (BLOCKER-
 
 describe("recordRoundOpened initiator (quick-t5k audit honesty)", () => {
   it("startRound() defaults to operator; startRound('auto') records the auto initiator", () => {
-    const h = makeHarness({ candidates: 4 });
+    const h = makeHarness({ candidates: 4 }); // round 1 draws all 4 (cap 5)
     h.manager.startRound();
     h.manager.closeRound();
     h.pool.add(candidate("cand-5"), approved);
+    h.pool.add(candidate("cand-6"), approved); // D2-04 needs 2 pooled again
     h.manager.startRound("auto");
 
     const audit = listAuditRecords(h.db, { limit: 10, eventType: "round_opened" });

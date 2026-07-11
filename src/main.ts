@@ -258,7 +258,14 @@ function envPositive(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-const DEFAULT_POOL_MAX_SIZE = 50;
+/**
+ * D2-13 bounded pool, re-capped at 5 (quick-l2a user amendment): the pool, the
+ * early-close threshold, and the vote-option draw all align at 5 by default —
+ * a full pool becomes exactly one full vote round. Kept as SEPARATE knobs
+ * (POOL_MAX_SIZE / EARLY_CLOSE_POOL_SIZE / ROUND_MAX_OPTIONS) so they can
+ * diverge later.
+ */
+const DEFAULT_POOL_MAX_SIZE = 5;
 /**
  * WR-07 (quick-22l): the single sandboxed build turn's watchdog budget in
  * seconds — env-tunable via BUILD_TURN_TIMEOUT_SECONDS. Default 900 (15 min):
