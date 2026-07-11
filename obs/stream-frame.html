@@ -58,10 +58,14 @@
   #b-bl{left:510px;top:994px}
   #b-lbl{left:524px;top:724px}
 
-  /* ---- ZONE C · TWITCH CHAT (lightest)  rect 1512,150,360,882 ----------
-     Right edge at 1872 (48px canvas margin); full-height chat (NEXT UP is
-     suppressed on this scene via ?nextup=off). TL tick only.               */
+  /* ---- ZONE C · TWITCH CHAT  rect 1512,150,360,882 ----------------------
+     Right edge at 1872 (48px canvas margin); full-height chat. Full 4-tick
+     border to match the other sections. Bottom ticks sit in the old NEXT UP
+     band — fine here: this scene runs the overlay with ?nextup=off.        */
   #c-tl{left:1512px;top:150px}
+  #c-tr{left:1856px;top:150px}
+  #c-bl{left:1512px;top:1016px}
+  #c-br{left:1856px;top:1016px}
   #c-lbl{left:1526px;top:164px}
 
   /* ---- ZONE D · WHAT'S COMING / QUEUE  rect 48,150,440,420 -------------
@@ -85,7 +89,8 @@
   <div class="lbl" id="b-lbl">THE AI</div>
 
   <!-- Twitch chat -->
-  <div class="t tl" id="c-tl"></div>
+  <div class="t tl" id="c-tl"></div><div class="t tr" id="c-tr"></div>
+  <div class="t bl" id="c-bl"></div><div class="t br" id="c-br"></div>
   <div class="lbl" id="c-lbl">CHAT</div>
 
   <!-- What's coming / queue -->
