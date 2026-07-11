@@ -102,6 +102,7 @@ import { type HaltDeps, triggerHalt } from "./state-machine/halt.js";
 import { expireAllPending, expireStale, reviewTtlMs } from "./state-machine/review-queue.js";
 import { RoundManager } from "./state-machine/round.js";
 import { StreamModeMachine } from "./state-machine/stream-mode.js";
+import { collectBroadcastSafetyWarnings } from "./preflight.js";
 
 /**
  * Outcome of a completed OAuth code exchange (CR-03): the console callback
@@ -281,6 +282,18 @@ const DEFAULT_VOTE_QUEUE_MAX = 10;
  */
 export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   const logger = pino({ level: process.env.LOG_LEVEL ?? "info" });
+
+  // Broadcast-safety preflight (security review #8): warn LOUDLY at boot if any
+  // test/tuning knob that is unsafe on air is still active. Warn-only — never
+  // blocks boot (a streamer may want a non-default value).
+  for (const w of collectBroadcastSafetyWarnings(process.env)) {
+    logger.warn(
+      { knob: w.key, value: w.value },
+      "BROADCAST-SAFETY: %s — %s",
+      w.key,
+      w.message,
+    );
+  }
 
   if (opts.dbPath !== ":memory:") {
     mkdirSync(path.dirname(path.resolve(opts.dbPath)), { recursive: true });
