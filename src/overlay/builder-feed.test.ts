@@ -1,28 +1,44 @@
 import { describe, expect, it } from "vitest";
 import { BUILDER_FEED_CHANGED } from "../shared/events.js";
 import type { PipelineStage } from "../shared/types.js";
-import { type BuilderFeedLine, createBuilderFeed } from "./builder-feed.js";
+import {
+  type BuilderFeedLine,
+  CONTENT_MAX_CHARS,
+  createBuilderFeed,
+  DEFAULT_MAX_LINES,
+  TOOL_ARG_MAX,
+} from "./builder-feed.js";
 
 /**
- * BuilderFeed (quick-x7d) — the ring-buffer projection between the build
- * session and the /builder broadcast wire. Pure module: no fakes needed.
- * The binding properties: bounded ring, clear-on-new-build, CLOSED line
- * vocabulary (fixed captions only), server-side snippet capping, and one
+ * BuilderFeed (quick-x7d, widened by quick-nhv) — the ring-buffer projection
+ * between the build session and the /builder broadcast wire. Pure module: no
+ * fakes needed. The binding properties: bounded ring (300), clear-on-new-build,
+ * CLOSED 7-kind line vocabulary (server-composed text only), the
+ * CONTENT_MAX_CHARS per-line memory backstop (T-x7d-07), and one
  * BUILDER_FEED_CHANGED emit per mutation.
  */
 
-const CLOSED_KINDS = new Set(["title", "stage", "stage-warn", "activity", "snippet"]);
+const CLOSED_KINDS = new Set([
+  "title",
+  "stage",
+  "stage-warn",
+  "activity",
+  "reasoning",
+  "tool-call",
+  "diff",
+]);
 
 describe("createBuilderFeed", () => {
-  it("is a bounded 50-line ring: 60 appends keep only the newest 50, oldest evicted", () => {
+  it("is a bounded 300-line ring: 310 appends keep only the newest 300, oldest evicted", () => {
     const feed = createBuilderFeed();
     feed.buildStarted("ring test");
-    // 1 title line + 60 stage beats = 61 appends total.
-    for (let i = 0; i < 60; i++) {
+    // 1 title line + 310 stage beats = 311 appends total.
+    for (let i = 0; i < 310; i++) {
       feed.stage("building");
     }
     const lines = feed.list();
-    expect(lines).toHaveLength(50);
+    expect(DEFAULT_MAX_LINES).toBe(300);
+    expect(lines).toHaveLength(300);
     // The title (oldest line) was evicted; every survivor is a stage caption.
     expect(lines[0]).toEqual({ kind: "stage", text: "Writing the code" });
     expect(lines.some((l) => l.kind === "title")).toBe(false);
@@ -33,7 +49,9 @@ describe("createBuilderFeed", () => {
     feed.buildStarted("first build");
     feed.stage("researching");
     feed.stage("building");
-    feed.batchApproved([{ verb: "Writing", path: "app.js", text: "console.log(1)" }]);
+    feed.contentApproved([
+      { type: "file-change", verb: "Writing", path: "app.js", text: "console.log(1)" },
+    ]);
     expect(feed.list().length).toBeGreaterThan(1);
 
     feed.buildStarted("next");
@@ -85,7 +103,7 @@ describe("createBuilderFeed", () => {
     expect(kinds).toEqual(["title", "stage-warn", "stage-warn", "stage"]);
   });
 
-  it("every line kind across all methods is inside the CLOSED 5-value set", () => {
+  it("every line kind across all methods is inside the CLOSED 7-value set — 'snippet' is not producible", () => {
     const feed = createBuilderFeed();
     feed.buildStarted("kinds test");
     for (const stage of [
@@ -98,44 +116,109 @@ describe("createBuilderFeed", () => {
     ] as const) {
       feed.stage(stage);
     }
-    feed.batchApproved([
-      { verb: "Writing", path: "a.js", text: "let a = 1" },
-      { verb: "Editing", path: "b.css", text: "" },
+    feed.contentApproved([
+      { type: "reasoning", text: "thinking about the layout" },
+      { type: "tool-call", tool: "Bash", arg: "npm install" },
+      { type: "file-change", verb: "Writing", path: "a.js", text: "let a = 1" },
+      { type: "file-change", verb: "Editing", path: "b.css", text: "" },
     ]);
     for (const line of feed.list()) {
       expect(CLOSED_KINDS.has(line.kind), `kind "${line.kind}" outside the closed set`).toBe(true);
     }
+    // The retired snippet kind is gone from the wire entirely.
+    expect(feed.list().some((l) => l.kind === ("snippet" as never))).toBe(false);
   });
 
-  it("batchApproved appends an activity line per display and a snippet only when text is non-empty", () => {
+  it("contentApproved appends reasoning, tool-call, and file-change lines in order — ONE emit per call", () => {
     const feed = createBuilderFeed();
-    feed.buildStarted("batch test");
-    feed.batchApproved([
-      { verb: "Writing", path: "src/app.js", text: "console.log('hi')" },
-      { verb: "Editing", path: "src/style.css", text: "" },
+    let emits = 0;
+    feed.on(BUILDER_FEED_CHANGED, () => {
+      emits += 1;
+    });
+    feed.buildStarted("content test");
+    expect(emits).toBe(1);
+
+    feed.contentApproved([
+      { type: "reasoning", text: "First I'll wire the install step" },
+      { type: "tool-call", tool: "Bash", arg: "npm install" },
+      { type: "file-change", verb: "Writing", path: "src/app.js", text: "console.log('hi')" },
     ]);
+
     expect(feed.list().slice(1)).toEqual([
+      { kind: "reasoning", text: "First I'll wire the install step" },
+      { kind: "tool-call", text: "Bash(npm install)" },
       { kind: "activity", text: "Writing src/app.js" },
-      { kind: "snippet", text: "console.log('hi')" },
-      { kind: "activity", text: "Editing src/style.css" },
+      { kind: "diff", text: "console.log('hi')" },
     ]);
+    // ONE emit for the whole call, not one per line.
+    expect(emits).toBe(2);
   });
 
-  it("caps snippets server-side: 10-line/1000-char input → ≤3 lines and ≤201 chars", () => {
+  it("contentApproved with empty items appends nothing and does NOT emit", () => {
     const feed = createBuilderFeed();
-    feed.buildStarted("snippet cap");
+    let emits = 0;
+    feed.on(BUILDER_FEED_CHANGED, () => {
+      emits += 1;
+    });
+    feed.buildStarted("empty test");
+    expect(emits).toBe(1);
+
+    feed.contentApproved([]);
+    expect(feed.list()).toHaveLength(1);
+    expect(emits).toBe(1);
+  });
+
+  it("a file-change with empty text lands the activity line only — no empty diff line", () => {
+    const feed = createBuilderFeed();
+    feed.buildStarted("no-diff test");
+    feed.contentApproved([{ type: "file-change", verb: "Editing", path: "src/style.css", text: "" }]);
+    expect(feed.list().slice(1)).toEqual([{ kind: "activity", text: "Editing src/style.css" }]);
+  });
+
+  it("a tool-call with an empty arg renders as `Tool()` and a long arg is truncated at TOOL_ARG_MAX", () => {
+    const feed = createBuilderFeed();
+    feed.buildStarted("arg test");
+    const longArg = "a".repeat(500);
+    feed.contentApproved([
+      { type: "tool-call", tool: "Glob", arg: "" },
+      { type: "tool-call", tool: "Bash", arg: longArg },
+    ]);
+    const lines = feed.list().slice(1);
+    expect(lines[0]).toEqual({ kind: "tool-call", text: "Glob()" });
+    expect(lines[1]?.text).toBe(`Bash(${"a".repeat(TOOL_ARG_MAX)}…)`);
+  });
+
+  it("diff text >200 chars and >3 lines passes through UNCUT below CONTENT_MAX_CHARS (old snippet cap is gone)", () => {
+    const feed = createBuilderFeed();
+    feed.buildStarted("full-diff test");
     const bigLine = "z".repeat(100);
     const input = Array.from({ length: 10 }, () => bigLine).join("\n"); // 10 lines, >1000 chars
-    feed.batchApproved([{ verb: "Writing", path: "big.js", text: input }]);
-    const snippet = feed.list().find((l) => l.kind === "snippet");
-    expect(snippet).toBeDefined();
-    const text = snippet?.text ?? "";
-    expect(text.split("\n").length).toBeLessThanOrEqual(3);
-    expect(text.length).toBeLessThanOrEqual(201); // 200 chars + trailing ellipsis
-    expect(text.endsWith("…")).toBe(true);
+    feed.contentApproved([{ type: "file-change", verb: "Writing", path: "big.js", text: input }]);
+    const diff = feed.list().find((l) => l.kind === "diff");
+    expect(diff).toBeDefined();
+    // Full fidelity: every line and every byte survives (no 3-line/200-char cap).
+    expect(diff?.text).toBe(input);
+    expect(diff?.text.split("\n")).toHaveLength(10);
   });
 
-  it("emits BUILDER_FEED_CHANGED once per buildStarted/stage/batchApproved mutation", () => {
+  it("diff and reasoning above CONTENT_MAX_CHARS are hard-capped with a trailing ellipsis (T-x7d-07 backstop)", () => {
+    const feed = createBuilderFeed();
+    feed.buildStarted("backstop test");
+    const huge = "q".repeat(CONTENT_MAX_CHARS + 5_000);
+    feed.contentApproved([
+      { type: "file-change", verb: "Writing", path: "huge.js", text: huge },
+      { type: "reasoning", text: huge },
+    ]);
+    const diff = feed.list().find((l) => l.kind === "diff");
+    const reasoning = feed.list().find((l) => l.kind === "reasoning");
+    for (const line of [diff, reasoning]) {
+      expect(line).toBeDefined();
+      expect(line?.text.length).toBe(CONTENT_MAX_CHARS + 1); // capped + ellipsis
+      expect(line?.text.endsWith("…")).toBe(true);
+    }
+  });
+
+  it("emits BUILDER_FEED_CHANGED once per buildStarted/stage/contentApproved mutation", () => {
     const feed = createBuilderFeed();
     let emits = 0;
     feed.on(BUILDER_FEED_CHANGED, () => {
@@ -152,10 +235,10 @@ describe("createBuilderFeed", () => {
     feed.stage("queued");
     expect(emits).toBe(2);
 
-    // One emit per batch call, even with multiple displays (2 lines each).
-    feed.batchApproved([
-      { verb: "Writing", path: "a.js", text: "aa" },
-      { verb: "Writing", path: "b.js", text: "bb" },
+    // One emit per contentApproved call, even with multiple items (4 lines here).
+    feed.contentApproved([
+      { type: "file-change", verb: "Writing", path: "a.js", text: "aa" },
+      { type: "file-change", verb: "Writing", path: "b.js", text: "bb" },
     ]);
     expect(emits).toBe(3);
   });

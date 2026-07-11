@@ -214,6 +214,11 @@ const writeBatch = (filePath: string, content: string) => ({
     content: [{ type: "tool_use", name: "Write", input: { file_path: filePath, content } }],
   },
 });
+/** A reasoning-only assistant message (text blocks, zero tool_use) — quick-nhv. */
+const assistantText = (text: string) => ({
+  type: "assistant",
+  message: { content: [{ type: "text", text }] },
+});
 const resultSuccess = { type: "result", subtype: "success", is_error: false };
 const resultFailed = { type: "result", subtype: "error_max_turns", is_error: true };
 const modelRefusal = { subtype: "model_refusal_no_fallback" };
@@ -1506,10 +1511,50 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
     expect(feed.list().at(-1)).toEqual({ kind: "stage-warn", text: "Skipping this one" });
   });
 
-  it("(b) an APPROVED batch lands 'Writing <path>' plus the capped snippet on the feed", async () => {
+  it("(a2) STRUCTURAL GATE (reasoning): a COMP-02-rejected reasoning-only message contributes ZERO wire bytes", async () => {
     const { machine } = fakeMachine();
     const { runner } = fakeAgentRunner({
-      build: [writeBatch("sandbox/evil.txt", "FORBIDDEN-PAYLOAD"), resultSuccess],
+      build: [assistantText("FORBIDDEN-REASONING"), resultSuccess],
+    });
+    const { deps: comp02 } = fakeComp02((id) =>
+      id.endsWith("-output")
+        ? { decision: "rejected", category: "tos-risk", rationale: "no" }
+        : APPROVED,
+    );
+    const { sink, views } = capturingSink();
+    const feed = createBuilderFeed();
+    const task = queuedTask("task-feed-a2", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      builderFeed: feed,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    // The rejected reasoning text never reaches the serialized wire — same
+    // control-flow gate as a rejected Write batch (T-nhv-01).
+    const wire = JSON.stringify(feed.list());
+    expect(wire).not.toContain("FORBIDDEN-REASONING");
+    // The build aborted down the existing compliance-rejected path.
+    expect(stages(views).at(-1)).toBe("refused");
+    expect(feed.list().at(-1)).toEqual({ kind: "stage-warn", text: "Skipping this one" });
+  });
+
+  it("(b) an APPROVED Write batch lands 'Writing <path>' plus the FULL diff (old 200-char snippet cap is gone)", async () => {
+    const { machine } = fakeMachine();
+    // >200 chars and >3 lines — would have been truncated by the old snippet cap.
+    const fullContent = Array.from({ length: 8 }, (_, i) => `const line${i} = "${"x".repeat(40)}";`).join(
+      "\n",
+    );
+    expect(fullContent.length).toBeGreaterThan(200);
+    const { runner } = fakeAgentRunner({
+      build: [writeBatch("sandbox/app.js", fullContent), resultSuccess],
     });
     const { deps: comp02 } = fakeComp02(() => APPROVED);
     const { sink } = capturingSink();
@@ -1529,16 +1574,17 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
     await createBuildSession(deps).startBuild(task);
 
     const lines = feed.list();
-    expect(lines).toContainEqual({ kind: "activity", text: "Writing sandbox/evil.txt" });
-    expect(lines).toContainEqual({ kind: "snippet", text: "FORBIDDEN-PAYLOAD" });
+    expect(lines).toContainEqual({ kind: "activity", text: "Writing sandbox/app.js" });
+    // FULL fidelity: the diff carries every byte of the approved content.
+    expect(lines).toContainEqual({ kind: "diff", text: fullContent });
     // The full happy-path shape around it: title → building beat → done caption.
     expect(lines[0]).toEqual({ kind: "title", text: "NOW BUILDING: make a page" });
     expect(lines.at(-1)).toEqual({ kind: "stage", text: "Live on screen now" });
   });
 
-  it("(c) fixed-vocabulary wire: raw SDK tool names/input keys never cross; MultiEdit reads 'Editing <path>'", async () => {
+  it("(c) closed-vocabulary wire: raw SDK tokens never cross; MultiEdit reads 'Editing <path>'; Bash lands as a tool-call", async () => {
     const { machine } = fakeMachine();
-    const multiEditBatch = {
+    const mixedBatch = {
       type: "assistant",
       message: {
         content: [
@@ -1550,11 +1596,12 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
               edits: [{ old_string: "a", new_string: "body { color: blue }" }],
             },
           },
+          { type: "tool_use", name: "Bash", input: { command: "npm install" } },
         ],
       },
     };
     const { runner } = fakeAgentRunner({
-      build: [multiEditBatch, resultSuccess],
+      build: [mixedBatch, resultSuccess],
     });
     const { deps: comp02 } = fakeComp02(() => APPROVED);
     const { sink } = capturingSink();
@@ -1574,8 +1621,10 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
     await createBuildSession(deps).startBuild(task);
 
     const lines = feed.list();
-    // Edit-family tools map to the fixed verb — never the raw tool name.
+    // Edit-family tools still map to the fixed verb — never the raw tool name.
     expect(lines).toContainEqual({ kind: "activity", text: "Editing styles.css" });
+    // A non-write tool_use lands as a screened tool-call line (name + primary arg).
+    expect(lines).toContainEqual({ kind: "tool-call", text: "Bash(npm install)" });
     const wire = JSON.stringify(lines);
     for (const forbidden of [
       "tool_use",
@@ -1588,6 +1637,118 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
       expect(wire, `raw token "${forbidden}" must never reach the feed wire`).not.toContain(
         forbidden,
       );
+    }
+  });
+
+  it("screening ORDER: classify resolves BEFORE the feed receives the content, and reasoning-only triggers exactly one -output screen", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner({
+      build: [assistantText("I will add the button now"), resultSuccess],
+    });
+    const order: string[] = [];
+    const classify = vi.fn(async (candidate: SuggestionCandidate) => {
+      if (candidate.id.endsWith("-output")) order.push("screen");
+      return APPROVED;
+    });
+    const { sink } = capturingSink();
+    const inner = createBuilderFeed();
+    // A wrapped feed records when the sink receives content (post-guard call).
+    const feed: BuilderFeedSink = {
+      buildStarted: (title) => inner.buildStarted(title),
+      stage: (stage) => inner.stage(stage),
+      contentApproved: (items) => {
+        if (items.length > 0) order.push("feed");
+        inner.contentApproved(items);
+      },
+    };
+    const task = queuedTask("task-feed-order", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02: { classify },
+      progress: sink,
+      builderFeed: feed,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    // classify (the screen) strictly precedes the feed tap — the structural gate.
+    expect(order).toEqual(["screen", "feed"]);
+    // A reasoning-only message triggered exactly ONE in-flight -output screen.
+    const outputScreens = classify.mock.calls.filter(([c]) => c.id.endsWith("-output"));
+    expect(outputScreens).toHaveLength(1);
+    expect(outputScreens[0]?.[0].text).toContain("I will add the button now");
+    // The approved reasoning reached the wire.
+    expect(inner.list()).toContainEqual({ kind: "reasoning", text: "I will add the button now" });
+  });
+
+  it("screened SUPERSET (T-nhv-07): every displayed byte appeared verbatim in the classify() input", async () => {
+    const { machine } = fakeMachine();
+    const mixedMessage = {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "Wiring the click handler next" },
+          { type: "tool_use", name: "Bash", input: { command: "npm install canvas-confetti" } },
+          {
+            type: "tool_use",
+            name: "Write",
+            input: { file_path: "src/button.js", content: "export const clicks = 0;" },
+          },
+        ],
+      },
+    };
+    const { runner } = fakeAgentRunner({ build: [mixedMessage, resultSuccess] });
+    const screened: string[] = [];
+    const classify = vi.fn(async (candidate: SuggestionCandidate) => {
+      if (candidate.id.endsWith("-output")) screened.push(candidate.text);
+      return APPROVED;
+    });
+    const { sink } = capturingSink();
+    const captured: Array<
+      | { type: "reasoning"; text: string }
+      | { type: "tool-call"; tool: string; arg: string }
+      | { type: "file-change"; verb: "Writing" | "Editing"; path: string; text: string }
+    > = [];
+    const inner = createBuilderFeed();
+    const feed: BuilderFeedSink = {
+      buildStarted: (title) => inner.buildStarted(title),
+      stage: (stage) => inner.stage(stage),
+      contentApproved: (items) => {
+        captured.push(...items);
+        inner.contentApproved(items);
+      },
+    };
+    const task = queuedTask("task-feed-superset", "confetti button");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02: { classify },
+      progress: sink,
+      builderFeed: feed,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    const screenedText = screened.join("\n");
+    expect(captured.length).toBeGreaterThanOrEqual(3);
+    for (const item of captured) {
+      if (item.type === "reasoning") {
+        expect(screenedText).toContain(item.text);
+      } else if (item.type === "tool-call") {
+        // The shared primaryArg helper guarantees: displayed arg ⊆ screened text.
+        expect(screenedText).toContain(item.tool);
+        expect(screenedText).toContain(item.arg);
+      } else {
+        expect(screenedText).toContain(item.path);
+        expect(screenedText).toContain(item.text);
+      }
     }
   });
 
