@@ -177,7 +177,7 @@ describe("createGalleryPublisher.publishNow", () => {
       expect(call.file).toBe("git");
       expect(Array.isArray(call.args)).toBe(true);
     }
-    expect(calls.map((c) => c.args[0] === "-C" ? c.args[2] : c.args[0])).toEqual([
+    expect(calls.map((c) => (c.args[0] === "-C" ? c.args[2] : c.args[0]))).toEqual([
       "clone",
       "add",
       "status",
@@ -218,6 +218,7 @@ describe("createGalleryPublisher.publishNow", () => {
     const message = commit?.args[4] ?? "";
     expect(message).toBe(`app-3: ${sanitizeCommitTitle(hostile)}`);
     // Control chars stripped; the title portion truncated to 80.
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are ABSENT is the point
     expect(message).not.toMatch(/[\r\n\t\x00-\x1f]/);
     expect(sanitizeCommitTitle(hostile).length).toBeLessThanOrEqual(80);
     // NO exec call ever receives an options object containing shell: true.

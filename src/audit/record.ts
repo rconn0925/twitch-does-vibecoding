@@ -601,6 +601,48 @@ export function recordChaosPick(
   });
 }
 
+// ── quick-22l: gallery auto-publish audit events (T-22l-06) ─────────────────
+// One row per host-side gallery publish ATTEMPT (published / no-changes /
+// failed) so a snapshot commit can never happen silently. Mirrors the Phase 3
+// arg-object → insert() shape; audit_log has no CHECK constraints, so the new
+// "gallery_publish" event_type is a schema-safe addition.
+
+/**
+ * One row per gallery publish attempt (quick-22l). `decision` carries the
+ * outcome status; the rationale embeds the internally-generated generation
+ * INTEGER only (never chat text) plus the commit hash / failure detail.
+ */
+export function recordGalleryPublish(
+  db: Database.Database,
+  args: {
+    taskId: string;
+    generation: number;
+    status: "published" | "no-changes" | "failed";
+    commitHash: string | null;
+    detail: string | null;
+    streamMode: StreamMode;
+  },
+): void {
+  const rationale =
+    args.status === "published" && args.commitHash !== null
+      ? `app-${args.generation}: commit ${args.commitHash}`
+      : args.detail !== null
+        ? `app-${args.generation}: ${args.detail}`
+        : null;
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "gallery_publish",
+    source: "orchestrator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: args.status,
+    category: null,
+    rationale,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
 // ── Phase 5: build-history changelog ledger (HIST-01, D-01/D-02/D-03) ────────
 // A SEPARATE append-only table from audit_log — no VIEW over audit_log can
 // losslessly reconstruct a changelog entry (D-01 VERDICT), so build_history gets
