@@ -50,7 +50,7 @@ import {
   recordSandboxTeardown,
 } from "../audit/record.js";
 import type { AbortRegistry } from "../kill-switch/abort.js";
-import type { ApprovedBatchDisplay, BuilderFeedSink } from "../overlay/builder-feed.js";
+import type { ApprovedContentItem, BuilderFeedSink } from "../overlay/builder-feed.js";
 import { BUILD_STAGE_CHANGED } from "../overlay/server.js";
 import type { TaskQueue } from "../queue/task-queue.js";
 import type {
@@ -126,12 +126,13 @@ export interface BuildSessionDeps {
    */
   narrator?: BuildNarrator;
   /**
-   * The broadcast /builder feed sink (quick-x7d). Optional — absent in unit
-   * tests that don't assert on the feed. EVERY call site is post-screening by
-   * construction: buildStarted carries the already-broadcast gate-approved
-   * title, stage() maps onto a fixed caption table, and batchApproved() is
-   * only reachable AFTER the in-flight COMP-02 `screen.proceed` guard
-   * (T-x7d-01 structural gate).
+   * The broadcast /builder feed sink (quick-x7d, widened by quick-nhv).
+   * Optional — absent in unit tests that don't assert on the feed. EVERY call
+   * site is post-screening by construction: buildStarted carries the
+   * already-broadcast gate-approved title, stage() maps onto a fixed caption
+   * table, and contentApproved() — now carrying reasoning, tool calls, and
+   * full-fidelity diffs — is only reachable AFTER the in-flight COMP-02
+   * `screen.proceed` guard (T-x7d-01 structural gate, extended by T-nhv-01).
    */
   builderFeed?: BuilderFeedSink;
   /**
@@ -246,16 +247,57 @@ export function extractAssistantText(message: unknown): string | null {
 }
 
 /**
- * Extract the text a Write/Edit tool-use is about to write — the in-flight
- * COMP-02 instrumentation point (D3-07, RESEARCH Open Question 3). Returns the
- * concatenated file content/edits (+ path) for re-screening, or null when the
- * message carries no Write/Edit output batch.
+ * The ONLY primary-arg extraction in this module (T-nhv-07). Returns the first
+ * string value among the priority-ordered input keys, else "" — NEVER a JSON
+ * dump of the raw input. BOTH extractScreenableText and extractApprovedContent
+ * call this single helper, so any byte the feed can display as a tool-call arg
+ * was, by construction, part of the text classify() screened — the
+ * screened-superset guarantee holds structurally, not by parallel-maintained
+ * key lists.
  */
-export function extractWriteEditText(message: unknown): string | null {
+function primaryArg(input: unknown): string {
+  const rec = asRecord(input);
+  if (!rec) return "";
+  for (const key of [
+    "command",
+    "file_path",
+    "path",
+    "pattern",
+    "url",
+    "prompt",
+    "description",
+    "query",
+  ]) {
+    const value = rec[key];
+    if (typeof value === "string") return value;
+  }
+  return "";
+}
+
+/**
+ * Extract EVERYTHING screenable from one assistant message — the in-flight
+ * COMP-02 instrumentation point (D3-07, widened by quick-nhv). Covers:
+ *  - assistant text blocks (reasoning prose),
+ *  - every tool_use's name + primaryArg(input) (the shared helper — T-nhv-07),
+ *  - full Write/Edit content: file_path/content/new_string, the WR-02
+ *    NotebookEdit keys (notebook_path/new_source), and ALL edits[].new_string.
+ * Returns the concatenated text for re-screening, or null when the message
+ * carries nothing screenable. Consequence (by design): reasoning-only messages
+ * are screened too — a non-compliant reasoning batch aborts the build exactly
+ * like a non-compliant Write batch.
+ */
+export function extractScreenableText(message: unknown): string | null {
   const parts: string[] = [];
   for (const block of contentBlocks(message)) {
-    if (block.type !== "tool_use") continue;
-    if (typeof block.name !== "string" || !WRITE_EDIT_TOOLS.has(block.name)) continue;
+    if (block.type === "text" && typeof block.text === "string") {
+      parts.push(block.text);
+      continue;
+    }
+    if (block.type !== "tool_use" || typeof block.name !== "string") continue;
+    parts.push(block.name);
+    const arg = primaryArg(block.input);
+    if (arg.length > 0) parts.push(arg);
+    if (!WRITE_EDIT_TOOLS.has(block.name)) continue;
     const input = asRecord(block.input);
     if (!input) continue;
     if (typeof input.file_path === "string") parts.push(input.file_path);
@@ -277,19 +319,32 @@ export function extractWriteEditText(message: unknown): string | null {
 }
 
 /**
- * Narrow an APPROVED Write/Edit tool-use message down to the /builder feed's
- * display shape (quick-x7d). Pure + exported for tests. Shape narrowing lives
- * HERE because build-session.ts is the declared SDK-shape containment boundary
- * — builder-feed.ts stays SDK-free. Raw tool names NEVER cross out of this
- * function: Write → "Writing"; Edit/MultiEdit/NotebookEdit → "Editing"
- * (T-x7d-02 fixed-vocabulary wire). A block with no string path is skipped
- * entirely (fail closed).
+ * Narrow an APPROVED assistant message down to the /builder feed's display
+ * union (quick-nhv). Pure + exported for tests. Shape narrowing lives HERE
+ * because build-session.ts is the declared SDK-shape containment boundary —
+ * builder-feed.ts stays SDK-free. Raw SDK STRUCTURE (tool_use/input/block
+ * keys) never crosses; tool NAMES cross deliberately as screened display data
+ * (T-nhv-02):
+ *  - text blocks → reasoning items;
+ *  - Write/Edit-family tool_use → file-change items with the fixed verbs
+ *    (Write → "Writing"; Edit/MultiEdit/NotebookEdit → "Editing"), full text =
+ *    content | new_string | new_source | ALL edits' new_string joined "\n";
+ *    a block with no string path is skipped entirely (fail closed);
+ *  - every OTHER tool_use → a tool-call item whose arg comes from the SAME
+ *    primaryArg helper the screen used (T-nhv-07 subset guarantee).
  */
-export function extractApprovedBatchDisplays(message: unknown): ApprovedBatchDisplay[] {
-  const displays: ApprovedBatchDisplay[] = [];
+export function extractApprovedContent(message: unknown): ApprovedContentItem[] {
+  const items: ApprovedContentItem[] = [];
   for (const block of contentBlocks(message)) {
-    if (block.type !== "tool_use") continue;
-    if (typeof block.name !== "string" || !WRITE_EDIT_TOOLS.has(block.name)) continue;
+    if (block.type === "text" && typeof block.text === "string") {
+      items.push({ type: "reasoning", text: block.text });
+      continue;
+    }
+    if (block.type !== "tool_use" || typeof block.name !== "string") continue;
+    if (!WRITE_EDIT_TOOLS.has(block.name)) {
+      items.push({ type: "tool-call", tool: block.name, arg: primaryArg(block.input) });
+      continue;
+    }
     const input = asRecord(block.input);
     if (!input) continue;
     const path =
@@ -298,7 +353,7 @@ export function extractApprovedBatchDisplays(message: unknown): ApprovedBatchDis
         : typeof input.notebook_path === "string"
           ? input.notebook_path
           : null;
-    if (path === null) continue;
+    if (path === null) continue; // no string path → skip entirely (fail closed)
     const verb = block.name === "Write" ? ("Writing" as const) : ("Editing" as const);
     let text = "";
     if (typeof input.content === "string") {
@@ -308,17 +363,16 @@ export function extractApprovedBatchDisplays(message: unknown): ApprovedBatchDis
     } else if (typeof input.new_source === "string") {
       text = input.new_source;
     } else if (Array.isArray(input.edits)) {
+      const editTexts: string[] = [];
       for (const edit of input.edits) {
         const e = asRecord(edit);
-        if (e && typeof e.new_string === "string") {
-          text = e.new_string;
-          break;
-        }
+        if (e && typeof e.new_string === "string") editTexts.push(e.new_string);
       }
+      text = editTexts.join("\n");
     }
-    displays.push({ verb, path, text });
+    items.push({ type: "file-change", verb, path, text });
   }
-  return displays;
+  return items;
 }
 
 /** Per-turn consumption outcome (turn-level, NOT the whole pipeline). */
@@ -583,9 +637,11 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
           const text = extractAssistantText(message);
           if (text !== null) texts.push(text);
 
-          // In-flight COMP-02 (D3-07): re-screen each Write/Edit output batch.
+          // In-flight COMP-02 (D3-07, widened by quick-nhv): re-screen every
+          // screenable message — reasoning prose, tool names/args, and full
+          // Write/Edit content — through the SAME single-funnel entry point.
           if (inFlightScreen) {
-            const batch = extractWriteEditText(message);
+            const batch = extractScreenableText(message);
             if (batch !== null) {
               const screen = await screenOutputBatch(deps.comp02, {
                 taskId: task.id,
@@ -602,12 +658,13 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
                 outcome = "compliance-rejected";
                 break;
               }
-              // T-x7d-01 STRUCTURAL GATE: this call sits strictly AFTER the
-              // `!screen.proceed → break` guard above — the rejected branch
-              // breaks out before this line executes, so a rejected (or
-              // never-screened) batch's path and content are unreachable on
-              // the /builder broadcast feed by CONTROL FLOW, not convention.
-              deps.builderFeed?.batchApproved(extractApprovedBatchDisplays(message));
+              // T-x7d-01 STRUCTURAL GATE (extended by T-nhv-01): this call sits
+              // strictly AFTER the `!screen.proceed → break` guard above — the
+              // rejected branch breaks out before this line executes, so a
+              // rejected (or never-screened) message's reasoning, tool args,
+              // paths, and content are unreachable on the /builder broadcast
+              // feed by CONTROL FLOW, not convention.
+              deps.builderFeed?.contentApproved(extractApprovedContent(message));
             }
           }
 

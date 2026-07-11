@@ -1,27 +1,34 @@
 /**
- * Builder-view feed projection (quick-x7d) — the ring buffer between the build
- * session and the /builder broadcast wire.
+ * Builder-view feed projection (quick-x7d, widened by quick-nhv) — the ring
+ * buffer between the build session and the /builder broadcast wire.
  *
- * SAFETY MODEL (binding — see the quick-x7d threat register):
+ * SAFETY MODEL (binding — see the quick-x7d + quick-nhv threat registers):
  *  - This module receives ONLY display-shaped data. Zero SDK types cross into
  *    this file: the build session (the declared SDK-shape containment
- *    boundary) narrows tool_use blocks down to ApprovedBatchDisplay BEFORE
- *    calling in — raw tool names / input keys never reach here (T-x7d-02).
- *  - Every call site of the sink is post-screening by construction: the title
+ *    boundary) narrows every message down to ApprovedContentItem BEFORE
+ *    calling in. Tool NAMES now cross deliberately — as already-SCREENED
+ *    display data narrowed by build-session's extractApprovedContent — but
+ *    raw SDK shapes/input keys (tool_use, input, file_path, new_string, …)
+ *    still never reach here (T-x7d-02, updated by T-nhv-02).
+ *  - Every call site of the sink is post-screening by CONTROL FLOW: the title
  *    is the same gate-approved, already-broadcast string the overlay build
- *    panel shows; paths/snippets come ONLY from output batches that
- *    screenOutputBatch APPROVED — the tap sits after the proceed guard in
- *    build-session.ts, so rejected content is unreachable by control flow
- *    (T-x7d-01).
- *  - The line vocabulary is a CLOSED 5-kind set with server-composed text:
+ *    panel shows; reasoning/tool-call/diff content comes ONLY from messages
+ *    that screenOutputBatch APPROVED — contentApproved() sits strictly after
+ *    the `!screen.proceed → break` guard in build-session.ts, so rejected
+ *    content is unreachable (T-x7d-01, extended by T-nhv-01 to cover
+ *    reasoning and tool calls too).
+ *  - The line vocabulary is a CLOSED 7-kind set with server-composed text:
  *    fixed captions + the truncated title + "Writing/Editing <path>" +
- *    capped snippets. Nothing else can be constructed (T-x7d-02).
+ *    reasoning prose + "Tool(arg)" calls + full-fidelity diffs. Nothing else
+ *    can be constructed (T-nhv-02).
  *  - buildStarted() clears the buffer, so a killed/vetoed build's lines never
  *    leak into the next build's feed (T-x7d-05). There is deliberately NO
  *    clear-on-terminal-stage and NO abort method: a halted build's feed just
  *    stops (consistent with never emitting a false "BUILT IT").
- *  - The buffer is a bounded ring (50 lines) — memory can never grow without
- *    bound under a long build (T-x7d-07).
+ *  - The buffer is a bounded ring (300 lines) and every reasoning/diff line
+ *    is hard-capped at CONTENT_MAX_CHARS — a MEMORY backstop, not a display
+ *    cap: full screened batches below it pass byte-for-byte, so memory can
+ *    never grow without bound under a long build (T-x7d-07, updated).
  */
 
 import { EventEmitter } from "node:events";
@@ -31,23 +38,25 @@ import type { PipelineStage } from "../shared/types.js";
 /**
  * One wire line. `text` is ALWAYS server-composed (fixed copy + already-
  * screened data); the kind set is closed — `stage-warn` (failed/refused) is
- * what the client renders amber (never red, D2-18).
+ * what the client renders amber (never red, D2-18). quick-nhv widened the
+ * set: `reasoning` (assistant prose), `tool-call` ("Tool(arg)"), and `diff`
+ * (full-fidelity file content) replaced the retired `snippet` kind.
  */
 export interface BuilderFeedLine {
-  kind: "title" | "stage" | "stage-warn" | "activity" | "snippet";
+  kind: "title" | "stage" | "stage-warn" | "activity" | "reasoning" | "tool-call" | "diff";
   text: string;
 }
 
 /**
- * A COMP-02-APPROVED output batch, already narrowed to display shape by
- * extractApprovedBatchDisplays (build-session.ts). Raw tool names never cross:
- * Write → "Writing"; Edit/MultiEdit/NotebookEdit → "Editing".
+ * A COMP-02-APPROVED content item, already narrowed to display shape by
+ * extractApprovedContent (build-session.ts). Defined FEED-side — never an SDK
+ * shape. Write → "Writing"; Edit/MultiEdit/NotebookEdit → "Editing". A
+ * tool-call's `arg` is the screened primary argument (may be "").
  */
-export interface ApprovedBatchDisplay {
-  verb: "Writing" | "Editing";
-  path: string;
-  text: string;
-}
+export type ApprovedContentItem =
+  | { type: "reasoning"; text: string }
+  | { type: "tool-call"; tool: string; arg: string }
+  | { type: "file-change"; verb: "Writing" | "Editing"; path: string; text: string };
 
 /** The sink side the build session drives (every call is post-screening). */
 export interface BuilderFeedSink {
@@ -55,8 +64,8 @@ export interface BuilderFeedSink {
   buildStarted(title: string): void;
   /** A pipeline-stage beat — mapped onto the FIXED caption table only. */
   stage(stage: PipelineStage): void;
-  /** COMP-02-approved Write/Edit batches — the only source of paths/snippets. */
-  batchApproved(displays: ApprovedBatchDisplay[]): void;
+  /** COMP-02-approved message content — the only source of reasoning/tool-call/diff lines. */
+  contentApproved(items: ApprovedContentItem[]): void;
 }
 
 /** Sink + the source side the overlay server consumes (list + on). */
@@ -66,11 +75,17 @@ export interface BuilderFeed extends BuilderFeedSink {
 }
 
 /** Ring bound: oldest lines beyond this are dropped (T-x7d-07). */
-export const DEFAULT_MAX_LINES = 50;
+export const DEFAULT_MAX_LINES = 300;
 /** The SAME 80-char cap the overlay build panel applies to this SAME string. */
 export const TITLE_MAX = 80;
-export const SNIPPET_MAX_CHARS = 200;
-export const SNIPPET_MAX_LINES = 3;
+/**
+ * Per-line MEMORY backstop for reasoning/diff text (T-x7d-07) — NOT a display
+ * cap. Full screened batches below it pass byte-for-byte; only pathological
+ * multi-KB lines are hard-capped with an ellipsis.
+ */
+export const CONTENT_MAX_CHARS = 16_000;
+/** Tool-call primary-arg display truncation ("Tool(arg…)"). */
+export const TOOL_ARG_MAX = 160;
 
 /**
  * FIXED stage caption table — overlay.js STAGE_CAPTION wording verbatim.
@@ -90,26 +105,6 @@ const STAGE_LINES: Partial<Record<PipelineStage, BuilderFeedLine>> = {
 /** JS-side truncation with an ellipsis (overlay.js truncate pattern). */
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
-}
-
-/**
- * Server-side snippet cap (authoritative; the CSS max-height is only the
- * backstop): first SNIPPET_MAX_LINES lines, then hard-sliced to
- * SNIPPET_MAX_CHARS chars, with a trailing ellipsis when truncated.
- */
-function capSnippet(text: string): string {
-  const lines = text.split("\n");
-  let out = text;
-  let truncated = false;
-  if (lines.length > SNIPPET_MAX_LINES) {
-    out = lines.slice(0, SNIPPET_MAX_LINES).join("\n");
-    truncated = true;
-  }
-  if (out.length > SNIPPET_MAX_CHARS) {
-    out = out.slice(0, SNIPPET_MAX_CHARS);
-    truncated = true;
-  }
-  return truncated ? `${out}…` : out;
 }
 
 /** Construct the builder feed — one instance is both sink and source. */
@@ -142,15 +137,25 @@ export function createBuilderFeed(opts?: { maxLines?: number }): BuilderFeed {
       emitter.emit(BUILDER_FEED_CHANGED);
     },
 
-    batchApproved(displays: ApprovedBatchDisplay[]): void {
-      if (displays.length === 0) return;
-      for (const display of displays) {
-        append({ kind: "activity", text: `${display.verb} ${display.path}` });
-        if (display.text.length > 0) {
-          append({ kind: "snippet", text: capSnippet(display.text) });
+    contentApproved(items: ApprovedContentItem[]): void {
+      if (items.length === 0) return; // nothing screened in → no append, no emit
+      for (const item of items) {
+        switch (item.type) {
+          case "reasoning":
+            append({ kind: "reasoning", text: truncate(item.text, CONTENT_MAX_CHARS) });
+            break;
+          case "tool-call":
+            append({ kind: "tool-call", text: `${item.tool}(${truncate(item.arg, TOOL_ARG_MAX)})` });
+            break;
+          case "file-change":
+            append({ kind: "activity", text: `${item.verb} ${item.path}` });
+            if (item.text.length > 0) {
+              append({ kind: "diff", text: truncate(item.text, CONTENT_MAX_CHARS) });
+            }
+            break;
         }
       }
-      // ONE emit per approved batch, not per line.
+      // ONE emit per approved message, not per line.
       emitter.emit(BUILDER_FEED_CHANGED);
     },
 
