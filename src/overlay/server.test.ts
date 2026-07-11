@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import {
+  AUTO_CYCLE_CHANGED,
   ROUND_CLOSED,
   ROUND_OPENED,
   VOTE_RECORDED,
@@ -152,6 +153,37 @@ function makeFakeControlWindow(initial: RichWindowSnapshot | null = null): FakeC
   };
 }
 
+/**
+ * Minimal auto-cycle source (mirrors makeFakeBuild): a snapshot plus an
+ * AUTO_CYCLE_CHANGED emitter. Carries `enabled` deliberately — the server must
+ * narrow the wire shape down to suggestPhase:{endsAtMs} only (quick-t5k A2).
+ */
+interface FakeAutoCycle {
+  snapshot(): { enabled: boolean; phase: "suggest" | null; phaseEndsAtMs: number | null };
+  on(event: string, handler: (...args: unknown[]) => void): void;
+  setPhase(next: { phase: "suggest" | null; phaseEndsAtMs: number | null }): void;
+}
+
+function makeFakeAutoCycle(
+  initial: { phase: "suggest" | null; phaseEndsAtMs: number | null } = {
+    phase: null,
+    phaseEndsAtMs: null,
+  },
+): FakeAutoCycle {
+  const emitter = new EventEmitter();
+  let current = initial;
+  return {
+    snapshot: () => ({ enabled: true, ...current }),
+    on: (event, handler) => {
+      emitter.on(event, handler);
+    },
+    setPhase: (next) => {
+      current = next;
+      emitter.emit(AUTO_CYCLE_CHANGED);
+    },
+  };
+}
+
 function sampleWindow(overrides: Partial<RichWindowSnapshot> = {}): RichWindowSnapshot {
   return {
     donorDisplayName: "GenerousViewer",
@@ -203,6 +235,7 @@ describe("overlay server (read-only broadcast surface)", () => {
       round?: FakeRound;
       build?: FakeBuild;
       controlWindow?: FakeControlWindow;
+      autoCycle?: FakeAutoCycle;
       nextUpTexts?: string[];
       debounceMs?: number;
     } = {},
@@ -211,6 +244,7 @@ describe("overlay server (read-only broadcast surface)", () => {
     const round = opts.round ?? makeFakeRound();
     const build = opts.build ?? makeFakeBuild();
     const controlWindow = opts.controlWindow ?? makeFakeControlWindow();
+    const autoCycle = opts.autoCycle ?? makeFakeAutoCycle();
     const taskQueue = {
       list: () => (opts.nextUpTexts ?? []).map((text) => ({ text })),
     };
@@ -219,12 +253,13 @@ describe("overlay server (read-only broadcast surface)", () => {
       round,
       build,
       controlWindow,
+      autoCycle,
       taskQueue,
       port: 0,
       ...(opts.debounceMs !== undefined ? { debounceMs: opts.debounceMs } : {}),
     });
     handles.push(handle);
-    return { machine, round, build, controlWindow, handle };
+    return { machine, round, build, controlWindow, autoCycle, handle };
   }
 
   /** Connect a ws client and collect every parsed push into `messages`. */
@@ -592,6 +627,51 @@ describe("overlay server (read-only broadcast surface)", () => {
       donorDisplayName: "GenerousViewer",
       endsAtMs: 120_000,
     });
+  });
+
+  it("suggestPhase projects {endsAtMs} during a suggest phase and null otherwise — the enabled flag never crosses the wire (quick-t5k A2)", async () => {
+    const autoCycle = makeFakeAutoCycle({ phase: "suggest", phaseEndsAtMs: 99_000 });
+    const { handle } = await start({ autoCycle });
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.suggestPhase).toEqual({ endsAtMs: 99_000 });
+    expect(Object.keys(httpState.suggestPhase ?? {})).toEqual(["endsAtMs"]);
+    // The scheduler's enabled flag is console detail — never broadcast.
+    expect(JSON.stringify(httpState)).not.toContain("enabled");
+
+    // Outside the phase the field is null (silent absence, D2-18).
+    const idle = await start({});
+    const idleState = (await (
+      await fetch(`http://127.0.0.1:${idle.handle.port}/api/state`)
+    ).json()) as OverlayState;
+    expect(idleState.suggestPhase).toBeNull();
+  });
+
+  it("AUTO_CYCLE_CHANGED triggers an IMMEDIATE push carrying the fresh suggestPhase (never the tally debounce)", async () => {
+    const autoCycle = makeFakeAutoCycle();
+    const { handle } = await start({ autoCycle });
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.suggestPhase).toBeNull();
+
+    autoCycle.setPhase({ phase: "suggest", phaseEndsAtMs: 123_456 });
+    await until(() => messages.length >= 2, "immediate AUTO_CYCLE_CHANGED push");
+    await flushIo();
+    expect(messages[1]?.suggestPhase).toEqual({ endsAtMs: 123_456 });
+
+    autoCycle.setPhase({ phase: null, phaseEndsAtMs: null });
+    await until(() => messages.length >= 3, "phase-end push");
+    expect(messages[2]?.suggestPhase).toBeNull();
+  });
+
+  it("nextUp lists queued winner titles IN QUEUE ORDER (A1 viewer-visible pending queue)", async () => {
+    const { handle } = await start({
+      nextUpTexts: ["first winner", "second winner", "third winner"],
+    });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const state = (await res.json()) as OverlayState;
+    expect(state.nextUp).toEqual(["first winner", "second winner", "third winner"]);
   });
 
   it("WINDOW_CLOSED and WINDOW_REVOKED collapse the banner to null (silent — no error text)", async () => {
