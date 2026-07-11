@@ -330,3 +330,48 @@ Procedure:
 Simulated tips carry a synthetic tipId (`se-test-*`) and default to currency
 `USD` when the simulator omits it, so test-triggered windows are distinguishable
 from real ones in the audit log.
+
+## 10. AI-Scene Terminal Viewer (Windows Terminal + OBS)
+
+A terminal client of the same screened /builder feed — for the "THE AI" scene,
+OBS captures a real Windows Terminal window instead of the /builder browser
+page. Content is identical to /builder (the screened wire only; nothing new
+crosses the compliance boundary).
+
+**Launch** (from anywhere — the `-d` flag sets the working directory):
+
+```
+wt -w vibecoding-ai --title "THE AI" -d C:\Users\ross\Projects\twitch-does-vibecoding npm run builder:terminal
+```
+
+- `-w vibecoding-ai` gives the window a stable identity, so re-running the same
+  line reuses/re-creates the same window; `--title "THE AI"` sets the tab title
+  OBS matches on.
+- The viewer connects to `127.0.0.1:OVERLAY_PORT` (default 4901, same as the
+  app). Until `npm run dev` is running it idles on a dim "standing by…" — that
+  is the normal between-builds/waiting state, not an error.
+
+**Suggested terminal look for capture** (suggestions, not requirements):
+
+- A dark scheme — "One Half Dark" or the stock "Campbell".
+- Cascadia Mono, font size ~14–16 for 1080p legibility.
+- Disable acrylic/transparency on the profile for a clean, chroma-free capture;
+  padding ~8.
+- The CLI hides the cursor itself, so no blinking cursor appears on capture.
+
+**OBS setup:**
+
+1. Source → **Window Capture** → pick the Windows Terminal window by title
+   ("THE AI").
+2. Capture Method: **Windows 10 (1903 and up)**.
+3. Crop the title bar: hold Alt and drag the top edge of the source, or add a
+   Crop/Pad filter.
+4. Reminder from §1 (UIPI): the terminal and OBS must run at the **same
+   elevation** — never run the terminal elevated.
+
+**Recovery behavior:**
+
+- App restart: the viewer auto-reconnects with backoff (500ms → 8s cap) and
+  repaints the full feed on reconnect — nothing to do.
+- Viewer window closed by accident: re-run the `wt` line above; OBS re-attaches
+  by window title.

@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "tsx --env-file-if-exists=.env src/main.ts",
     "gate:eval": "tsx --env-file-if-exists=.env scripts/gate-eval.ts",
+    "builder:terminal": "tsx --env-file-if-exists=.env scripts/builder-terminal.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src tests scripts"
