@@ -313,12 +313,12 @@
   async function newProject() {
     const { res, data } = await postJson("/api/workspace/new-project", {});
     if (!res.ok) {
-      if (data && data.reason === "build-active") {
+      if (data?.reason === "build-active") {
         roundStartError = "Can't start a new project while a build is running.";
-      } else if (data && data.reason === "halted") {
+      } else if (data?.reason === "halted") {
         roundStartError = "Can't start a new project while halted — recover first.";
       } else {
-        roundStartError = data && data.error ? data.error : "New project couldn't start.";
+        roundStartError = data?.error ? data.error : "New project couldn't start.";
       }
       renderAll();
     }

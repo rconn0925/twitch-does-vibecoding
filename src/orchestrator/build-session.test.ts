@@ -16,10 +16,7 @@ import type {
 } from "../shared/types.js";
 import { type BuildSessionDeps, createBuildSession } from "./build-session.js";
 import type { Comp02Deps } from "./comp02.js";
-import {
-  BUILD_SYSTEM_PROMPT_CONTINUE,
-  BUILD_SYSTEM_PROMPT_SCAFFOLD,
-} from "./prompt-boundary.js";
+import { BUILD_SYSTEM_PROMPT_CONTINUE, BUILD_SYSTEM_PROMPT_SCAFFOLD } from "./prompt-boundary.js";
 import type {
   AgentMessage,
   AgentRunner,

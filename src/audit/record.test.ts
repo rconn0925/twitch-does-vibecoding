@@ -22,6 +22,7 @@ import {
   recordWindowExpired,
   recordWindowOpened,
   recordWindowRevoked,
+  recordWorkspaceReset,
 } from "./record.js";
 
 function candidate(overrides: Partial<SuggestionCandidate> = {}): SuggestionCandidate {
@@ -246,6 +247,19 @@ describe("audit record helpers (append-only ledger)", () => {
     expect(rows[0]?.source).toBe("operator");
     expect(rows[0]?.decision).toBe("enabled");
     expect(rows[0]?.stream_mode).toBe("CHAOS_MODE");
+    db.close();
+  });
+
+  it("recordWorkspaceReset inserts a workspace_reset row from the operator with the new generation (quick-0iu)", () => {
+    const db = openDb(":memory:");
+    recordWorkspaceReset(db, { generation: 2, streamMode: "IDLE" });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "workspace_reset" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event_type).toBe("workspace_reset");
+    expect(rows[0]?.source).toBe("operator");
+    expect(rows[0]?.decision).toBeNull();
+    expect(rows[0]?.rationale).toContain("generation 2");
+    expect(rows[0]?.stream_mode).toBe("IDLE");
     db.close();
   });
 

@@ -35,9 +35,7 @@ export function createWorkspaceState(db: Database.Database): WorkspaceView {
      VALUES (1, 1, 0, @now)`,
   ).run({ now: Date.now() });
 
-  const read = db.prepare(
-    "SELECT generation, scaffolded FROM workspace_state WHERE id = 1",
-  );
+  const read = db.prepare("SELECT generation, scaffolded FROM workspace_state WHERE id = 1");
 
   function row(): { generation: number; scaffolded: number } {
     return read.get() as { generation: number; scaffolded: number };

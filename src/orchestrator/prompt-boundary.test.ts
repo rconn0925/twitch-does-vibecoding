@@ -29,43 +29,48 @@ const MODES: Array<{ mode: BuildPromptMode; fixed: string }> = [
 ];
 
 describe("buildBuildPrompt — zero-interpolation delimited boundary (both modes)", () => {
-  it.each(MODES)(
-    "$mode: returns the FIXED orchestrator-authored system prompt (byte-identical to the const)",
-    ({ mode, fixed }) => {
-      const { systemPrompt } = buildBuildPrompt(BENIGN, mode);
-      expect(systemPrompt).toBe(fixed);
-    },
-  );
+  it.each(
+    MODES,
+  )("$mode: returns the FIXED orchestrator-authored system prompt (byte-identical to the const)", ({
+    mode,
+    fixed,
+  }) => {
+    const { systemPrompt } = buildBuildPrompt(BENIGN, mode);
+    expect(systemPrompt).toBe(fixed);
+  });
 
-  it.each(MODES)(
-    "$mode: systemPrompt is byte-identical regardless of task text (incl. an injection payload)",
-    ({ mode, fixed }) => {
-      const benign = buildBuildPrompt(BENIGN, mode).systemPrompt;
-      const injected = buildBuildPrompt(INJECTION, mode).systemPrompt;
-      expect(injected).toBe(benign);
-      expect(injected).toBe(fixed);
-    },
-  );
+  it.each(
+    MODES,
+  )("$mode: systemPrompt is byte-identical regardless of task text (incl. an injection payload)", ({
+    mode,
+    fixed,
+  }) => {
+    const benign = buildBuildPrompt(BENIGN, mode).systemPrompt;
+    const injected = buildBuildPrompt(INJECTION, mode).systemPrompt;
+    expect(injected).toBe(benign);
+    expect(injected).toBe(fixed);
+  });
 
-  it.each(MODES)(
-    "$mode: places the task text ONLY inside the <task_description> delimiters of userPrompt",
-    ({ mode }) => {
-      const { userPrompt } = buildBuildPrompt(INJECTION, mode);
-      expect(userPrompt).toContain('<task_description source="chat">');
-      expect(userPrompt).toContain("</task_description>");
-      // The untrusted text sits between the open and close tags, verbatim.
-      const inner = userPrompt
-        .split('<task_description source="chat">')[1]
-        ?.split("</task_description>")[0];
-      expect(inner).toContain(INJECTION);
-      // Removing the delimited region leaves NO trace of the text elsewhere.
-      const outsideFrame = userPrompt.replace(
-        `<task_description source="chat">\n${INJECTION}\n</task_description>`,
-        "",
-      );
-      expect(outsideFrame).not.toContain(INJECTION);
-    },
-  );
+  it.each(
+    MODES,
+  )("$mode: places the task text ONLY inside the <task_description> delimiters of userPrompt", ({
+    mode,
+  }) => {
+    const { userPrompt } = buildBuildPrompt(INJECTION, mode);
+    expect(userPrompt).toContain('<task_description source="chat">');
+    expect(userPrompt).toContain("</task_description>");
+    // The untrusted text sits between the open and close tags, verbatim.
+    const inner = userPrompt
+      .split('<task_description source="chat">')[1]
+      ?.split("</task_description>")[0];
+    expect(inner).toContain(INJECTION);
+    // Removing the delimited region leaves NO trace of the text elsewhere.
+    const outsideFrame = userPrompt.replace(
+      `<task_description source="chat">\n${INJECTION}\n</task_description>`,
+      "",
+    );
+    expect(outsideFrame).not.toContain(INJECTION);
+  });
 
   it.each(MODES)("$mode: never leaks the task text into the systemPrompt", ({ mode }) => {
     const { systemPrompt } = buildBuildPrompt(INJECTION, mode);
@@ -73,15 +78,13 @@ describe("buildBuildPrompt — zero-interpolation delimited boundary (both modes
     expect(systemPrompt).not.toContain("weather dashboard");
   });
 
-  it.each(MODES)(
-    "$mode: inserts the untrusted text verbatim (no meaning-changing escaping)",
-    ({ mode }) => {
-      const tricky =
-        'text with "quotes" & <angle> brackets </task_description> and newlines\nhere';
-      const { userPrompt } = buildBuildPrompt(tricky, mode);
-      expect(userPrompt).toContain(tricky);
-    },
-  );
+  it.each(MODES)("$mode: inserts the untrusted text verbatim (no meaning-changing escaping)", ({
+    mode,
+  }) => {
+    const tricky = 'text with "quotes" & <angle> brackets </task_description> and newlines\nhere';
+    const { userPrompt } = buildBuildPrompt(tricky, mode);
+    expect(userPrompt).toContain(tricky);
+  });
 
   it("scaffold and continue system prompts are DISTINCT fixed constants", () => {
     expect(BUILD_SYSTEM_PROMPT_SCAFFOLD).not.toBe(BUILD_SYSTEM_PROMPT_CONTINUE);
