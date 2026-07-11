@@ -325,7 +325,7 @@ describe("RoundManager.recordVote (CHAT-03/D2-14/D2-15)", () => {
 });
 
 describe("RoundManager.closeRound (D2-03/D2-05)", () => {
-  it("clear leader: closes row, enqueues winner once with the persisted pooled_at_ms, returns losers", () => {
+  it("clear leader: closes row, enqueues winner once with the persisted pooled_at_ms, drops losers", () => {
     const h = makeHarness();
     const snap = h.manager.startRound();
     h.manager.recordVote("111", 1);
@@ -360,10 +360,10 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
       .get(snap.roundId) as { pooled_at_ms: number };
     expect(pooledAtMs).toBe(persisted.pooled_at_ms);
 
-    // losers back in the pool, winner not
+    // Losers DROPPED (streamer decision 2026-07-11) — nobody returns to the pool
     const pooledIds = h.pool.list().map((a) => a.candidate.id);
-    expect(pooledIds).toContain("cand-2");
-    expect(pooledIds).toContain("cand-3");
+    expect(pooledIds).not.toContain("cand-2");
+    expect(pooledIds).not.toContain("cand-3");
     expect(pooledIds).not.toContain("cand-1");
 
     expect(h.machine.mode).toBe("IDLE");
@@ -464,13 +464,8 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
     expect(enqueue).toHaveBeenCalledTimes(1);
     const [winCand] = enqueue.mock.calls[0] as unknown as [SuggestionCandidate];
     expect(winCand.id).toBe("cand-2");
-    // Losers repool; the winner rides the SAME enqueue path as a voted winner.
-    expect(
-      pool
-        .list()
-        .map((a) => a.candidate.id)
-        .sort(),
-    ).toEqual(["cand-1", "cand-3"]);
+    // Losers DROPPED (2026-07-11); the winner rides the SAME enqueue path as a voted winner.
+    expect(pool.list()).toEqual([]);
     expect(machine.mode).toBe("IDLE");
     db.close();
   });
@@ -534,13 +529,9 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
 
     h.manager.closeRound();
 
-    // Winner AND losers are all back in the pool — nothing vanished.
-    expect(
-      h.pool
-        .list()
-        .map((a) => a.candidate.id)
-        .sort(),
-    ).toEqual(["cand-1", "cand-2", "cand-3"]);
+    // The WINNER repools (WR-01 — an approved winner is never silently
+    // dropped on halt); losers are dropped per the 2026-07-11 decision.
+    expect(h.pool.list().map((a) => a.candidate.id)).toEqual(["cand-1"]);
     h.db.close();
   });
 
@@ -552,13 +543,9 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
 
     h.manager.closeRound();
 
-    // Only the losers repool; the winner is owned by the resubmission path.
-    expect(
-      h.pool
-        .list()
-        .map((a) => a.candidate.id)
-        .sort(),
-    ).toEqual(["cand-2", "cand-3"]);
+    // Nothing repools: losers are dropped (2026-07-11) and the winner is
+    // owned by the resubmission path.
+    expect(h.pool.list()).toEqual([]);
     h.db.close();
   });
 });
@@ -841,7 +828,7 @@ describe("concurrent rounds (A1, quick-t5k): rounds keep cycling while a build e
     h.db.close();
   });
 
-  it("closeRound of a concurrent round: winner enqueued, mode NOT transitioned, losers repooled", () => {
+  it("closeRound of a concurrent round: winner enqueued, mode NOT transitioned, losers dropped", () => {
     const h = makeHarness();
     enterBuild(h);
     h.manager.startRound();
@@ -851,8 +838,8 @@ describe("concurrent rounds (A1, quick-t5k): rounds keep cycling while a build e
 
     expect(h.machine.mode).toBe("BUILD_IN_PROGRESS"); // untouched — the build owns the mode
     expect(h.enqueueWinner).toHaveBeenCalledTimes(1);
-    const pooledIds = h.pool.list().map((a) => a.candidate.id);
-    expect(pooledIds.sort()).toEqual(["cand-2", "cand-3"]);
+    // Losers DROPPED (streamer decision 2026-07-11) — the pool stays empty.
+    expect(h.pool.list()).toEqual([]);
     expect(h.manager.snapshot()).toBeNull();
     h.db.close();
   });

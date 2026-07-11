@@ -381,8 +381,11 @@ export class RoundManager {
   /**
    * Close the round: pick the winner (random among tied leaders, D2-03; on
    * ZERO votes the earliest-submitted candidate wins — D-03, quick-t5k), hand
-   * it to the injected funnel with its PERSISTED pooled_at_ms (D2-05), return
-   * the losers to the pool.
+   * it to the injected funnel with its PERSISTED pooled_at_ms (D2-05). Losers
+   * are DROPPED, not repooled (streamer decision 2026-07-11): one shot per
+   * round keeps the pool fresh, and dropping frees the suggester's intake
+   * slot immediately. (Halt-RECOVERY discard still repools — those candidates
+   * never got a fair vote; that path is unrelated to this rule.)
    */
   closeRound(): void {
     const round = this.#round;
@@ -446,7 +449,9 @@ export class RoundManager {
 
     let winner: StoredOption | undefined;
     if (winnerOption === null) {
-      // Zero votes: no winner, everyone returns to the pool (UI-SPEC beat).
+      // Defensive-only branch (a round always has >=2 options and zero votes
+      // now resolves to the earliest winner). If ever reached, repool rather
+      // than silently drop gate-approved candidates that got no vote at all.
       for (const option of round.options) {
         this.#pool.add(option.candidate, option.result);
       }
@@ -480,11 +485,9 @@ export class RoundManager {
           }
         }
       }
-      for (const option of round.options) {
-        if (option.option !== winnerOption) {
-          this.#pool.add(option.candidate, option.result);
-        }
-      }
+      // Losers are dropped (streamer decision 2026-07-11): no repool. Their
+      // suggesters' intake slots free on the next check (lazy cleanup) so
+      // fresh ideas can replace them immediately.
     }
 
     // A close can never fight a halt: only leave VOTING_ROUND if we're in it.

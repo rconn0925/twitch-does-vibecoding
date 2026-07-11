@@ -210,7 +210,8 @@ describe("crash-restart mid-round (success criterion 5, D2-14)", () => {
     expect(after.round).toBeNull();
     expect(after.queue).toHaveLength(1);
     expect(after.queue[0]?.text).toBe("build a snake game"); // option 1 wins 2–1
-    expect(after.pool.map((p) => p.candidate.text)).toContain("build a pomodoro timer");
+    // Loser dropped, not repooled (streamer decision 2026-07-11)
+    expect(after.pool.map((p) => p.candidate.text)).not.toContain("build a pomodoro timer");
   });
 });
 
@@ -241,7 +242,8 @@ describe("round expired during downtime (D2-14)", () => {
     expect(state.mode).toBe("IDLE");
     expect(state.queue).toHaveLength(1);
     expect(state.queue[0]?.text).toBe("build a pomodoro timer"); // option 2 won
-    expect(state.pool.map((p) => p.candidate.text)).toContain("build a snake game");
+    // Loser dropped, not repooled (streamer decision 2026-07-11)
+    expect(state.pool.map((p) => p.candidate.text)).not.toContain("build a snake game");
 
     // The close is audited like any live close (COMP-05).
     const res = await fetch(`${baseUrl(b.handle)}/api/audit?limit=50&eventType=round_closed`);
