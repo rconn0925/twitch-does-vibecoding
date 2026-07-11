@@ -77,6 +77,19 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Pool rows stack vertically (440px panel): suggestion text full-width on
+   the first line, suggester name muted underneath. Queue rows stay inline. */
+.wc-row-stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.wc-row-stacked .wc-text {
+  flex: none;
+  width: 100%;
+}
+
 .wc-empty {
   margin-top: 12px;
   font-size: 20px;

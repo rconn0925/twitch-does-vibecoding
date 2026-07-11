@@ -48,7 +48,9 @@
       return;
     }
     for (const item of pool) {
-      const row = el("div", "wc-row");
+      // Stacked layout (440px panel): suggestion text on its own line, the
+      // suggester's name muted underneath — both too wide to share a row.
+      const row = el("div", "wc-row wc-row-stacked");
       row.appendChild(el("span", "wc-text", truncate(item.text, TEXT_MAX)));
       if (item.username !== null && item.username !== undefined) {
         row.appendChild(el("span", "wc-user", truncate(item.username, USER_MAX)));
