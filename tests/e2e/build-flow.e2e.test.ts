@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { listAuditRecords, listBuildHistory } from "../../src/audit/record.js";
 import { createApp } from "../../src/main.js";
+import type {
+  GalleryPublisher,
+  PublishInput,
+  PublishResult,
+} from "../../src/orchestrator/gallery-publisher.js";
 import { translate } from "../../src/orchestrator/progress-events.js";
 import type { AgentRunner, DevServerProbe, SandboxAdapter } from "../../src/orchestrator/types.js";
 import { BUILD_STAGE_CHANGED } from "../../src/overlay/server.js";
@@ -237,6 +242,112 @@ describe("build-flow e2e (MVP happy path) — 03-06 GREEN", () => {
     expect(entry).toBeDefined();
     expect(entry?.provenance).toBe("vote");
     expect(entry?.result).toBe("built");
+  });
+});
+
+describe("build-flow e2e (gallery publish wiring) — done-only, failure-isolated (quick-22l)", () => {
+  /** Instantly-done runner: one Write batch then success — no gate needed. */
+  const doneRunner = (): AgentRunner => ({
+    run() {
+      return (async function* () {
+        yield writeBatch("index.html", "<p>hi</p>") as never;
+        yield resultSuccess as never;
+      })();
+    },
+  });
+
+  function recordingPublisher(result?: () => Promise<PublishResult>): {
+    publisher: GalleryPublisher;
+    calls: PublishInput[];
+  } {
+    const calls: PublishInput[] = [];
+    const publisher: GalleryPublisher = {
+      publishNow(input) {
+        calls.push(input);
+        return result
+          ? result()
+          : Promise.resolve({
+              status: "published",
+              commitHash: "fakehash",
+              detail: "test",
+            } satisfies PublishResult);
+      },
+    };
+    return { publisher, calls };
+  }
+
+  it("a done build invokes publishNow ONCE with { generation, title: task.text, taskId } and audits the attempt", async () => {
+    const { publisher, calls } = recordingPublisher();
+    const app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      agentRunner: doneRunner(),
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
+      galleryPublisher: publisher,
+    });
+
+    drivePooledWinner(app);
+    await waitUntil(() => app.machine.mode === "IDLE");
+    await waitUntil(() => calls.length > 0);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ generation: 1, title: "make a counter app" });
+    expect(typeof calls[0]?.taskId).toBe("string");
+    // One gallery_publish audit row per attempt (T-22l-06).
+    await waitUntil(
+      () => listAuditRecords(app.db, { limit: 10, eventType: "gallery_publish" }).length > 0,
+    );
+    const rows = listAuditRecords(app.db, { limit: 10, eventType: "gallery_publish" });
+    expect(rows[0]?.decision).toBe("published");
+
+    await app.close();
+  });
+
+  it("a REJECTING publishNow leaves the app healthy: build finalized done, no unhandled rejection", async () => {
+    const { publisher, calls } = recordingPublisher(() =>
+      Promise.reject(new Error("publisher exploded")),
+    );
+    const app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      agentRunner: doneRunner(),
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
+      galleryPublisher: publisher,
+    });
+
+    drivePooledWinner(app);
+    await waitUntil(() => app.machine.mode === "IDLE");
+    await waitUntil(() => calls.length > 0);
+
+    // The build finalized done despite the publisher rejection.
+    const rows = listBuildHistory(app.db, { limit: 10 });
+    expect(rows.some((r) => r.result === "built")).toBe(true);
+    expect(app.machine.mode).toBe("IDLE");
+    // Give the rejected promise's .catch a tick to run, then close cleanly.
+    await new Promise((r) => setTimeout(r, 20));
+    await expect(app.close()).resolves.toBeUndefined();
+  });
+
+  it("no galleryPublisher injected → the done path stays inert (no gallery_publish rows)", async () => {
+    const app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      agentRunner: doneRunner(),
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
+    });
+
+    drivePooledWinner(app);
+    await waitUntil(() => app.machine.mode === "IDLE");
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(listAuditRecords(app.db, { limit: 10, eventType: "gallery_publish" })).toHaveLength(0);
+    await app.close();
   });
 });
 

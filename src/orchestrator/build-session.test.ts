@@ -239,6 +239,8 @@ function makeDeps(over: {
   onHeldForReview?: (task: QueuedTask, planText: string) => void;
   narrator?: BuildNarrator;
   builderFeed?: BuilderFeedSink;
+  onBuildDone?: (task: QueuedTask) => void;
+  turnTimeoutMs?: number;
 }): { deps: BuildSessionDeps; taskQueue: TaskQueue } {
   const taskQueue = new TaskQueue();
   taskQueue.enqueue(over.task);
@@ -255,6 +257,8 @@ function makeDeps(over: {
     ...(over.onHeldForReview ? { onHeldForReview: over.onHeldForReview } : {}),
     ...(over.narrator ? { narrator: over.narrator } : {}),
     ...(over.builderFeed ? { builderFeed: over.builderFeed } : {}),
+    ...(over.onBuildDone ? { onBuildDone: over.onBuildDone } : {}),
+    ...(over.turnTimeoutMs !== undefined ? { turnTimeoutMs: over.turnTimeoutMs } : {}),
   };
   return { deps, taskQueue };
 }
@@ -1200,6 +1204,261 @@ describe("createBuildSession — provenance → build_history (HIST-01, 05-01)",
     const session = createBuildSession(deps);
     db.close(); // simulate shutdown BEFORE the fail-closed finalize runs
     await expect(session.startBuild(task, "vote")).resolves.toBeUndefined();
+  });
+});
+
+describe("createBuildSession — onBuildDone done-seam (quick-22l)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  /** A machine + a halt() that flips it to HALTED (simulating a mid-build veto). */
+  function haltableMachine() {
+    let mode: StreamMode = "IDLE";
+    const machine: BuildMachineView = {
+      get mode() {
+        return mode;
+      },
+      transition(next) {
+        mode = next;
+      },
+      setActiveTask() {},
+    };
+    return { machine, halt: () => (mode = "HALTED") };
+  }
+
+  /** A runner that flips the machine to HALTED DURING the build turn's stream. */
+  function haltingBuildRunner(onBuild: () => void): AgentRunner {
+    return {
+      run(): AsyncIterable<AgentMessage> {
+        const messages = HAPPY_SCRIPT.build ?? [];
+        return (async function* () {
+          for (const message of messages) {
+            yield message as AgentMessage;
+            onBuild();
+          }
+        })();
+      },
+    };
+  }
+
+  /** A runner whose stream NEVER yields — drives the WR-07 watchdog path. */
+  function hangingRunner(): AgentRunner {
+    return {
+      run(): AsyncIterable<AgentMessage> {
+        return (async function* () {
+          await new Promise<never>(() => {});
+          yield undefined as never;
+        })();
+      },
+    };
+  }
+
+  function hookedDeps(over: {
+    task: QueuedTask;
+    machine: BuildMachineView;
+    agentRunner: AgentRunner;
+    comp02: Comp02Deps;
+    onBuildDone: (task: QueuedTask) => void;
+    turnTimeoutMs?: number;
+  }) {
+    const { sink } = capturingSink();
+    return makeDeps({
+      task: over.task,
+      db,
+      machine: over.machine,
+      agentRunner: over.agentRunner,
+      sandboxAdapter: fakeSandbox(),
+      comp02: over.comp02,
+      progress: sink,
+      onBuildDone: over.onBuildDone,
+      ...(over.turnTimeoutMs !== undefined ? { turnTimeoutMs: over.turnTimeoutMs } : {}),
+    });
+  }
+
+  it("finalize(task, 'done') calls onBuildDone exactly once with the task", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildDone = vi.fn();
+    const task = queuedTask("task-hook-1", "make a counter");
+    const { deps } = hookedDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner(HAPPY_SCRIPT).runner,
+      comp02,
+      onBuildDone,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(onBuildDone).toHaveBeenCalledTimes(1);
+    expect(onBuildDone).toHaveBeenCalledWith(task);
+  });
+
+  it("onBuildDone absent → a done build finalizes without error (optional dep)", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-hook-2", "make a counter");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: fakeAgentRunner(HAPPY_SCRIPT).runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+
+    await expect(createBuildSession(deps).startBuild(task)).resolves.toBeUndefined();
+    expect(machine.mode).toBe("IDLE");
+  });
+
+  it("NOT called on a failed build (enterDecision after auto-retry exhausts)", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildDone = vi.fn();
+    const task = queuedTask("task-hook-3", "boom");
+    const { deps } = hookedDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner({ build: [resultFailed] }).runner,
+      comp02,
+      onBuildDone,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS"); // decision pending
+    expect(onBuildDone).not.toHaveBeenCalled();
+  });
+
+  it("NOT called on a model refusal (enterDecision 'refused')", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildDone = vi.fn();
+    const task = queuedTask("task-hook-4", "nope");
+    const { deps } = hookedDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner({ build: [modelRefusal] }).runner,
+      comp02,
+      onBuildDone,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+    expect(onBuildDone).not.toHaveBeenCalled();
+  });
+
+  it("NOT called on an in-flight COMP-02 rejection (finalize 'refused')", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02((id) =>
+      id.endsWith("-output")
+        ? { decision: "rejected", category: "malware", rationale: "no" }
+        : APPROVED,
+    );
+    const onBuildDone = vi.fn();
+    const task = queuedTask("task-hook-5", "make a page");
+    const { deps } = hookedDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner({ build: [writeBatch("evil.js", "leak"), resultSuccess] })
+        .runner,
+      comp02,
+      onBuildDone,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+    expect(machine.mode).toBe("IDLE"); // finalize("refused") ran
+    expect(onBuildDone).not.toHaveBeenCalled();
+  });
+
+  it("NOT called on a WR-07 watchdog timeout (hung stream → decision pending)", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildDone = vi.fn();
+    const task = queuedTask("task-hook-6", "hang forever");
+    const { deps } = hookedDeps({
+      task,
+      machine,
+      agentRunner: hangingRunner(),
+      comp02,
+      onBuildDone,
+      turnTimeoutMs: 20,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS"); // decision pending
+    expect(onBuildDone).not.toHaveBeenCalled();
+  });
+
+  it("NOT called on finalizeAborted (halt/veto mid-build)", async () => {
+    const { machine, halt } = haltableMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildDone = vi.fn();
+    const task = queuedTask("task-hook-7", "vetoed mid-build");
+    const { deps } = hookedDeps({
+      task,
+      machine,
+      agentRunner: haltingBuildRunner(halt),
+      comp02,
+      onBuildDone,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+    expect(machine.mode).toBe("HALTED");
+    expect(onBuildDone).not.toHaveBeenCalled();
+  });
+
+  it("NOT called on skipTask (streamer skips a refused build)", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildDone = vi.fn();
+    const task = queuedTask("task-hook-8", "skip me");
+    const { deps, taskQueue } = hookedDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner({ build: [modelRefusal] }).runner,
+      comp02,
+      onBuildDone,
+    });
+
+    const session = createBuildSession(deps);
+    await session.startBuild(task);
+    session.skipTask(task.id);
+
+    expect(machine.mode).toBe("IDLE");
+    expect(taskQueue.list()).toHaveLength(0);
+    expect(onBuildDone).not.toHaveBeenCalled();
+  });
+
+  it("a THROWING onBuildDone never breaks finalize: IDLE reached, task dequeued, build_history row lands", async () => {
+    const { machine, transitions } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildDone = vi.fn(() => {
+      throw new Error("publisher hook blew up");
+    });
+    const task = queuedTask("task-hook-9", "make a counter");
+    const { deps, taskQueue } = hookedDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner(HAPPY_SCRIPT).runner,
+      comp02,
+      onBuildDone,
+    });
+
+    await expect(createBuildSession(deps).startBuild(task, "vote")).resolves.toBeUndefined();
+
+    expect(onBuildDone).toHaveBeenCalledTimes(1);
+    expect(machine.mode).toBe("IDLE");
+    expect(transitions).toContain("IDLE");
+    expect(taskQueue.list()).toHaveLength(0);
+    const rows = listBuildHistory(db, { limit: 10 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.result).toBe("built");
   });
 });
 

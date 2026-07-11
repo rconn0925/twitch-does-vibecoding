@@ -10,6 +10,7 @@ import {
   recordAutoCycleToggled,
   recordChaosPick,
   recordChaosToggled,
+  recordGalleryPublish,
   recordPoolDropped,
 } from "./audit/record.js";
 import { pickChaos } from "./chaos/selector.js";
@@ -55,6 +56,11 @@ import {
   startConsoleServer,
   type TwitchConnectionStatus,
 } from "./operator-console/server.js";
+import {
+  createGalleryPublisher,
+  type GalleryPublisher,
+  resolveGalleryConfig,
+} from "./orchestrator/gallery-publisher.js";
 import { type BuildSession, createBuildSession } from "./orchestrator/index.js";
 import type {
   AgentRunner,
@@ -191,6 +197,14 @@ export interface CreateAppOptions {
    * is reproducible. Absent = the production `node:crypto.randomInt` uniform pick.
    */
   chaosRng?: (max: number) => number;
+  /**
+   * Gallery snapshot publisher seam (quick-22l): injected fake in tests, the
+   * real host-side git publisher from the entrypoint helper
+   * (buildGalleryPublisher). ABSENT → no publishing at all — which is why the
+   * fake-runner e2e suites stay inert by default. Only a build that finalizes
+   * `done` ever reaches publishNow (build-session's onBuildDone seam).
+   */
+  galleryPublisher?: GalleryPublisher;
 }
 
 export interface AppHandle {
@@ -243,6 +257,14 @@ function envPositive(raw: string | undefined, fallback: number): number {
 }
 
 const DEFAULT_POOL_MAX_SIZE = 50;
+/**
+ * WR-07 (quick-22l): the single sandboxed build turn's watchdog budget in
+ * seconds — env-tunable via BUILD_TURN_TIMEOUT_SECONDS. Default 900 (15 min):
+ * the old hardcoded 5-min bound aborted a live, progressing build. Re-check at
+ * the Phase 5 dry run (WR-07 judgment item). The fail-closed abort path in
+ * build-session.ts is unchanged — only the budget is injected here.
+ */
+const DEFAULT_BUILD_TURN_TIMEOUT_SECONDS = 900;
 const DEFAULT_INTAKE_COOLDOWN_SECONDS = 60;
 const DEFAULT_CHAT_SEND_INTERVAL_CAP = 15;
 const DEFAULT_CHAT_SEND_INTERVAL_MS = 30_000;
@@ -1030,6 +1052,44 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // quick-x7d: the broadcast /builder feed sink — every call site inside
       // the session is post-screening by construction (T-x7d-01).
       builderFeed,
+      // WR-07 (quick-22l): the live build turn's env-tunable watchdog budget
+      // (default 900s). build-session.ts's DEFAULT_TURN_TIMEOUT_MS stays the
+      // deps-absent fallback for tests/non-build turns.
+      turnTimeoutMs:
+        envPositive(process.env.BUILD_TURN_TIMEOUT_SECONDS, DEFAULT_BUILD_TURN_TIMEOUT_SECONDS) *
+        1_000,
+      // quick-22l gallery publish: fires ONLY on a `done` finalize (the seam is
+      // inside finalize's done branch). Fire-and-forget — a slow/failed publish
+      // can never block the show loop; ONE audit row per attempt
+      // (published / no-changes / failed, T-22l-06). The generation is read
+      // SYNCHRONOUSLY while the machine is still BUILD_IN_PROGRESS, so a
+      // console "New project" rotation cannot race it. task.text is the
+      // gate-APPROVED title (D-03) — the same string build_history records.
+      onBuildDone: (task) => {
+        if (!opts.galleryPublisher) return;
+        const generation = workspace.generation();
+        void opts.galleryPublisher
+          .publishNow({ generation, title: task.text, taskId: task.id })
+          .then((result) => {
+            // db.open guard mirrors auditIfOpen (WR-05 shutdown drain).
+            if (db.open) {
+              recordGalleryPublish(db, {
+                taskId: task.id,
+                generation,
+                status: result.status,
+                commitHash: result.commitHash,
+                detail: result.detail,
+                streamMode: machine.mode,
+              });
+            }
+          })
+          .catch((err) =>
+            logger.error(
+              { err, taskId: task.id },
+              "gallery publish hook failed — show loop unaffected",
+            ),
+          );
+      },
       logger,
     });
     orchestrator = buildSession;
@@ -1647,6 +1707,31 @@ async function buildDonationAdapter(logger: Logger): Promise<DonationEventSource
   }
 }
 
+/**
+ * Entrypoint-only gallery publisher construction (buildDonationAdapter pattern —
+ * but a STATIC import of gallery-publisher.js is fine: it has no SDK/native
+ * deps). Disabled (GALLERY_PUBLISH_ENABLED=false) → a loud warn + undefined, so
+ * createApp composes no publisher and done builds simply don't snapshot.
+ * NOTE (v1 decision): publishNow is NOT wired to any timer — per-build commits
+ * ARE the periodic cadence; the exported publishNow seam is the future
+ * manual-use hook.
+ */
+function buildGalleryPublisher(logger: Logger): GalleryPublisher | undefined {
+  const config = resolveGalleryConfig(process.env);
+  if (!config) {
+    logger.warn(
+      "GALLERY PUBLISHING DISABLED — set GALLERY_REPO_URL / unset GALLERY_PUBLISH_ENABLED=false to enable post-build snapshots",
+    );
+    return undefined;
+  }
+  logger.info(
+    { repoUrl: config.repoUrl },
+    "GALLERY PUBLISHER ARMED — done builds snapshot to %s via host-side git",
+    config.repoUrl,
+  );
+  return createGalleryPublisher({ config, logger });
+}
+
 // Run-as-entrypoint branch (npm run dev): tsx executes this file directly.
 const invokedPath = process.argv[1];
 const isMain =
@@ -1667,8 +1752,10 @@ if (isMain) {
     buildDonationAdapter(bootLogger),
     buildClassifierTransport(bootLogger),
   ])
-    .then(([twitchOpts, orchestratorOpts, donationSource, classifierTransport]) =>
-      createApp({
+    .then(([twitchOpts, orchestratorOpts, donationSource, classifierTransport]) => {
+      // Synchronous construction alongside the Promise.all results (quick-22l).
+      const galleryPublisher = buildGalleryPublisher(bootLogger);
+      return createApp({
         dbPath,
         port,
         overlayPort,
@@ -1678,8 +1765,9 @@ if (isMain) {
         ...orchestratorOpts,
         ...(donationSource ? { donationSource } : {}),
         ...(classifierTransport ? { classifierTransport } : {}),
-      }),
-    )
+        ...(galleryPublisher ? { galleryPublisher } : {}),
+      });
+    })
     .then((app) =>
       // Entrypoint-only: this is the sole call path that loads the native
       // uiohook module. Test runs (vitest) never reach this branch.
