@@ -28,8 +28,13 @@ const ENV_SPREAD = /\.\.\.\s*(process\.env|opts\.env|deps\.env)/;
  * Host-secret identifiers that must never be referenced in the sandbox env.
  * The negative lookbehind allows ONLY the deliberate SANDBOX_ANTHROPIC_API_KEY
  * fallback token — a bare ANTHROPIC_API_KEY (the host key) is still flagged.
+ * GALLERY_GITHUB_TOKEN / GH_TOKEN (quick-260711-hak host-side gallery PAT) are
+ * named EXPLICITLY: the generic `TOKEN` alternation already catches them, but
+ * naming them makes the gallery-token boundary a first-class, self-documented
+ * guard so a future refactor can't quietly drop it.
  */
-const HOST_SECRET = /TWITCH_|SECRET|TOKEN|(?<!SANDBOX_)ANTHROPIC_API_KEY/;
+const HOST_SECRET =
+  /GALLERY_GITHUB_TOKEN|GH_TOKEN|TWITCH_|SECRET|TOKEN|(?<!SANDBOX_)ANTHROPIC_API_KEY/;
 
 const sandboxFiles = files.filter((f) => f.rel === SANDBOX_FILE);
 
@@ -72,8 +77,20 @@ describe("SAND-03 secrets-isolation invariant (source scan)", () => {
         stripped: "env.TWITCH_CLIENT_SECRET = cfg.secret;\n",
       },
       {
+        rel: "src/rogue/gallery-token.ts",
+        stripped: "env.GALLERY_GITHUB_TOKEN = cfg.token;\n",
+      },
+      {
+        rel: "src/rogue/gh-token.ts",
+        stripped: "env.GH_TOKEN = config.token;\n",
+      },
+      {
         rel: "src/ok/clean.ts",
         stripped: "const env = { PATH: '/usr/bin:/bin' };\n",
+      },
+      {
+        rel: "src/ok/gallery-mirror.ts",
+        stripped: "const mirror = 'data/gallery-mirror';\n",
       },
       {
         rel: "src/ok/sandbox-key.ts",
@@ -88,7 +105,12 @@ describe("SAND-03 secrets-isolation invariant (source scan)", () => {
     const secretHits = allMatches(synthetic, HOST_SECRET);
     expect(secretHits.has("src/rogue/host-token.ts")).toBe(true);
     expect(secretHits.has("src/rogue/twitch-leak.ts")).toBe(true);
+    // quick-260711-hak: the gallery PAT leaking into the sandbox env is flagged.
+    expect(secretHits.has("src/rogue/gallery-token.ts")).toBe(true);
+    expect(secretHits.has("src/rogue/gh-token.ts")).toBe(true);
     expect(secretHits.has("src/ok/clean.ts")).toBe(false);
+    // A benign gallery-mirror PATH reference (no token) is NOT flagged.
+    expect(secretHits.has("src/ok/gallery-mirror.ts")).toBe(false);
     // The distinct sandbox-scoped fallback token is deliberately NOT flagged.
     expect(secretHits.has("src/ok/sandbox-key.ts")).toBe(false);
   });

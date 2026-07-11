@@ -121,6 +121,27 @@ describe("createSandboxAdapter — spawn env isolation (SAND-03)", () => {
     }
   });
 
+  it("NEVER carries the gallery PAT (GALLERY_GITHUB_TOKEN / GH_TOKEN) in the sandbox spawn env (T-hak-01)", () => {
+    const { fn, calls } = captureSpawn();
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
+
+    adapter.spawn(spawnOpts());
+
+    const args = calls[0]?.args ?? [];
+    const envIdx = args.indexOf("/usr/bin/env");
+    const assignments = args.slice(envIdx + 1, args.indexOf("/usr/bin/claude"));
+    // Only PATH crosses on the primary path — no gallery token assignment at all.
+    expect(assignments).toEqual(["PATH=/usr/bin:/bin"]);
+    for (const assignment of assignments) {
+      expect(assignment.startsWith("GALLERY_GITHUB_TOKEN=")).toBe(false);
+      expect(assignment.startsWith("GH_TOKEN=")).toBe(false);
+    }
+    // The token names never appear anywhere in the spawn argv either.
+    const serialized = JSON.stringify(args);
+    expect(serialized).not.toContain("GALLERY_GITHUB_TOKEN");
+    expect(serialized).not.toContain("GH_TOKEN");
+  });
+
   it("never leaks a host TWITCH_/ANTHROPIC_API_KEY even when present on the SDK-supplied opts.env", () => {
     const { fn, calls } = captureSpawn();
     const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
