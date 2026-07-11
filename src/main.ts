@@ -1413,8 +1413,18 @@ async function buildDonationAdapter(logger: Logger): Promise<DonationEventSource
     );
     return undefined;
   }
+  // Opt-in smoke-test flag: ONLY the exact string "true" enables it — any other
+  // value (including "1"/"TRUE") is OFF. Simulated SE dashboard events open REAL
+  // control windows; NEVER enable during a broadcast (T-sfl-02).
+  const acceptTestEvents = process.env.SE_ACCEPT_TEST_EVENTS === "true";
+  if (acceptTestEvents) {
+    // Belt-and-braces with the adapter-level warning (the tested guarantee).
+    logger.warn(
+      "TEST MODE: SE_ACCEPT_TEST_EVENTS=true — simulated StreamElements events will open real control windows — NEVER enable during a broadcast",
+    );
+  }
   try {
-    const source = await connectStreamElements(jwt, logger);
+    const source = await connectStreamElements(jwt, logger, { acceptTestEvents });
     logger.info("DONATIONS ARMED — StreamElements realtime socket connecting");
     return source;
   } catch (err) {
