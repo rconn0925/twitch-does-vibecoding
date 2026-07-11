@@ -39,10 +39,12 @@ describe("parseCommand — !suggest", () => {
 });
 
 describe("parseCommand — !vote", () => {
-  it("parses votes for options 1-3", () => {
+  it("parses votes for options 1-5 (quick-l2a: matches DEFAULT_ROUND_MAX_OPTIONS)", () => {
     expect(parseCommand("!vote 1")).toEqual({ kind: "vote", option: 1 });
     expect(parseCommand("!vote 2")).toEqual({ kind: "vote", option: 2 });
     expect(parseCommand("!vote 3")).toEqual({ kind: "vote", option: 3 });
+    expect(parseCommand("!vote 4")).toEqual({ kind: "vote", option: 4 });
+    expect(parseCommand("!vote 5")).toEqual({ kind: "vote", option: 5 });
   });
 
   it("is case-insensitive on the command word", () => {
@@ -50,12 +52,14 @@ describe("parseCommand — !vote", () => {
   });
 
   it("rejects out-of-range and malformed votes silently (D2-15)", () => {
-    expect(parseCommand("!vote 4")).toBeNull();
+    expect(parseCommand("!vote 6")).toBeNull();
     expect(parseCommand("!vote 0")).toBeNull();
+    expect(parseCommand("!vote 1.5")).toBeNull();
     expect(parseCommand("!vote abc")).toBeNull();
     expect(parseCommand("!vote")).toBeNull();
     expect(parseCommand("!vote 1 2")).toBeNull();
     expect(parseCommand("!vote -1")).toBeNull();
+    expect(parseCommand("!vote 10")).toBeNull();
     expect(parseCommand("!vote 22")).toBeNull();
   });
 });
