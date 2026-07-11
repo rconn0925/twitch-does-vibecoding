@@ -53,10 +53,7 @@ interface Harness {
 }
 
 function make(
-  opts: {
-    enabledAtBoot?: boolean;
-    startRoundImpl?: () => RoundSnapshot;
-  } = {},
+  opts: { enabledAtBoot?: boolean; startRoundImpl?: () => RoundSnapshot } = {},
 ): Harness {
   const machine = new StreamModeMachine();
   const roundEmitter = new EventEmitter();

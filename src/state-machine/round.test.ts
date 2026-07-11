@@ -443,7 +443,13 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
     pool.add(candidate("cand-2", { submittedAtMs: 300 }), approved);
     pool.add(candidate("cand-3", { submittedAtMs: 600 }), approved);
     const enqueue = enqueueWinnerSpy();
-    const manager = new RoundManager({ db, machine, pool, enqueueWinner: enqueue, now: () => 1_000 });
+    const manager = new RoundManager({
+      db,
+      machine,
+      pool,
+      enqueueWinner: enqueue,
+      now: () => 1_000,
+    });
     const snap = manager.startRound();
 
     manager.closeRound();
@@ -477,7 +483,13 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
     pool.add(candidate("cand-2", { submittedAtMs: 400 }), approved);
     pool.add(candidate("cand-3", { submittedAtMs: 400 }), approved);
     const enqueue = enqueueWinnerSpy();
-    const manager = new RoundManager({ db, machine, pool, enqueueWinner: enqueue, now: () => 1_000 });
+    const manager = new RoundManager({
+      db,
+      machine,
+      pool,
+      enqueueWinner: enqueue,
+      now: () => 1_000,
+    });
     const snap = manager.startRound();
 
     manager.closeRound();
