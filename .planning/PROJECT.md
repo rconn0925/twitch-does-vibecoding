@@ -23,7 +23,7 @@ Chat genuinely controls what gets built — safely. The suggest → filter → v
 
 **Paid influence**
 - [ ] Donations grant the donor a "free reign" window — direct control over what gets built, with duration proportional to the donation amount
-- [ ] Channel points redemptions offer a similar (smaller-scale) direct-influence mechanic
+- [ ] Channel points redemptions offer a similar (smaller-scale) direct-influence mechanic *(DESCOPED for v1, 2026-07-10 — channel not affiliate, Helix 403; built + fake-tested, dormant; see Key Decisions)*
 - [ ] Paid control NEVER bypasses compliance: every instruction still passes the ToS filter and streamer veto
 
 **Chaos mode**
@@ -74,6 +74,7 @@ Chat genuinely controls what gets built — safely. The suggest → filter → v
 | Bot + orchestrator + overlay + live app preview | Full stream-night experience in v1 | — Pending |
 | Sonnet for research, Fable for everything else | User's model policy for cost/quality split | — Pending |
 | v1 done = first real stream night | End-to-end proof in production: chat suggests, votes, watches a small app get built, zero ToS incidents | — Pending |
+| Descope channel-points control windows (PAID-02) from v1 — paid influence is tips-only (StreamElements) | The authorized broadcaster account is the real channel and is NOT Twitch affiliate; Helix returned 403 "The broadcaster must have partner or affiliate status" on the custom-rewards endpoint (verified 2026-07-10). Custom rewards cannot exist on this channel yet. Code stays built + dormant behind the existing degradation path (src/main.ts:1311-1320). | ✅ Decided 2026-07-10 — revisit when the channel reaches affiliate |
 
 ## Evolution
 
@@ -93,4 +94,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-07-10 after Phase 2 (chat vote loop) completion*
+*Last updated: 2026-07-10 — channel-points (PAID-02) v1 descope logged (quick 260710-sa0)*

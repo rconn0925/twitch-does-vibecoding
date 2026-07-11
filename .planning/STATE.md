@@ -4,7 +4,7 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Wave 0 WSL2 go/no-go recorded GO (2026-07-10). Remaining gates - Phase 1/2 UAT items, Phase 4 live gate 04-08, Phase 5 dry run.
-last_updated: "2026-07-11T00:49:40.000Z"
+last_updated: "2026-07-11T02:25:17.000Z"
 last_activity: 2026-07-10 -- Phase 3 Wave 0 WSL2 go/no-go recorded GO (quick 260710-q1f)
 progress:
   total_phases: 5
@@ -34,7 +34,7 @@ Progress: [█████████▓] 95% (code-complete; remaining 5% = hu
 
 **All remaining work is the consolidated end human-gate batch (user directive: build everything against fakes, batch human gates). Nothing more is buildable without live credentials / the streaming PC. The full checklist is below under "v1 Go-Live Human-Gate Batch".** Headline gates:
 - **Phase 3 — Wave 0 WSL2 go/no-go** (`03-.../SANDBOX-SETUP.md` ✅ GO, recorded 2026-07-10): all 5 proofs PASS (filesystem-escape, dev-server-exposure, wsl --terminate veto, A1 billing, latency); real builds cleared.
-- **Phase 4 — Live gate 04-08 + CR-03 human-check** (AR-04-01/02): StreamElements account/JWT, `channel:read:redemptions` broadcaster re-auth, real tip/redemption smoke test, Bits AUP/chargeback manual re-read, and CR-03 build-loop under a real WSL2 build engine.
+- **Phase 4 — Live gate 04-08 + CR-03 human-check** (AR-04-01/02): StreamElements account/JWT and `channel:read:redemptions` broadcaster re-auth are DONE (2026-07-10); remaining: real tip smoke test (channel-points redemption DESCOPED for v1 — non-affiliate), Bits AUP/chargeback manual re-read, and CR-03 build-loop under a real WSL2 build engine.
 - **Phase 5 — Stream-night dry run** (`05-DRY-RUN.md` ⏳ PENDING GO/NO-GO): the end-to-end test-channel rehearsal that exercises and depends on the two gates above.
 
 ## v1 Go-Live Human-Gate Batch
@@ -59,16 +59,17 @@ Everything buildable is built and green. These are the human-action gates, defer
 - [ ] Phase 3 UAT judgment items: CR-01 real-veto terminal state; WR-05 shutdown-drain; WR-07 watchdog bounds (5min turn / 2s drain) suit live timing.
 
 **D. Phase 4 — live gate 04-08 + CR-03** (`04-LIVE-GATE.md` / `04-08-PLAN.md`, AR-04-01/02)
-- [ ] StreamElements account + JWT bound (JWT never logged)
-- [ ] `channel:read:redemptions` broadcaster RE-AUTH (Phase 2 token lacks it)
-- [ ] A custom channel-points reward created + a real tip + a real redemption smoke-tested
+- [x] StreamElements account + JWT bound (JWT never logged) (done 2026-07-10)
+- [x] `channel:read:redemptions` broadcaster RE-AUTH (done 2026-07-10 — token now carries the scope)
+- [ ] A real tip smoke-tested (free-reign window opens live)
+- ~~A custom channel-points reward created + a real redemption smoke-tested~~ — **N/A, DESCOPED for v1** (channel not affiliate, Helix 403 2026-07-10; see PROJECT.md Key Decisions)
 - [ ] Manual re-read of the MEDIUM-confidence Bits AUP + chargeback claims
 - [ ] CR-03: paid-window drain + chaos re-pick under a REAL WSL2 build engine
 
 **E. Phase 5 — stream-night dry run** (`05-DRY-RUN.md`, ⏳ PENDING GO/NO-GO — the finish line)
 - [ ] Preconditions C + D read GO first (the runbook blocks otherwise)
 - [ ] Full loop on a test channel: suggest→filter→vote→build→preview
-- [ ] Real small donation free-reign window + channel-points window (donor name + countdown ONLY on broadcast)
+- [ ] Real small donation free-reign window + ~~channel-points window~~ (DESCOPED v1) (donor name + countdown ONLY on broadcast)
 - [ ] Chaos round (random pick, no vote; no payment↔chance coupling)
 - [ ] Kill switch vs. a GENUINELY in-progress build (HALTED instant, no false "BUILT IT", no changelog row for the killed build)
 - [ ] Audit + changelog review (zero unfiltered inputs reached an agent; every rejection got chat feedback; no donor detail / pre-gate text on the screen-shared changelog)
@@ -80,6 +81,7 @@ Everything buildable is built and green. These are the human-action gates, defer
 |------|------|--------|
 | 2026-07-10 | `260710-q1f` — Record Phase 3 Wave 0 WSL2 go/no-go | ✅ Done. All setup items complete, 5/5 proofs PASS (SAND-01, SAND-02, BUILD-04, A1 plan-credit billing, latency 259ms cold / 66ms warm), verdict GO. AR-03-1/2/3 closed. |
 | 2026-07-10 | `260710-if0` — Rework compliance-gate classifier to plan-billed Agent SDK (off API keys) | ✅ Done. Gate now bills via `claude login` plan credits (Agent SDK `query()`, tools-disabled, single-turn, Sonnet); raw metered Messages API + `@anthropic-ai/sdk` retired from `src/`. Reviewed (0 blocker, 3 warn fixed incl. WR-01 fail-closed hardening) → secured 7/7, 0 open. Both SAND-04 + single-funnel invariants stay green non-vacuously. No `ANTHROPIC_API_KEY` required anywhere now. |
+| 2026-07-10 | `260710-sa0` — Descope channel-points (PAID-02) windows from v1 (docs/tracking only) | ✅ Done. Real channel is non-affiliate — Helix 403 on custom-rewards verified 2026-07-10. Tips-only paid influence for v1; PAID-02 code stays dormant behind the main.ts degradation path; revisit at affiliate. |
 
 ## Performance Metrics
 
@@ -122,7 +124,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- **[Phase 4 — BLOCKING before any real paid use] Live gate 04-08** (`04-08-PLAN.md`, autonomous:false; accepted risks AR-04-01/02): StreamElements account + JWT setup, `channel:read:redemptions` broadcaster RE-AUTH (Phase 2 token lacks it), a real tip + real channel-points redemption smoke test, and a manual re-read of the MEDIUM-confidence Bits AUP + chargeback claims. Plus CR-03 human-check: the paid/chaos build-execution loop (window drain, chaos re-pick) under a REAL WSL2 build engine.
+- **[Phase 4 — BLOCKING before any real paid use] Live gate 04-08** (`04-08-PLAN.md`, autonomous:false; accepted risks AR-04-01/02): StreamElements JWT binding + `channel:read:redemptions` broadcaster re-auth DONE 2026-07-10. Remaining: a real tip smoke test, a manual re-read of the MEDIUM-confidence Bits AUP + chargeback claims, and the CR-03 human-check (paid/chaos build-execution loop — window drain, chaos re-pick — under a REAL WSL2 build engine). Channel-points reward/redemption items removed — DESCOPED for v1 (non-affiliate channel; see PROJECT.md Key Decisions).
 - [Phase 3] Human UAT / judgment items from review-fix: CR-01 terminal-state on a real veto; WR-05 shutdown-drain race (fix present, no dedicated automated test); WR-07 watchdog bounds — confirm DEFAULT_TURN_TIMEOUT_MS=5min / CLOSE_DRAIN_MS=2s suit the live-show timing envelope.
 - [Phase 3 — deferred ticket] COMP-02 `held` plans are narrated + audited but DROPPED, not routed to a console review queue — `main.ts` onHeldForReview carries a documented `TODO(D-08)`; implement review-queue routing (WR-03).
 - Human UAT (01-HUMAN-UAT.md): physical panic-hotkey test, live Sonnet gate:eval (bills the Claude plan via `claude login`; no ANTHROPIC_API_KEY), console browser run-through
@@ -135,7 +137,7 @@ Recent decisions affecting current work:
 
 ### Blockers/Concerns
 
-- [Phase 4] Donation platform choice (StreamElements vs. Streamlabs) and verbatim Bits/Channel Points AUP text need re-verification before implementation (research flag)
+- [Phase 4] Donation platform settled — StreamElements bound (JWT) 2026-07-10. Remaining: verbatim Bits AUP re-read at the live gate. Channel points are DESCOPED for v1 (non-affiliate channel), so the Channel Points AUP re-verification is N/A until affiliate.
 
 ## Deferred Items
 

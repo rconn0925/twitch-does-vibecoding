@@ -23,7 +23,7 @@ The dry run exercises the two deferred human gates end-to-end, so they must be c
 - [ ] **Phase 3 Wave 0 — WSL2 go/no-go = GO** in `.planning/phases/03-sandboxed-build-engine-live-show/SANDBOX-SETUP.md`
   (real proofs: (a) filesystem-escape isolation, (b) dev-server-only exposure on 127.0.0.1:5555, (c) `wsl.exe --terminate` kills a hung tree, (d) A1 billing recorded, (e) launch latency acceptable).
 - [ ] **Phase 4 live gate = GO** in `.planning/phases/04-paid-influence-chaos-mode/04-LIVE-GATE.md`
-  (StreamElements account + JWT bound; `channel:read:redemptions` broadcaster re-auth done; a custom channel-points reward created; a real tip + a real redemption smoke-tested; Bits AUP / chargeback claims manually re-read).
+  (StreamElements account + JWT bound; `channel:read:redemptions` broadcaster re-auth done; ~~a custom channel-points reward created; a real redemption smoke-tested~~ (DESCOPED v1 — see PROJECT.md Key Decisions); a real tip smoke-tested; Bits AUP / chargeback claims manually re-read).
 
 **If either is NOT GO, the dry run is BLOCKED.** Record which precondition is blocking and stop here.
 
@@ -37,7 +37,7 @@ The dry run exercises the two deferred human gates end-to-end, so they must be c
 - [ ] A **low-stakes test channel / account** (NOT the main channel) is live.
 - [ ] The app is running; open all four surfaces: the **operator console** (private, <http://127.0.0.1:4900>), the **overlay** (add as an OBS browser source, :4901), the **app-under-construction preview** (:4902), and the new **build-history changelog** on its own surface at <http://127.0.0.1:4903/> (:4903, `HISTORY_PORT`).
 - [ ] Host `ANTHROPIC_API_KEY` confirmed UNSET (plan-credit billing) unless the Wave-0 A1 result dictated the sandbox-scoped key fallback.
-- [ ] A **small real tip** is ready to send through the donation platform, and the custom channel-points reward is redeemable.
+- [ ] A **small real tip** is ready to send through the donation platform~~, and the custom channel-points reward is redeemable~~ (DESCOPED v1 — see PROJECT.md Key Decisions).
 
 *Resume signal for the first checkpoint: type `preconditions GO` once both earlier gates read GO and the test channel + app are ready — or describe what is still NO-GO / blocked.*
 
@@ -53,7 +53,7 @@ The dry run exercises the two deferred human gates end-to-end, so they must be c
 
 - [ ] Send the **real small donation** → a **free-reign window** opens. On the **overlay** the banner shows **donor display-name + countdown ONLY — no amount, no message, no trigger type**. (The console may show the amount; the broadcast must not.)
 - [ ] During the window, issue a build instruction → it **passes the same gate** and is **vetoable**; it **builds** (window stays open for its full duration, D-12).
-- [ ] Redeem the **channel-points reward** → a smaller window opens the same way.
+- ~~[ ] Redeem the **channel-points reward** → a smaller window opens the same way.~~ **DESCOPED for v1** — channel not affiliate (Helix 403); see PROJECT.md Key Decisions
 - [ ] Toggle **chaos mode** on the console → the system **randomly picks** the next task from the already-filtered pool and **builds it with no vote**; the overlay/history shows a `CHAOS PICK` chip. Toggle chaos off → the vote loop resumes.
 - [ ] Confirm nothing on the broadcast couples payment to chance (paid = violet/guaranteed, chaos = neutral/random — never the same identity).
 
