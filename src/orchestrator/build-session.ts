@@ -44,6 +44,7 @@ import {
   recordSandboxTeardown,
 } from "../audit/record.js";
 import type { AbortRegistry } from "../kill-switch/abort.js";
+import type { ApprovedBatchDisplay, BuilderFeedSink } from "../overlay/builder-feed.js";
 import { BUILD_STAGE_CHANGED } from "../overlay/server.js";
 import type { TaskQueue } from "../queue/task-queue.js";
 import type {
@@ -109,6 +110,15 @@ export interface BuildSessionDeps {
    * through here so the show is never silent.
    */
   narrator?: BuildNarrator;
+  /**
+   * The broadcast /builder feed sink (quick-x7d). Optional — absent in unit
+   * tests that don't assert on the feed. EVERY call site is post-screening by
+   * construction: buildStarted carries the already-broadcast gate-approved
+   * title, stage() maps onto a fixed caption table, and batchApproved() is
+   * only reachable AFTER the in-flight COMP-02 `screen.proceed` guard
+   * (T-x7d-01 structural gate).
+   */
+  builderFeed?: BuilderFeedSink;
   /**
    * WR-07 per-turn watchdog bound (ms); defaults to DEFAULT_TURN_TIMEOUT_MS.
    * Injectable so tests can drive the hung-stream path deterministically without
@@ -262,6 +272,51 @@ export function extractWriteEditText(message: unknown): string | null {
   return parts.length > 0 ? parts.join("\n") : null;
 }
 
+/**
+ * Narrow an APPROVED Write/Edit tool-use message down to the /builder feed's
+ * display shape (quick-x7d). Pure + exported for tests. Shape narrowing lives
+ * HERE because build-session.ts is the declared SDK-shape containment boundary
+ * — builder-feed.ts stays SDK-free. Raw tool names NEVER cross out of this
+ * function: Write → "Writing"; Edit/MultiEdit/NotebookEdit → "Editing"
+ * (T-x7d-02 fixed-vocabulary wire). A block with no string path is skipped
+ * entirely (fail closed).
+ */
+export function extractApprovedBatchDisplays(message: unknown): ApprovedBatchDisplay[] {
+  const displays: ApprovedBatchDisplay[] = [];
+  for (const block of contentBlocks(message)) {
+    if (block.type !== "tool_use") continue;
+    if (typeof block.name !== "string" || !WRITE_EDIT_TOOLS.has(block.name)) continue;
+    const input = asRecord(block.input);
+    if (!input) continue;
+    const path =
+      typeof input.file_path === "string"
+        ? input.file_path
+        : typeof input.notebook_path === "string"
+          ? input.notebook_path
+          : null;
+    if (path === null) continue;
+    const verb = block.name === "Write" ? ("Writing" as const) : ("Editing" as const);
+    let text = "";
+    if (typeof input.content === "string") {
+      text = input.content;
+    } else if (typeof input.new_string === "string") {
+      text = input.new_string;
+    } else if (typeof input.new_source === "string") {
+      text = input.new_source;
+    } else if (Array.isArray(input.edits)) {
+      for (const edit of input.edits) {
+        const e = asRecord(edit);
+        if (e && typeof e.new_string === "string") {
+          text = e.new_string;
+          break;
+        }
+      }
+    }
+    displays.push({ verb, path, text });
+  }
+  return displays;
+}
+
 /** Per-turn consumption outcome (turn-level, NOT the whole pipeline). */
 type TurnOutcome = "ok" | "refused" | "failed" | "compliance-rejected";
 
@@ -341,6 +396,12 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     current = view;
     emitter.emit(BUILD_STAGE_CHANGED);
     deps.progress.push(view);
+    // /builder feed (quick-x7d): one fixed-caption beat per stage transition.
+    // This single line covers researching/planning/building plus the terminal
+    // done/failed/refused beats from finalize()/enterDecision() and the retry
+    // path's "building" re-emit. finalizeAborted() never reaches here — an
+    // aborted build's feed simply stops (no false "BUILT IT", T-x7d-05).
+    deps.builderFeed?.stage(stage);
   }
 
   /** Enter BUILD_IN_PROGRESS (idempotent — the winner hook may have entered it already). */
@@ -500,6 +561,12 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
                 outcome = "compliance-rejected";
                 break;
               }
+              // T-x7d-01 STRUCTURAL GATE: this call sits strictly AFTER the
+              // `!screen.proceed → break` guard above — the rejected branch
+              // breaks out before this line executes, so a rejected (or
+              // never-screened) batch's path and content are unreachable on
+              // the /builder broadcast feed by CONTROL FLOW, not convention.
+              deps.builderFeed?.batchApproved(extractApprovedBatchDisplays(message));
             }
           }
 
@@ -739,6 +806,11 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     const ac = new AbortController();
     active = { task, ac };
     try {
+      // /builder feed (quick-x7d): announce the fresh build FIRST — this also
+      // CLEARS the previous build's lines (T-x7d-05: a killed build's lines
+      // never leak forward). task.text is the SAME gate-approved string the
+      // overlay build panel already broadcasts (80-char-truncated in the feed).
+      deps.builderFeed?.buildStarted(task.text);
       enterBuildMode(task);
       registerAbort(task.id, ac);
 

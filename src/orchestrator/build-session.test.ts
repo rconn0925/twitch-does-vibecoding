@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../audit/db.js";
 import { listAuditRecords, listBuildHistory } from "../audit/record.js";
 import { AbortRegistry } from "../kill-switch/abort.js";
+import { type BuilderFeedSink, createBuilderFeed } from "../overlay/builder-feed.js";
 import { TaskQueue } from "../queue/task-queue.js";
 import type {
   BuildNarrator,
@@ -233,6 +234,7 @@ function makeDeps(over: {
   registry?: AbortRegistry;
   onHeldForReview?: (task: QueuedTask, planText: string) => void;
   narrator?: BuildNarrator;
+  builderFeed?: BuilderFeedSink;
 }): { deps: BuildSessionDeps; taskQueue: TaskQueue } {
   const taskQueue = new TaskQueue();
   taskQueue.enqueue(over.task);
@@ -247,6 +249,7 @@ function makeDeps(over: {
     progress: over.progress,
     ...(over.onHeldForReview ? { onHeldForReview: over.onHeldForReview } : {}),
     ...(over.narrator ? { narrator: over.narrator } : {}),
+    ...(over.builderFeed ? { builderFeed: over.builderFeed } : {}),
   };
   return { deps, taskQueue };
 }
@@ -1059,6 +1062,202 @@ describe("createBuildSession — provenance → build_history (HIST-01, 05-01)",
     const session = createBuildSession(deps);
     db.close(); // simulate shutdown BEFORE the fail-closed finalize runs
     await expect(session.startBuild(task, "vote")).resolves.toBeUndefined();
+  });
+});
+
+describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  it("(a) STRUCTURAL GATE: a COMP-02-rejected batch contributes ZERO feed bytes — path and content absent from the serialized wire", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner({
+      ...HAPPY_SCRIPT,
+      build: [writeBatch("sandbox/evil.txt", "FORBIDDEN-PAYLOAD"), resultSuccess],
+    });
+    const { deps: comp02 } = fakeComp02((id) =>
+      id.endsWith("-output")
+        ? { decision: "rejected", category: "malware", rationale: "no" }
+        : APPROVED,
+    );
+    const { sink } = capturingSink();
+    const feed = createBuilderFeed();
+    const task = queuedTask("task-feed-a", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      builderFeed: feed,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    // The rejected batch's path + content are unreachable on the wire by
+    // control flow — assert on the SERIALIZED shape, the exact bytes ws sends.
+    const wire = JSON.stringify(feed.list());
+    expect(wire).not.toContain("evil.txt");
+    expect(wire).not.toContain("FORBIDDEN-PAYLOAD");
+    // The narrated compliance-failure path still lands its amber caption.
+    expect(feed.list().at(-1)).toEqual({ kind: "stage-warn", text: "Skipping this one" });
+  });
+
+  it("(b) an APPROVED batch lands 'Writing <path>' plus the capped snippet on the feed", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner({
+      ...HAPPY_SCRIPT,
+      build: [writeBatch("sandbox/evil.txt", "FORBIDDEN-PAYLOAD"), resultSuccess],
+    });
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const feed = createBuilderFeed();
+    const task = queuedTask("task-feed-b", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      builderFeed: feed,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    const lines = feed.list();
+    expect(lines).toContainEqual({ kind: "activity", text: "Writing sandbox/evil.txt" });
+    expect(lines).toContainEqual({ kind: "snippet", text: "FORBIDDEN-PAYLOAD" });
+    // The full happy-path shape around it: title → stage beats → done caption.
+    expect(lines[0]).toEqual({ kind: "title", text: "NOW BUILDING: make a page" });
+    expect(lines.at(-1)).toEqual({ kind: "stage", text: "Live on screen now" });
+  });
+
+  it("(c) fixed-vocabulary wire: raw SDK tool names/input keys never cross; MultiEdit reads 'Editing <path>'", async () => {
+    const { machine } = fakeMachine();
+    const multiEditBatch = {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "MultiEdit",
+            input: {
+              file_path: "styles.css",
+              edits: [{ old_string: "a", new_string: "body { color: blue }" }],
+            },
+          },
+        ],
+      },
+    };
+    const { runner } = fakeAgentRunner({
+      ...HAPPY_SCRIPT,
+      build: [multiEditBatch, resultSuccess],
+    });
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const feed = createBuilderFeed();
+    const task = queuedTask("task-feed-c", "style the page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      builderFeed: feed,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    const lines = feed.list();
+    // Edit-family tools map to the fixed verb — never the raw tool name.
+    expect(lines).toContainEqual({ kind: "activity", text: "Editing styles.css" });
+    const wire = JSON.stringify(lines);
+    for (const forbidden of [
+      "tool_use",
+      "file_path",
+      "new_string",
+      "MultiEdit",
+      "NotebookEdit",
+      "input",
+    ]) {
+      expect(wire, `raw token "${forbidden}" must never reach the feed wire`).not.toContain(
+        forbidden,
+      );
+    }
+  });
+
+  it("(d) abort semantics: no 'Live on screen now' ever; lines freeze, then the NEXT build clears them", async () => {
+    // Halt DURING the first build's research turn (the finalizeAborted
+    // pattern), then run a clean second build to prove clear-on-next-start.
+    let mode: StreamMode = "IDLE";
+    const machine: BuildMachineView = {
+      get mode() {
+        return mode;
+      },
+      transition(next) {
+        mode = next;
+      },
+      setActiveTask() {},
+    };
+    let halted = false;
+    const runner: AgentRunner = {
+      run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
+        const kind = spec.agent === "research" ? "research" : spec.sandbox ? "build" : "plan";
+        const messages = HAPPY_SCRIPT[kind] ?? [];
+        return (async function* () {
+          for (const message of messages) {
+            yield message as AgentMessage;
+            if (kind === "research" && !halted) {
+              halted = true;
+              mode = "HALTED"; // streamer veto mid-research (first build only)
+            }
+          }
+        })();
+      },
+    };
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const feed = createBuilderFeed();
+    const task1 = queuedTask("task-feed-d1", "vetoed build");
+    const { deps } = makeDeps({
+      task: task1,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      builderFeed: feed,
+    });
+    const session = createBuildSession(deps);
+    await session.startBuild(task1);
+
+    // The aborted build's feed just STOPPED: frozen lines, no false BUILT IT.
+    expect(mode).toBe("HALTED");
+    const frozen = feed.list();
+    expect(frozen.length).toBeGreaterThanOrEqual(2); // title + researching beat
+    expect(frozen[0]).toEqual({ kind: "title", text: "NOW BUILDING: vetoed build" });
+    expect(JSON.stringify(frozen)).not.toContain("Live on screen now");
+
+    // The NEXT build clears the killed build's lines (T-x7d-05).
+    mode = "IDLE"; // streamer recovered from the halt
+    const task2 = queuedTask("task-feed-d2", "fresh build");
+    deps.taskQueue.enqueue(task2);
+    await session.startBuild(task2);
+    const next = feed.list();
+    expect(next[0]).toEqual({ kind: "title", text: "NOW BUILDING: fresh build" });
+    expect(JSON.stringify(next)).not.toContain("vetoed build");
   });
 });
 

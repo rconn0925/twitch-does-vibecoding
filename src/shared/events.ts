@@ -61,6 +61,14 @@ export const AUTO_CYCLE_CHANGED = "auto-cycle:changed" as const;
  */
 export const POOL_CHANGED = "pool:changed" as const;
 
+/**
+ * Emitted by the BuilderFeed after append/clear (quick-x7d) so the overlay's
+ * /builder page pushes fresh state. Low-frequency by construction: batch
+ * approvals are serialized behind COMP-02 classifier calls, and stage beats
+ * are a handful per build — never a per-token flood.
+ */
+export const BUILDER_FEED_CHANGED = "builder-feed:changed" as const;
+
 export type AppEvent =
   | typeof STATE_CHANGED
   | typeof HALT_TRIGGERED
@@ -77,4 +85,5 @@ export type AppEvent =
   | typeof CHAOS_TOGGLED
   | typeof CHAOS_PICK
   | typeof AUTO_CYCLE_CHANGED
-  | typeof POOL_CHANGED;
+  | typeof POOL_CHANGED
+  | typeof BUILDER_FEED_CHANGED;
