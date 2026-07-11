@@ -65,8 +65,10 @@ const CLASSIFIER_DISALLOWED = [
  *
  * The frame mirrors prompt-boundary.ts's buildBuildPrompt() discipline
  * exactly: a 100%-orchestrator-authored FIXED header + delimiters, with the
- * untrusted candidate text inserted VERBATIM as DATA between them — the ONLY
- * templating in this module, and strictly in the USER turn. The system prompt
+ * untrusted candidate text inserted as DATA between them (verbatim except
+ * that literal frame delimiters are neutralized — see
+ * neutralizeFrameDelimiters) — the ONLY templating in this module, and
+ * strictly in the USER turn. The system prompt
  * remains the bare CLASSIFIER_SYSTEM_PROMPT const reference (SAND-04 /
  * T-01-06 unchanged). Live-verified 2026-07-11: the exact failing batch
  * (audit id=88) classified 4/4 as clean single-turn JSON under this frame,
@@ -78,9 +80,35 @@ const CANDIDATE_FRAME_HEADER =
 const CANDIDATE_OPEN = '<candidate_text source="untrusted">';
 const CANDIDATE_CLOSE = "</candidate_text>";
 
+/**
+ * Neutralize literal frame delimiters inside the untrusted candidate text
+ * (specialist-review hardening, 2026-07-11). The delimiters are fixed and
+ * public, so a candidate could embed a literal `</candidate_text>` to close
+ * the frame early and have its remainder read as orchestrator-authored text —
+ * and in a compliance gate a successful frame escape fails OPEN (wrongful
+ * approval), the one direction WR-01 must never allow. Mangling the tag
+ * opener visibly (`<\` / `<\/`) keeps the payload readable as data while
+ * making it structurally impossible for candidate text to terminate (or
+ * re-open) the frame: after this pass the framed prompt contains exactly one
+ * opening and one closing delimiter — the orchestrator's own.
+ *
+ * A per-call nonce delimiter was deliberately REJECTED: the frame must stay
+ * fixed and byte-identical across calls (never derived from candidate text),
+ * a property the guard tests pin down.
+ */
+function neutralizeFrameDelimiters(text: string): string {
+  // Order matters: mangle the closing form first so its `</` survives as a
+  // visible `<\/`; the second pass then catches bare re-open attempts. The
+  // replacements themselves contain neither pattern, so one pass each is
+  // complete (no reintroduction).
+  return text
+    .replaceAll("</candidate_text", "<\\/candidate_text")
+    .replaceAll("<candidate_text", "<\\candidate_text");
+}
+
 /** Wrap untrusted candidate text as delimited DATA in the user turn. */
 function frameCandidate(candidateText: string): string {
-  return `${CANDIDATE_FRAME_HEADER}\n${CANDIDATE_OPEN}\n${candidateText}\n${CANDIDATE_CLOSE}`;
+  return `${CANDIDATE_FRAME_HEADER}\n${CANDIDATE_OPEN}\n${neutralizeFrameDelimiters(candidateText)}\n${CANDIDATE_CLOSE}`;
 }
 
 /**
