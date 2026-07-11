@@ -299,3 +299,34 @@ pass and ends in a recorded **GO / NO-GO** verdict.
   shared changelog).
 - **Do not run a real stream night until the runbook's verdict reads GO.** A
   NO-GO records the failing check; fix it and re-run that section.
+
+## 9. StreamElements Tip Smoke Test (Simulated Events)
+
+A zero-money end-to-end test of the tip → free-reign window pipeline using the
+StreamElements dashboard **event simulator**. The simulator emits `event:test`
+(not the real `event`), which the app **ignores** unless
+`SE_ACCEPT_TEST_EVENTS=true`. Use this to de-risk live gate 04-08's real-tip
+smoke test: verify the overlay banner, control-window open, and revoke work
+end-to-end before any real dollar moves.
+
+> **WARNING — TEST MODE opens REAL control windows.** Never enable
+> `SE_ACCEPT_TEST_EVENTS` during a broadcast. The app logs a loud TEST MODE
+> warning at boot and on every accepted simulated tip so an accidentally-left-on
+> flag is impossible to miss in the console.
+
+Procedure:
+
+1. Set `SE_ACCEPT_TEST_EVENTS=true` in `.env` (only the exact string `true`
+   enables it; `STREAMELEMENTS_JWT` must also be set).
+2. Restart the app. Confirm the boot log shows the **TEST MODE** warning.
+3. Open the StreamElements dashboard → event simulator (streamelements.com
+   dashboard, the "Emulate" / test-event widget) → send a **test tip**.
+4. Verify: the console log shows `SE TEST EVENT accepted`, the overlay shows the
+   free-reign banner/countdown, and the control window opens. Exercise **revoke**
+   from the operator console and confirm the window closes.
+5. Unset/blank the flag in `.env` and restart — confirm the boot TEST MODE
+   warning is **gone** before any broadcast.
+
+Simulated tips carry a synthetic tipId (`se-test-*`) and default to currency
+`USD` when the simulator omits it, so test-triggered windows are distinguishable
+from real ones in the audit log.
