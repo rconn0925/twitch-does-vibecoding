@@ -28,7 +28,7 @@
 ### Paid Influence
 
 - [ ] **PAID-01**: A donation (via an external platform — not Twitch Bits, per Bits AUP) grants the donor a "free reign" control window with duration proportional to the amount, with caps and cooldowns
-- [ ] **PAID-02**: A channel points redemption grants a smaller-scale direct-influence window via native Twitch EventSub redemptions
+- [ ] **PAID-02** *(DEFERRED — v1 descope 2026-07-10)*: A channel points redemption grants a smaller-scale direct-influence window via native Twitch EventSub redemptions — *built and fake-tested, but not live-verifiable: the real channel is not Twitch affiliate (Helix 403 on custom-rewards endpoint), so no custom reward can exist yet. Tips-only paid influence for v1; returns to scope at affiliate. See PROJECT.md Key Decisions.*
 - [ ] **PAID-03**: Every instruction issued during a paid window passes the same compliance filter and remains vetoable — paid control never bypasses COMP-01..04
 - [ ] **PAID-04**: Free-reign windows are time-boxed, revocable by the streamer, and logged (donation amount → duration mapping recorded)
 
@@ -96,7 +96,7 @@
 | SAND-03 | Phase 3 | Pending |
 | SAND-04 | Phase 3 | Pending |
 | PAID-01 | Phase 4 | Pending |
-| PAID-02 | Phase 4 | Pending |
+| PAID-02 | Phase 4 | Deferred (v1 descope — non-affiliate channel) |
 | PAID-03 | Phase 4 | Pending |
 | PAID-04 | Phase 4 | Pending |
 | CHAOS-01 | Phase 4 | Pending |
