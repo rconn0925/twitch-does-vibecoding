@@ -15,5 +15,5 @@ export {
   type BuildSessionDeps,
   createBuildSession,
   extractAssistantText,
-  extractWriteEditText,
+  extractScreenableText,
 } from "./build-session.js";

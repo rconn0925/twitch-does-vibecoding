@@ -1,28 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
   backoffDelay,
+  DIFF_MAX,
   diffFeed,
+  paceCharsPerTick,
   renderLine,
   sanitizeWireText,
+  splitAnsiChunks,
 } from "../../scripts/builder-terminal.js";
 
 /**
- * Unit tests for the AI-scene terminal viewer's pure core (quick-260711-ly4).
+ * Unit tests for the AI-scene terminal viewer's pure core (quick-260711-ly4,
+ * widened by quick-nhv to the 7-kind screened wire + typewriter pacing).
  *
  * The CLI is a second client of the SAME screened /builder wire the browser
  * page consumes — these tests pin the safety-relevant rendering rules:
  *  - T-ly4-01: wire text can NEVER restyle the terminal (ESC/C0/C1 stripped
- *    before any styling is applied);
- *  - fail-closed closed-kind vocabulary (unknown kinds render nothing);
- *  - stage-warn is AMBER, never red (D2-18);
+ *    before any styling is applied) — for ALL 7 kinds incl. multi-KB diffs;
+ *  - fail-closed closed-kind vocabulary (unknown AND retired kinds render
+ *    nothing — "snippet" is retired);
+ *  - stage-warn is AMBER, never red (D2-18) — and no kind ever emits red;
  *  - diffFeed mirrors the server ring-buffer semantics (new title ⇒ reset);
- *  - backoffDelay mirrors builder.js reconnect backoff exactly.
+ *  - backoffDelay mirrors builder.js reconnect backoff exactly;
+ *  - paceCharsPerTick bounds typing lag (backlog-proportional catch-up).
  */
 
 const ESC = "\u001b";
 const AMBER_SGR = "38;5;214";
 /** Red SGR sequences that must NEVER appear in any output (D2-18). */
 const RED_CODES = [`${ESC}[31m`, `${ESC}[38;5;196m`];
+
+const ALL_KINDS = ["title", "stage", "stage-warn", "activity", "reasoning", "tool-call", "diff"];
 
 function expectNoRed(out: string | null): void {
   for (const red of RED_CODES) {
@@ -54,7 +62,7 @@ describe("sanitizeWireText", () => {
     expect(sanitizeWireText("Writing src/app.ts")).toBe("Writing src/app.ts");
   });
 
-  it("keeps \\n in multi-line snippet text", () => {
+  it("keeps \\n in multi-line diff text", () => {
     expect(sanitizeWireText("line one\nline two\nline three")).toBe(
       "line one\nline two\nline three",
     );
@@ -67,6 +75,10 @@ describe("renderLine", () => {
     expect(renderLine({ kind: "", text: "x" })).toBeNull();
   });
 
+  it("returns null for the RETIRED 'snippet' kind (fails closed like any unknown)", () => {
+    expect(renderLine({ kind: "snippet", text: "old wire" })).toBeNull();
+  });
+
   it("returns null for undefined-ish / malformed shapes", () => {
     expect(renderLine(null)).toBeNull();
     expect(renderLine(undefined)).toBeNull();
@@ -76,13 +88,12 @@ describe("renderLine", () => {
     expect(renderLine({ kind: "stage", text: 7 })).toBeNull();
   });
 
-  it("produces a distinct styled string for each of the 5 kinds", () => {
-    const kinds = ["title", "stage", "stage-warn", "activity", "snippet"];
-    const outputs = kinds.map((kind) => renderLine({ kind, text: "same text" }));
+  it("produces a distinct styled string for each of the 7 kinds", () => {
+    const outputs = ALL_KINDS.map((kind) => renderLine({ kind, text: "same text" }));
     for (const out of outputs) {
       expect(out).toBeTypeOf("string");
     }
-    expect(new Set(outputs).size).toBe(5);
+    expect(new Set(outputs).size).toBe(7);
   });
 
   it("renders stage-warn AMBER (38;5;214) and never red (D2-18)", () => {
@@ -91,8 +102,8 @@ describe("renderLine", () => {
     expectNoRed(out);
   });
 
-  it("never emits red for any kind", () => {
-    for (const kind of ["title", "stage", "stage-warn", "activity", "snippet"]) {
+  it("never emits red for ANY of the 7 kinds", () => {
+    for (const kind of ALL_KINDS) {
       const out = renderLine({ kind, text: "text" });
       expectNoRed(out);
     }
@@ -105,8 +116,25 @@ describe("renderLine", () => {
     expect(out).toContain("NOW BUILDING: snake but the snake is a train");
   });
 
-  it("sanitizes wire text BEFORE styling — a smuggled ESC never survives", () => {
-    for (const kind of ["title", "stage", "stage-warn", "activity", "snippet"]) {
+  it("renders reasoning as plain sanitized prose — no bullet, no marker", () => {
+    const out = renderLine({ kind: "reasoning", text: "I'll wire the click handler next." });
+    expect(out).toBeTypeOf("string");
+    expect(out).toContain("I'll wire the click handler next.");
+    expect(out).not.toContain("●");
+    expect(out).not.toContain("⏺");
+  });
+
+  it("renders tool-call with the ⏺ marker, styled DISTINCTLY from activity", () => {
+    const toolCall = renderLine({ kind: "tool-call", text: "Bash(npm install)" });
+    const activity = renderLine({ kind: "activity", text: "Bash(npm install)" });
+    expect(toolCall).toBeTypeOf("string");
+    expect(toolCall).toContain("⏺");
+    expect(toolCall).toContain("Bash(npm install)");
+    expect(toolCall).not.toBe(activity);
+  });
+
+  it("sanitizes wire text BEFORE styling — a smuggled ESC never survives, in ANY kind", () => {
+    for (const kind of ALL_KINDS) {
       const out = renderLine({ kind, text: `a${ESC}[31mb${ESC}[2Jc` });
       expect(out).toBeTypeOf("string");
       // No red SGR and no smuggled clear-screen sequence in the output.
@@ -115,8 +143,8 @@ describe("renderLine", () => {
     }
   });
 
-  it("styles each line of a multi-line snippet", () => {
-    const out = renderLine({ kind: "snippet", text: "one\ntwo\nthree" });
+  it("styles each line of a multi-line diff with the gutter", () => {
+    const out = renderLine({ kind: "diff", text: "one\ntwo\nthree" });
     expect(out).toBeTypeOf("string");
     const rows = (out as string).split("\n");
     expect(rows.length).toBe(3);
@@ -125,18 +153,76 @@ describe("renderLine", () => {
     }
   });
 
-  it("caps non-snippet lines at 120 chars (backstop, mirrors builder.js)", () => {
-    const long = "x".repeat(500);
-    const out = renderLine({ kind: "activity", text: long }) as string;
-    expect(out).toContain(`${"x".repeat(120)}…`);
-    expect(out).not.toContain("x".repeat(121));
+  it("diff has NO 200-char truncation: a 5000-char input survives intact", () => {
+    const long = "y".repeat(5000);
+    const out = renderLine({ kind: "diff", text: long }) as string;
+    expect(out).toContain("y".repeat(5000));
   });
 
-  it("caps snippet text at 200 chars (backstop, mirrors builder.js)", () => {
-    const long = "y".repeat(500);
-    const out = renderLine({ kind: "snippet", text: long }) as string;
-    expect(out).toContain(`${"y".repeat(200)}…`);
-    expect(out).not.toContain("y".repeat(201));
+  it("diff is backstop-capped at DIFF_MAX (16000): a larger input is truncated with an ellipsis", () => {
+    expect(DIFF_MAX).toBe(16_000);
+    const huge = "z".repeat(20_000);
+    const out = renderLine({ kind: "diff", text: huge }) as string;
+    expect(out).toContain(`${"z".repeat(16_000)}…`);
+    expect(out).not.toContain("z".repeat(16_001));
+  });
+
+  it("reasoning uses the DIFF_MAX backstop too (multi-line kind, not the 120-char line cap)", () => {
+    const long = "w".repeat(5000);
+    const out = renderLine({ kind: "reasoning", text: long }) as string;
+    expect(out).toContain("w".repeat(5000));
+    const huge = "v".repeat(20_000);
+    const capped = renderLine({ kind: "reasoning", text: huge }) as string;
+    expect(capped).toContain(`${"v".repeat(16_000)}…`);
+  });
+
+  it("caps single-line kinds at 120 chars (backstop) — incl. tool-call", () => {
+    const long = "x".repeat(500);
+    for (const kind of ["activity", "tool-call"]) {
+      const out = renderLine({ kind, text: long }) as string;
+      expect(out).toContain(`${"x".repeat(120)}…`);
+      expect(out).not.toContain("x".repeat(121));
+    }
+  });
+});
+
+describe("paceCharsPerTick", () => {
+  it("returns the 7-char floor for small backlogs (≤1400 chars)", () => {
+    expect(paceCharsPerTick(0)).toBe(7);
+    expect(paceCharsPerTick(1)).toBe(7);
+    expect(paceCharsPerTick(700)).toBe(7);
+    expect(paceCharsPerTick(1400)).toBe(7);
+  });
+
+  it("grows ceil(backlog/200) beyond the floor — bounded catch-up", () => {
+    expect(paceCharsPerTick(1401)).toBe(8);
+    expect(paceCharsPerTick(2000)).toBe(10);
+    expect(paceCharsPerTick(20_000)).toBe(100);
+  });
+
+  it("is monotonically non-decreasing in backlog size", () => {
+    let prev = 0;
+    for (const backlog of [0, 100, 1400, 1401, 3000, 10_000, 20_000, 100_000]) {
+      const rate = paceCharsPerTick(backlog);
+      expect(rate).toBeGreaterThanOrEqual(prev);
+      prev = rate;
+    }
+  });
+});
+
+describe("splitAnsiChunks", () => {
+  it("keeps complete SGR escape sequences as atomic chunks (never split mid-sequence)", () => {
+    const chunks = splitAnsiChunks(`${ESC}[1mhello${ESC}[0m`);
+    expect(chunks).toEqual([`${ESC}[1m`, "hello", `${ESC}[0m`]);
+  });
+
+  it("passes plain text through as one chunk", () => {
+    expect(splitAnsiChunks("plain text")).toEqual(["plain text"]);
+  });
+
+  it("round-trips: joining the chunks reproduces the input exactly", () => {
+    const styled = `${ESC}[38;5;214m● Regrouping…${ESC}[0m\nplain`;
+    expect(splitAnsiChunks(styled).join("")).toBe(styled);
   });
 });
 

@@ -56,8 +56,8 @@ const CLASSIFIER_DISALLOWED = [
  * Fixed delimiter frame for the USER turn (COMP-02 maxTurns debug,
  * 2026-07-11). Root cause of the live "Reached maximum number of turns (1)"
  * fail-closures: COMP-02's in-flight batches are instruction-less code/file
- * dumps (extractWriteEditText output — a bare path + raw file content), which
- * the model did not recognize as classifiable input. It responded by (a)
+ * dumps (extractScreenableText output — reasoning prose + tool names/args +
+ * raw file content), which the model did not recognize as classifiable input. It responded by (a)
  * attempting a tool call to orient itself (burning the single turn →
  * error_max_turns), or — with tools stripped — (b) answering in prose instead
  * of the JSON object (failing the compliance layer's JSON extraction). Both

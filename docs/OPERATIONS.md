@@ -335,18 +335,27 @@ from real ones in the audit log.
 
 A terminal client of the same screened /builder feed — for the "THE AI" scene,
 OBS captures a real Windows Terminal window instead of the /builder browser
-page. Content is identical to /builder (the screened wire only; nothing new
-crosses the compliance boundary).
+page. The feed carries the build agent's screened reasoning prose, real tool
+calls ("Bash(npm install)"-style), and full-fidelity file diffs — every batch
+still passes the SAME COMP-02 single-funnel screen before it reaches the wire,
+and the viewer intentionally runs **~5–15s behind real time** (per-message
+COMP-02 screening latency + the typewriter pacing). That lag is normal, not a
+stall — do not restart anything when the terminal trails the actual build.
+
+Note: the /builder BROWSER page renders only the legacy kinds now (it fails
+closed on the new reasoning/tool-call/diff kinds, showing title/stage/activity
+only). The terminal viewer is the canonical "THE AI" capture.
 
 **Launch** (from anywhere — the `-d` flag sets the working directory):
 
 ```
-wt -w vibecoding-ai --title "THE AI" -d C:\Users\ross\Projects\twitch-does-vibecoding npm run builder:terminal
+wt -w vibecoding-ai --title "THE AI" --suppressApplicationTitle -d C:\Users\ross\Projects\twitch-does-vibecoding npm run builder:terminal
 ```
 
 - `-w vibecoding-ai` gives the window a stable identity, so re-running the same
   line reuses/re-creates the same window; `--title "THE AI"` sets the tab title
-  OBS matches on.
+  OBS matches on, and `--suppressApplicationTitle` keeps npm/tsx from
+  overwriting that title mid-run (otherwise OBS's window match can break).
 - The viewer connects to `127.0.0.1:OVERLAY_PORT` (default 4901, same as the
   app). Until `npm run dev` is running it idles on a dim "standing by…" — that
   is the normal between-builds/waiting state, not an error.
