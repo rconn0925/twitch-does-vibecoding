@@ -62,19 +62,30 @@ describe("StreamModeMachine", () => {
   });
 
   it("rejects invalid normal transitions with a typed error naming both states", () => {
-    const m = new StreamModeMachine();
-    expect(() => m.transition("BUILD_IN_PROGRESS")).toThrowError(InvalidTransitionError);
+    const m = machineAt("VOTING_ROUND");
+    expect(() => m.transition("CHAOS_MODE")).toThrowError(InvalidTransitionError);
     try {
-      m.transition("BUILD_IN_PROGRESS");
+      m.transition("CHAOS_MODE");
       expect.unreachable("transition should have thrown");
     } catch (err) {
       const e = err as InvalidTransitionError;
-      expect(e.from).toBe("IDLE");
-      expect(e.to).toBe("BUILD_IN_PROGRESS");
+      expect(e.from).toBe("VOTING_ROUND");
+      expect(e.to).toBe("CHAOS_MODE");
       // feeds UI-SPEC "Can't transition to {state} from {state}" error copy
-      expect(e.message).toContain("BUILD_IN_PROGRESS");
-      expect(e.message).toContain("IDLE");
+      expect(e.message).toContain("CHAOS_MODE");
+      expect(e.message).toContain("VOTING_ROUND");
     }
+  });
+
+  it("IDLE -> BUILD_IN_PROGRESS is legal (the vote-queue drain's entry, quick-t5k)", () => {
+    // A queued vote winner starts building AFTER the previous build returned to
+    // IDLE: drainVoteQueue in main.ts is the sole caller of this transition.
+    const m = new StreamModeMachine();
+    m.transition("BUILD_IN_PROGRESS");
+    expect(m.mode).toBe("BUILD_IN_PROGRESS");
+    // ...and the build-completion exit back to IDLE still works (unchanged row).
+    m.transition("IDLE");
+    expect(m.mode).toBe("IDLE");
   });
 
   it("allows valid normal transitions (IDLE -> VOTING_ROUND) and emits state:changed", () => {
