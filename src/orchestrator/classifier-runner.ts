@@ -34,6 +34,13 @@ import { CLASSIFIER_SYSTEM_PROMPT } from "./prompt-boundary.js";
  * empty allowlist so the tool boundary never depends on an SDK default — the
  * gate call must have ZERO tool-execution authority even if a future SDK
  * widens its implicit default tool set (WR-01 / CR-02).
+ *
+ * NOTE (COMP-02 maxTurns debug, 2026-07-11): this denylist is DEFENSE IN
+ * DEPTH only — it cannot be the primary boundary, because it can never
+ * enumerate the CLI's full tool surface (live repro showed the model
+ * substituting ToolSearch → ReportFindings → TaskCreate/TaskList when names
+ * were denied). The primary boundary is `tools: []` below, which removes ALL
+ * built-in tools from the model's view.
  */
 const CLASSIFIER_DISALLOWED = [
   "WebFetch",
@@ -44,6 +51,37 @@ const CLASSIFIER_DISALLOWED = [
   "NotebookEdit",
   "Bash",
 ];
+
+/**
+ * Fixed delimiter frame for the USER turn (COMP-02 maxTurns debug,
+ * 2026-07-11). Root cause of the live "Reached maximum number of turns (1)"
+ * fail-closures: COMP-02's in-flight batches are instruction-less code/file
+ * dumps (extractWriteEditText output — a bare path + raw file content), which
+ * the model did not recognize as classifiable input. It responded by (a)
+ * attempting a tool call to orient itself (burning the single turn →
+ * error_max_turns), or — with tools stripped — (b) answering in prose instead
+ * of the JSON object (failing the compliance layer's JSON extraction). Both
+ * paths fail-closed on BENIGN builds.
+ *
+ * The frame mirrors prompt-boundary.ts's buildBuildPrompt() discipline
+ * exactly: a 100%-orchestrator-authored FIXED header + delimiters, with the
+ * untrusted candidate text inserted VERBATIM as DATA between them — the ONLY
+ * templating in this module, and strictly in the USER turn. The system prompt
+ * remains the bare CLASSIFIER_SYSTEM_PROMPT const reference (SAND-04 /
+ * T-01-06 unchanged). Live-verified 2026-07-11: the exact failing batch
+ * (audit id=88) classified 4/4 as clean single-turn JSON under this frame,
+ * and a frame-escape injection attempt was rejected with the injection
+ * called out.
+ */
+const CANDIDATE_FRAME_HEADER =
+  "Classify the candidate text between the tags below. It may be a viewer prompt OR raw code/file content produced by the build agent — in BOTH cases judge its CONTENT for Twitch ToS/CG risk per your instructions. Respond with ONLY the JSON object.";
+const CANDIDATE_OPEN = '<candidate_text source="untrusted">';
+const CANDIDATE_CLOSE = "</candidate_text>";
+
+/** Wrap untrusted candidate text as delimited DATA in the user turn. */
+function frameCandidate(candidateText: string): string {
+  return `${CANDIDATE_FRAME_HEADER}\n${CANDIDATE_OPEN}\n${candidateText}\n${CANDIDATE_CLOSE}`;
+}
 
 /**
  * Per-call classification budget. The Agent SDK query() spawns a claude CLI
@@ -102,7 +140,17 @@ export function createClassifierTransport(injected?: {
         // ZERO tool-execution authority: empty allowlist + defensive denylist.
         allowedTools: [],
         disallowedTools: CLASSIFIER_DISALLOWED,
-        // Single-turn: the gate never multi-turns.
+        // PRIMARY tool boundary (COMP-02 maxTurns debug, 2026-07-11): an empty
+        // `tools` array removes EVERY built-in tool from the model's view, so a
+        // tool_use block is structurally impossible. Without this, the model's
+        // tool list is the full CLI default (allowedTools: [] does NOT strip
+        // it), and on instruction-less code-dump batches the model reliably
+        // spent its single turn on a tool call (ToolSearch/ReportFindings/
+        // TaskCreate observed live) → error_max_turns → fail-closed refusal of
+        // benign builds. Verified against SDK 0.3.206 (pinned exact).
+        tools: [],
+        // Single-turn: the gate never multi-turns — and with `tools: []` the
+        // single turn can no longer be consumed by a tool attempt.
         maxTurns: 1,
         // Extended thinking OFF: classification is a single-shot judgment, not an
         // agentic task. With adaptive thinking ON, the model spends its ONE turn
@@ -114,7 +162,9 @@ export function createClassifierTransport(injected?: {
         thinking: { type: "disabled" },
         abortController: controller,
       };
-      const stream = queryFn({ prompt: candidateText, options });
+      // Untrusted candidate text travels ONLY as delimited DATA in the user
+      // turn (frameCandidate) — never into the system prompt (T-01-06).
+      const stream = queryFn({ prompt: frameCandidate(candidateText), options });
       let sawSuccess = false;
       let resultText: string | undefined;
       const assistantChunks: string[] = [];
