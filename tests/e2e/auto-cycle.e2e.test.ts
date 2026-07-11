@@ -210,6 +210,7 @@ describe("(a) A1 mid-build cadence + (b.i) completion drain", () => {
 
     // Concurrent round (A1): opens under BUILD_IN_PROGRESS, closes mid-build.
     app.pool.add(candidate("w2", "second winner"), approved);
+    app.pool.add(candidate("f2", "filler two"), approved); // losers drop now — round needs 2
     app.round.startRound();
     expect(app.machine.mode).toBe("BUILD_IN_PROGRESS"); // no mode transition
     const drawn = app.round.snapshot()?.candidates ?? [];
@@ -272,6 +273,7 @@ describe("(b.ii) BLOCKER-1 regression: build finishes MID-VOTE — the concurren
 
     // Concurrent round opens mid-build...
     app.pool.add(candidate("w2", "second winner"), approved);
+    app.pool.add(candidate("f2", "filler two"), approved); // losers drop now — round needs 2
     app.round.startRound();
     const drawn = app.round.snapshot()?.candidates ?? [];
     const w2Option = drawn.find((c) => c.candidate.id === "w2")?.option;
@@ -320,6 +322,7 @@ describe("(b.iii) WARNING-3: recovery out of HALTED never auto-builds; the next 
 
     // Concurrent round 2: "second winner" queues behind the running build.
     app.pool.add(candidate("w2", "second winner"), approved);
+    app.pool.add(candidate("f2", "filler two"), approved); // losers drop now — round needs 2
     app.round.startRound();
     const drawn2 = app.round.snapshot()?.candidates ?? [];
     const w2Option = drawn2.find((c) => c.candidate.id === "w2")?.option;
@@ -349,6 +352,7 @@ describe("(b.iii) WARNING-3: recovery out of HALTED never auto-builds; the next 
     // Next round close drains the HEAD (the stranded winner), FIFO — the
     // fresh winner waits its turn behind it.
     app.pool.add(candidate("w3", "third winner"), approved);
+    app.pool.add(candidate("f3", "filler three"), approved); // losers drop now — round needs 2
     app.round.startRound();
     const drawn3 = app.round.snapshot()?.candidates ?? [];
     const w3Option = drawn3.find((c) => c.candidate.id === "w3")?.option;
@@ -461,6 +465,7 @@ describe("VOTE_QUEUE_MAX amendment: the cap never blocks manual starts and never
 
     // Manual start is EXEMPT from the cap (operator override).
     app.pool.add(candidate("q3", "third idea"), approved);
+    app.pool.add(candidate("q4", "fourth idea"), approved); // losers drop now — round needs 2
     const second = await postJson(app, "/api/round/start", {});
     expect(second.status).toBe(200);
 

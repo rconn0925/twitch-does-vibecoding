@@ -257,7 +257,7 @@ describe("full chat-vote loop e2e (suggest → filter → vote → winner → qu
     expect(first.round?.candidates.map((c) => c.votes)).toEqual([1, 2, 0]);
   });
 
-  it("(6)+(7) closing the round queues the winner via the funnel, repools losers, narrates, and audits", async () => {
+  it("(6)+(7) closing the round queues the winner via the funnel, drops losers, narrates, and audits", async () => {
     // Force-close instead of waiting out the 60s timer (plan instruction).
     app.round.closeRound();
 
@@ -265,11 +265,8 @@ describe("full chat-vote loop e2e (suggest → filter → vote → winner → qu
     // Winner (option 2, two votes) reached the build queue THROUGH enqueueWinner.
     expect(state.queue).toHaveLength(1);
     expect(state.queue[0]?.text).toBe(IDEAS[1]);
-    // Losers returned to the pool.
-    const pooledTexts = state.pool.map((p) => p.candidate.text);
-    expect(pooledTexts).toContain(IDEAS[0]);
-    expect(pooledTexts).toContain(IDEAS[2]);
-    expect(state.pool).toHaveLength(2);
+    // Losers dropped, not repooled (streamer decision 2026-07-11).
+    expect(state.pool).toHaveLength(0);
     // Round is over; the show returns to IDLE.
     expect(state.round).toBeNull();
     expect(state.mode).toBe("IDLE");
