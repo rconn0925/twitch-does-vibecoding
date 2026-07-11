@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-07-09)
 Phase: 05 (build-history-stream-night-dry-run) — CODE COMPLETE (closeout green). ALL phases code-side done.
 Plan: All buildable plans across Phases 1–5 merged to master + 1 quick task (gate plan-billing). Suite **679 pass**, tsc + biome clean.
 Status: Phase 05 built (2 code waves + runbook doc) → reviewed (0 blocker, 4 warning + 4 info; all 4 warnings + IN-01/IN-03 fixed, IN-02/IN-04 accepted deferrals) → verified 1/1 code criterion PASS (3/3 criteria correctly deferred to the human dry run) → secured 13/13 threats, 0 open.
-Last activity: 2026-07-11 -- Straight-to-build era: suggestions are prompts vs a persistent workspace; sandbox spawn fixed (first real build); classifier loosened (live eval 0 SAFETY FAIL)
+Last activity: 2026-07-11 -- Completed quick task 260711-l2a: 30s rounds, pool/vote caps 5, pool-full early close, overlay legibility + harness
 
 Progress: [█████████▓] 95% (code-complete; remaining 5% = human-action gates)
 
@@ -79,6 +79,7 @@ Everything buildable is built and green. These are the human-action gates, defer
 
 | Date | Task | Result |
 |------|------|--------|
+| 2026-07-11 | `260711-l2a` — Overlay command hints verified + 30s rounds + pool/vote caps 5 + pool-full early close | ✅ Done. Rounds default 30s; `POOL_MAX_SIZE`/`EARLY_CLOSE_POOL_SIZE`/`ROUND_MAX_OPTIONS` = three named knobs, all default 5 (user amended mid-run from 10/10); pool hits 5 → suggest phase closes early via the SAME `#onPhaseEnd` path (halt/eligibility semantics proven unchanged); `!vote 1–5` parser + banner; overlay legibility at max state + compressed vote hint; dev visual harness `npx tsx scripts/overlay-harness.ts`. 870 tests, tsc+biome clean. Local .env updated (ROUND_DURATION_SECONDS=30, POOL_MAX_SIZE=5). |
 | 2026-07-11 | `260711-hak` — Per-project GitHub publishing + BL-01/HI-01/HI-03 | ✅ Done. BL-01 FIXED: distro workspace dir created before every build (fail-closed on mkdir fail — the persistent-workspace feature now actually runs). Per-project publisher: ONE public repo per generation under TwitchVibecodes, named from the first prompt (sanitized/deduped/dated-fallback), create-on-scaffold + push-on-continue, delete-propagation + re-clone recovery. Stall/idle watchdog (healthy long builds no longer killed). Token isolation machine-enforced (GALLERY_GITHUB_TOKEN never in sandbox, non-vacuous). Rotation non-destructive + callable from any path (ready for !swapbuild/!build). 845 tests. |
 | 2026-07-10 | `260710-q1f` — Record Phase 3 Wave 0 WSL2 go/no-go | ✅ Done. All setup items complete, 5/5 proofs PASS (SAND-01, SAND-02, BUILD-04, A1 plan-credit billing, latency 259ms cold / 66ms warm), verdict GO. AR-03-1/2/3 closed. |
 | 2026-07-10 | `260710-if0` — Rework compliance-gate classifier to plan-billed Agent SDK (off API keys) | ✅ Done. Gate now bills via `claude login` plan credits (Agent SDK `query()`, tools-disabled, single-turn, Sonnet); raw metered Messages API + `@anthropic-ai/sdk` retired from `src/`. Reviewed (0 blocker, 3 warn fixed incl. WR-01 fail-closed hardening) → secured 7/7, 0 open. Both SAND-04 + single-funnel invariants stay green non-vacuously. No `ANTHROPIC_API_KEY` required anywhere now. |
