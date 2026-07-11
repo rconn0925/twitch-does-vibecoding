@@ -25,6 +25,7 @@ These become env vars consumed by `src/orchestrator/sandbox-process.ts` (03-05) 
 - [x] `.wslconfig` does NOT enable mirrored networking (NAT stays) — no `%USERPROFILE%\.wslconfig` exists at all, so the NAT default is confirmed.
 - [x] One-time `claude login` INSIDE the distro as the build user (its own `~/.claude/`; do NOT copy host's)
 - [x] Node.js + npm installed in the distro — Node v24.18.0 + npm 11.16.0 (NodeSource) + Claude Code CLI 2.1.206 (global)
+- [x] CLI sandbox dependencies installed in the distro: `apt install bubblewrap socat` (bubblewrap 0.9.0 + socat 1.8.0, added 2026-07-11 during debug/sandbox-build-spawn-binary) — REQUIRED because `buildSandboxOptions()` sets `failIfUnavailable: true`; without them the CLI refuses to start ("sandbox required but unavailable") and every build turn fails closed
 - [x] Host `ANTHROPIC_API_KEY` confirmed UNSET (`echo %ANTHROPIC_API_KEY%` empty) — paste below
 
 ```

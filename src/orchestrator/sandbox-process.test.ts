@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildSandboxOptions,
   createSandboxAdapter,
+  resolveWslExePath,
   type SandboxAdapterDeps,
+  type SandboxConfig,
   type SandboxExecFileFn,
   type SandboxSpawnFn,
   sandboxConfigFromEnv,
@@ -15,10 +17,20 @@ const HOST_SECRET_KEY = /TWITCH_|ANTHROPIC_API_KEY|SECRET|TOKEN/;
 /** A no-op SpawnedProcess stand-in — tests never touch a real wsl.exe. */
 const FAKE_CHILD = {} as unknown as SpawnedProcess;
 
+const TEST_CONFIG: SandboxConfig = {
+  distroName: "vibecoding-build",
+  distroUser: "builder",
+  distroClaudePath: "/usr/bin/claude",
+};
+
+/** The absolute wsl.exe path the adapter resolves on this machine. */
+const WSL_EXE = resolveWslExePath();
+
 function spawnOpts(overrides: Partial<SpawnOptions> = {}): SpawnOptions {
   return {
-    command: "claude",
-    args: ["--print", "build the thing"],
+    // Native-binary mode: the SDK hands us the HOST claude.exe path + CLI flags.
+    command: "C:\\repo\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64\\claude.exe",
+    args: ["--input-format", "stream-json", "--output-format", "stream-json"],
     env: {},
     signal: new AbortController().signal,
     ...overrides,
@@ -46,6 +58,7 @@ describe("sandboxConfigFromEnv", () => {
     const config = sandboxConfigFromEnv({});
     expect(config.distroName).toBe("vibecoding-build");
     expect(config.distroUser).toBe("builder");
+    expect(config.distroClaudePath).toBe("/usr/bin/claude");
     expect(config.sandboxApiKey).toBeUndefined();
   });
 
@@ -53,11 +66,13 @@ describe("sandboxConfigFromEnv", () => {
     const config = sandboxConfigFromEnv({
       BUILD_DISTRO_NAME: "custom-distro",
       BUILD_DISTRO_USER: "runner",
+      BUILD_DISTRO_CLAUDE_PATH: "/opt/claude/bin/claude",
       TWITCH_CLIENT_SECRET: "leak-me",
       ANTHROPIC_API_KEY: "host-plan-key",
     });
     expect(config.distroName).toBe("custom-distro");
     expect(config.distroUser).toBe("runner");
+    expect(config.distroClaudePath).toBe("/opt/claude/bin/claude");
     expect(config.sandboxApiKey).toBeUndefined();
     expect(JSON.stringify(config)).not.toContain("leak-me");
     expect(JSON.stringify(config)).not.toContain("host-plan-key");
@@ -69,105 +84,187 @@ describe("sandboxConfigFromEnv", () => {
   });
 });
 
-describe("createSandboxAdapter — spawn env allowlist (SAND-03)", () => {
-  it("builds an env with EXACTLY the allowlisted keys — no host secrets (primary path)", () => {
+describe("resolveWslExePath", () => {
+  it("resolves under the system root so the empty-env spawn needs no PATH lookup", () => {
+    expect(resolveWslExePath({ SystemRoot: "D:\\Win" })).toBe("D:\\Win\\System32\\wsl.exe");
+    expect(resolveWslExePath({ SYSTEMROOT: "E:\\W" })).toBe("E:\\W\\System32\\wsl.exe");
+    expect(resolveWslExePath({})).toBe("C:\\Windows\\System32\\wsl.exe");
+  });
+});
+
+describe("createSandboxAdapter — spawn env isolation (SAND-03)", () => {
+  it("spawns wsl.exe with an EMPTY Windows-side env — nothing of the host env exists in the child", () => {
     const { fn, calls } = captureSpawn();
-    const adapter = createSandboxAdapter({
-      config: { distroName: "vibecoding-build", distroUser: "builder" },
-      spawnFn: fn,
-    });
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
 
     adapter.spawn(spawnOpts());
 
-    const env = calls[0]?.options.env ?? {};
-    expect(Object.keys(env)).toEqual(["PATH"]);
-    expect(env.PATH).toBe("/usr/bin:/bin");
-    for (const key of Object.keys(env)) {
+    expect(calls[0]?.options.env).toEqual({});
+  });
+
+  it("injects the allowlist env LINUX-side via /usr/bin/env (PATH only on the primary path)", () => {
+    const { fn, calls } = captureSpawn();
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
+
+    adapter.spawn(spawnOpts());
+
+    const args = calls[0]?.args ?? [];
+    const envIdx = args.indexOf("/usr/bin/env");
+    expect(envIdx).toBeGreaterThan(-1);
+    const assignments = args.slice(envIdx + 1, args.indexOf("/usr/bin/claude"));
+    expect(assignments).toEqual(["PATH=/usr/bin:/bin"]);
+    for (const assignment of assignments) {
+      const key = assignment.split("=")[0] ?? "";
       expect(key, `host-secret-shaped key leaked into sandbox env: ${key}`).not.toMatch(
         HOST_SECRET_KEY,
       );
     }
   });
 
-  it("never leaks a host TWITCH_/ANTHROPIC_API_KEY even when present on process.env-like input", () => {
+  it("never leaks a host TWITCH_/ANTHROPIC_API_KEY even when present on the SDK-supplied opts.env", () => {
     const { fn, calls } = captureSpawn();
-    const adapter = createSandboxAdapter({
-      config: { distroName: "vibecoding-build", distroUser: "builder" },
-      spawnFn: fn,
-    });
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
 
-    // opts.env carries what the SDK's default spawn would forward — it must be ignored.
+    // opts.env carries what the SDK's default spawn would forward ({...process.env}
+    // plus SDK vars) — it must be ignored entirely.
     adapter.spawn(
       spawnOpts({
-        env: { TWITCH_CLIENT_SECRET: "xyz", ANTHROPIC_API_KEY: "host", PATH: "/host/bin" },
+        env: { TWITCH_CLIENT_SECRET: "xyz", ANTHROPIC_API_KEY: "host", PATH: "C:\\host\\bin" },
       }),
     );
 
-    const env = calls[0]?.options.env ?? {};
-    expect(Object.keys(env)).toEqual(["PATH"]);
-    expect(env.PATH).toBe("/usr/bin:/bin");
-    expect(env.TWITCH_CLIENT_SECRET).toBeUndefined();
-    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    const call = calls[0];
+    expect(call?.options.env).toEqual({});
+    const serialized = JSON.stringify(call?.args);
+    expect(serialized).not.toContain("xyz");
+    expect(serialized).not.toContain("host");
+    expect(serialized).not.toContain("TWITCH");
   });
 
   it("injects ONLY the sandbox-scoped key when the A1-false fallback is active", () => {
     const { fn, calls } = captureSpawn();
     const adapter = createSandboxAdapter({
-      config: {
-        distroName: "vibecoding-build",
-        distroUser: "builder",
-        sandboxApiKey: "sandbox-scoped-key",
-      },
+      config: { ...TEST_CONFIG, sandboxApiKey: "sandbox-scoped-key" },
       spawnFn: fn,
     });
 
     adapter.spawn(spawnOpts());
 
-    const env = calls[0]?.options.env ?? {};
-    expect(Object.keys(env).sort()).toEqual(["ANTHROPIC_API_KEY", "PATH"]);
+    const args = calls[0]?.args ?? [];
+    const envIdx = args.indexOf("/usr/bin/env");
+    const assignments = args.slice(envIdx + 1, args.indexOf("/usr/bin/claude"));
     // The value is the DISTINCT sandbox-scoped credential, never a host key.
-    expect(env.ANTHROPIC_API_KEY).toBe("sandbox-scoped-key");
-    expect(env.PATH).toBe("/usr/bin:/bin");
+    expect(assignments).toEqual(["PATH=/usr/bin:/bin", "ANTHROPIC_API_KEY=sandbox-scoped-key"]);
+    expect(calls[0]?.options.env).toEqual({});
   });
 });
 
-describe("createSandboxAdapter — wsl.exe argv shape", () => {
-  it("spawns wsl.exe with -d <distro> -u <user> -- <command> <args...>", () => {
+describe("createSandboxAdapter — host→distro launch translation", () => {
+  it("substitutes the distro CLI for the host claude.exe and passes SDK flags verbatim via --exec (native-binary mode)", () => {
     const { fn, calls } = captureSpawn();
-    const adapter = createSandboxAdapter({
-      config: { distroName: "vibecoding-build", distroUser: "builder" },
-      spawnFn: fn,
-    });
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
     const signal = new AbortController().signal;
 
-    adapter.spawn(spawnOpts({ command: "node", args: ["build.js", "--watch"], signal }));
+    adapter.spawn(
+      spawnOpts({
+        args: ["--input-format", "stream-json", "--mcp-config", '{"mcpServers":{"a b":{}}}'],
+        signal,
+      }),
+    );
 
-    expect(calls[0]?.command).toBe("wsl.exe");
+    expect(calls[0]?.command).toBe(WSL_EXE);
     expect(calls[0]?.args).toEqual([
       "-d",
       "vibecoding-build",
       "-u",
       "builder",
-      "--",
-      "node",
-      "build.js",
-      "--watch",
+      "--cd",
+      "~",
+      "--exec",
+      "/usr/bin/env",
+      "PATH=/usr/bin:/bin",
+      "/usr/bin/claude",
+      "--input-format",
+      "stream-json",
+      "--mcp-config",
+      '{"mcpServers":{"a b":{}}}',
     ]);
     expect(calls[0]?.options.signal).toBe(signal);
+  });
+
+  it("drops the node-exec prefix through cli.js in node mode — only CLI flags cross", () => {
+    const { fn, calls } = captureSpawn();
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
+
+    adapter.spawn(
+      spawnOpts({
+        command: "C:\\Program Files\\nodejs\\node.exe",
+        args: [
+          "--enable-source-maps",
+          "C:\\repo\\node_modules\\@anthropic-ai\\claude-agent-sdk\\cli.js",
+          "--output-format",
+          "stream-json",
+        ],
+      }),
+    );
+
+    const args = calls[0]?.args ?? [];
+    const claudeIdx = args.indexOf("/usr/bin/claude");
+    expect(claudeIdx).toBeGreaterThan(-1);
+    expect(args.slice(claudeIdx)).toEqual(["/usr/bin/claude", "--output-format", "stream-json"]);
+    // No host path fragment may survive translation.
+    expect(JSON.stringify(args)).not.toContain("node.exe");
+    expect(JSON.stringify(args)).not.toContain("cli.js");
+  });
+
+  it("honors the configured distro CLI path", () => {
+    const { fn, calls } = captureSpawn();
+    const adapter = createSandboxAdapter({
+      config: { ...TEST_CONFIG, distroClaudePath: "/opt/claude/bin/claude" },
+      spawnFn: fn,
+    });
+
+    adapter.spawn(spawnOpts());
+
+    expect(calls[0]?.args).toContain("/opt/claude/bin/claude");
+    expect(calls[0]?.args).not.toContain("/usr/bin/claude");
+  });
+
+  it("maps a POSIX-absolute opts.cwd to --cd and any host cwd to the build user's home", () => {
+    const { fn, calls } = captureSpawn();
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
+
+    adapter.spawn(spawnOpts({ cwd: "/home/builder/workspace" }));
+    adapter.spawn(spawnOpts({ cwd: "C:\\Users\\ross\\Projects\\twitch-does-vibecoding" }));
+    adapter.spawn(spawnOpts({ cwd: undefined }));
+
+    const cdOf = (i: number) => {
+      const args = calls[i]?.args ?? [];
+      return args[args.indexOf("--cd") + 1];
+    };
+    expect(cdOf(0)).toBe("/home/builder/workspace");
+    expect(cdOf(1)).toBe("~");
+    expect(cdOf(2)).toBe("~");
+  });
+
+  it("never forwards the host command path into the distro argv (regression: claude.exe passed verbatim)", () => {
+    const { fn, calls } = captureSpawn();
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, spawnFn: fn });
+
+    adapter.spawn(spawnOpts());
+
+    expect(JSON.stringify(calls[0]?.args)).not.toContain("claude.exe");
   });
 });
 
 describe("createSandboxAdapter — terminate (BUILD-04)", () => {
-  it("runs wsl.exe --terminate <distro>", async () => {
+  it("runs wsl.exe --terminate <distro> by absolute path (no PATH dependence)", async () => {
     const execFileFn = vi.fn<SandboxExecFileFn>(async () => undefined);
-    const adapter = createSandboxAdapter({
-      config: { distroName: "vibecoding-build", distroUser: "builder" },
-      execFileFn,
-    });
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
 
     await adapter.terminate();
 
-    expect(execFileFn).toHaveBeenCalledWith("wsl.exe", ["--terminate", "vibecoding-build"]);
+    expect(execFileFn).toHaveBeenCalledWith(WSL_EXE, ["--terminate", "vibecoding-build"]);
   });
 
   it("degrades a teardown failure to a logged error, never a throw (fail-closed)", async () => {
@@ -175,11 +272,7 @@ describe("createSandboxAdapter — terminate (BUILD-04)", () => {
       throw new Error("wsl.exe not found");
     });
     const logger = { error: vi.fn() } as unknown as NonNullable<SandboxAdapterDeps["logger"]>;
-    const adapter = createSandboxAdapter({
-      config: { distroName: "vibecoding-build", distroUser: "builder" },
-      execFileFn,
-      logger,
-    });
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn, logger });
 
     await expect(adapter.terminate()).resolves.toBeUndefined();
     expect(logger.error).toHaveBeenCalledWith(

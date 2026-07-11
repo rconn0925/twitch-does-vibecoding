@@ -40,6 +40,13 @@ export interface SandboxConfig {
   /** Unprivileged in-distro build user with an empty home. */
   distroUser: string;
   /**
+   * Absolute path of the distro's OWN Claude Code CLI (SANDBOX-SETUP.md installs
+   * /usr/bin/claude). The SDK hands us the HOST executable (claude.exe or
+   * node.exe + cli.js) — with automount and interop off it can never exist or
+   * run inside the distro, so spawn() substitutes this path for it.
+   */
+  distroClaudePath: string;
+  /**
    * Present ONLY when Wave 0 records A1=false. A sandbox-scoped key injected
    * into the sandbox env alone — NEVER the host ANTHROPIC_API_KEY. Absent on
    * the primary (plan-credit / in-distro `claude login`) path.
@@ -56,10 +63,24 @@ export function sandboxConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Sand
   const config: SandboxConfig = {
     distroName: env.BUILD_DISTRO_NAME ?? "vibecoding-build",
     distroUser: env.BUILD_DISTRO_USER ?? "builder",
+    distroClaudePath: env.BUILD_DISTRO_CLAUDE_PATH ?? "/usr/bin/claude",
   };
   const scopedKey = env[SANDBOX_KEY_ENV];
   if (scopedKey) config.sandboxApiKey = scopedKey;
   return config;
+}
+
+/**
+ * Absolute path of wsl.exe. The adapter deliberately spawns wsl.exe with an
+ * EMPTY Windows-side environment (nothing of the host env exists in the child
+ * at all — strictly stronger than an allowlist), which means the child spawn
+ * cannot rely on a PATH lookup to find wsl.exe. Resolve it absolutely from the
+ * system root instead. (Empirically verified: wsl.exe launches and runs distro
+ * commands fine with a completely empty Windows environment block.)
+ */
+export function resolveWslExePath(env: NodeJS.ProcessEnv = process.env): string {
+  const systemRoot = env.SystemRoot ?? env.SYSTEMROOT ?? "C:\\Windows";
+  return `${systemRoot}\\System32\\wsl.exe`;
 }
 
 /**
@@ -108,30 +129,80 @@ const defaultSpawn: SandboxSpawnFn = (command, args, options) =>
 const defaultExecFile: SandboxExecFileFn = (file, args) => execFileAsync(file, [...args]);
 
 /**
+ * Detects the SDK's node-launch shape and strips the host-only prefix.
+ *
+ * The SDK's spawn hook passes one of two shapes (verified against sdk.mjs):
+ *   - native-binary mode: command = host claude.exe path, args = CLI flags only
+ *   - node mode:          command = node executable,      args = [...nodeExecArgs, <path>/cli.js, ...CLI flags]
+ * In both cases only the CLI flags are meaningful inside the distro — the host
+ * executable (and cli.js path) are Windows paths that cannot exist there. The
+ * presence of a cli.js entry identifies node mode; everything through it is the
+ * host launch prefix and is dropped.
+ */
+function extractCliFlags(args: readonly string[]): string[] {
+  const cliJsIndex = args.findIndex((arg) => /(^|[\\/])cli\.js$/i.test(arg));
+  return cliJsIndex === -1 ? [...args] : args.slice(cliJsIndex + 1);
+}
+
+/**
  * Construct the SandboxAdapter (SAND-03 spawn + BUILD-04 terminate). `spawn`
- * IS the SDK's `spawnClaudeCodeProcess` hook: it launches wsl.exe with the
- * dedicated distro/user and the allowlisted env. `terminate` runs the reliable,
- * total `wsl.exe --terminate <distro>` teardown — fail-closed / never-throw,
- * because the caller (abortActiveWork) is fire-and-forget.
+ * IS the SDK's `spawnClaudeCodeProcess` hook. It TRANSLATES the SDK's host-side
+ * launch contract into the distro's, field by field:
+ *
+ *   - command: the host claude.exe / node.exe+cli.js is substituted with the
+ *     distro's own CLI (config.distroClaudePath); the SDK's CLI flags pass
+ *     through verbatim.
+ *   - argv fidelity: `--exec` bypasses the distro shell so JSON-shaped flags
+ *     (--mcp-config etc.) reach the CLI argv byte-for-byte — the `--` form
+ *     would route through bash and mangle quotes/backslashes.
+ *   - env: the Windows-side child env is EMPTY (host env cannot cross even in
+ *     principle; WSLENV is absent so nothing propagates). The sandbox allowlist
+ *     env is injected Linux-side via `/usr/bin/env KEY=VAL ...` — the only way
+ *     env reaches the distro process at all.
+ *   - cwd: the SDK's host cwd is untranslatable with automount off; `--cd`
+ *     targets opts.cwd only when it is already a POSIX absolute path, else the
+ *     build user's home (`~`, where the workspace and ~/.claude login live).
+ *   - wsl.exe itself is spawned by ABSOLUTE path (resolveWslExePath) because
+ *     the empty child env leaves no PATH to look it up with.
+ *
+ * `terminate` runs the reliable, total `wsl.exe --terminate <distro>` teardown
+ * — fail-closed / never-throw, because the caller (abortActiveWork) is
+ * fire-and-forget.
  */
 export function createSandboxAdapter(deps: SandboxAdapterDeps = {}): SandboxAdapter {
   const config = deps.config ?? sandboxConfigFromEnv();
   const spawnFn = deps.spawnFn ?? defaultSpawn;
   const execFileFn = deps.execFileFn ?? defaultExecFile;
   const logger = deps.logger;
+  const wslExePath = resolveWslExePath();
 
   return {
     spawn(opts: SpawnOptions): SpawnedProcess {
-      const env = buildSandboxEnv(config);
+      const envAssignments = Object.entries(buildSandboxEnv(config))
+        .filter((entry): entry is [string, string] => entry[1] !== undefined)
+        .map(([key, value]) => `${key}=${value}`);
+      const cd = opts.cwd?.startsWith("/") ? opts.cwd : "~";
       return spawnFn(
-        "wsl.exe",
-        ["-d", config.distroName, "-u", config.distroUser, "--", opts.command, ...opts.args],
-        { env, signal: opts.signal },
+        wslExePath,
+        [
+          "-d",
+          config.distroName,
+          "-u",
+          config.distroUser,
+          "--cd",
+          cd,
+          "--exec",
+          "/usr/bin/env",
+          ...envAssignments,
+          config.distroClaudePath,
+          ...extractCliFlags(opts.args),
+        ],
+        { env: {}, signal: opts.signal },
       );
     },
     async terminate(): Promise<void> {
       try {
-        await execFileFn("wsl.exe", ["--terminate", config.distroName]);
+        await execFileFn(wslExePath, ["--terminate", config.distroName]);
       } catch (err) {
         logger?.error({ err }, "wsl.exe --terminate failed — sandbox distro may still be running");
       }
