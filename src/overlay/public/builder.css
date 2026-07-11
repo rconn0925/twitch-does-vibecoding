@@ -1,0 +1,93 @@
+/*
+ * Builder-view page (quick-x7d) — page-specific LAYOUT only; the palette
+ * tokens and transparent body come from overlay.css :root (loaded first).
+ *
+ * Design language: one Dominant backing panel filling the source frame — a
+ * terminal-ish feed in the overlay's own voice. Type scale per the binding
+ * contract: section label 24px/700, feed lines 20px+ at 500-700, nothing
+ * under 20px. Amber (var(--urgency)) for failed/refused captions — NO red
+ * anywhere on the broadcast surface (D2-18).
+ */
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  padding: var(--safe-margin);
+  box-sizing: border-box;
+}
+
+/* The single backing panel: a fixed-height flex column whose overflow clips
+   at the top (oldest) edge — builder.js pins scroll to the newest line. */
+.ai-panel {
+  background: var(--dominant);
+  border-radius: 12px;
+  padding: var(--panel-pad);
+  box-sizing: border-box;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Breathing room between feed lines (label included). */
+.ai-panel > * + * {
+  margin-top: 10px;
+}
+
+/* Section header — the .wc-label recipe. */
+.ai-label {
+  flex: none;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.ai-title {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.ai-stage {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+/* failed/refused caption — amber (honest but calm), never red (D2-18). */
+.ai-warn {
+  color: var(--urgency);
+}
+
+.ai-activity {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.ai-snippet {
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.5;
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--muted);
+  white-space: pre-wrap;
+  /* CSS backstop behind the server-side 3-line/200-char snippet cap. */
+  overflow: hidden;
+  max-height: calc(3 * 1.5em);
+  overflow-wrap: anywhere;
+}
+
+/* Standing-by placeholder when no build is active (quiet, never an error). */
+.ai-empty {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--muted);
+}

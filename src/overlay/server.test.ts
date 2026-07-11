@@ -885,6 +885,13 @@ describe("overlay server (read-only broadcast surface)", () => {
     expect(rebound.status).toBe(403);
   });
 
+  it("GET /builder serves the builder-view page (quick-x7d)", async () => {
+    const { handle } = await start();
+    const res = await fetch(`http://127.0.0.1:${handle.port}/builder`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+  });
+
   it("a DNS-rebound GET /builder 403s — the app-level Host allowlist covers the builder route (CR-02)", async () => {
     const { handle } = await start();
 

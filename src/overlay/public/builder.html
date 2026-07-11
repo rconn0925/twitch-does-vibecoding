@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>THE AI — Twitch Does Vibecoding</title>
+    <link rel="stylesheet" href="/overlay.css" />
+    <link rel="stylesheet" href="/builder.css" />
+  </head>
+  <body>
+    <!--
+      Builder-view OBS browser source (quick-x7d) — the stream's "THE AI"
+      slot, replacing a raw terminal window-capture. One Dominant panel
+      renders the screened build feed: NOW BUILDING title, fixed stage
+      captions, "Writing <path>" activity lines, capped code snippets. All
+      rendering is JS textContent — no text is authored in this markup, and
+      every wire line is orchestrator-authored fixed copy or COMP-02-approved
+      content (see builder-feed.ts's safety model).
+    -->
+    <main id="feed-panel" class="ai-panel"></main>
+    <script src="/builder.js"></script>
+  </body>
+</html>
