@@ -1,0 +1,14 @@
+# GSD Debug Knowledge Base
+
+Resolved debug sessions. Used by `gsd-debugger` to surface known-pattern hypotheses at the start of new investigations.
+
+---
+
+## empty-build-no-workspace-files — sandboxed build turn permission-denied every Write, phantom 'done', empty public repo
+- **Date:** 2026-07-11
+- **Error patterns:** empty repo, repository is empty, no files, workspace empty, phantom done, Claude requested permissions to write, you haven't granted it yet, permission denied Write, tool_result is_error, acceptEdits, permissionMode, gh repo create, no-changes, markBuilt, scaffolded, .claude only, build done no output
+- **Root cause:** assembleSandboxedBuildOptions (src/orchestrator/turn-options.ts) passed NO permission grant (no permissionMode, no allowedTools, no canUseTool) to the non-interactive sandboxed build turn. In the SDK's 'default' permission mode there is nobody to answer a file-write permission prompt, so EVERY Write was auto-denied. The agent ended its turn with zero files; result:success → phantom 'done' → markBuilt + gallery publish → gh repo create ran BEFORE any content check → real but EMPTY public repo. cwd and Write paths were correct — not a prompt-wording or path bug. Diagnosed directly from the agent's own session transcript (.claude/projects/*.jsonl showed tool_result is_error=true "you haven't granted it yet").
+- **Fix:** (A) permissionMode:'acceptEdits' on the sandboxed build turn only (never bypassPermissions; host branch untouched) + concrete "create files in your current working directory" prompt directives (static text, SAND-04 intact). (B) EMPTY-01 guards: build-session withholds 'done' when workspace has no committable files (new optional SandboxAdapter.workspaceHasCommittableFiles, auto-retry-once); gallery-publisher preflights snapshot BEFORE gh repo create (no-op when nothing committable); explicit -c user.name/user.email on publisher commits (never host git config); workspaceHasFiles ignores dot-entries (.claude-only dir no longer flips continue mode). State repair: workspace_state.scaffolded reset 1→0.
+- **Files changed:** src/orchestrator/turn-options.ts, src/orchestrator/turn-options.test.ts, src/orchestrator/prompt-boundary.ts, src/orchestrator/types.ts, src/orchestrator/sandbox-process.ts, src/orchestrator/sandbox-process.test.ts, src/orchestrator/build-session.ts, src/orchestrator/build-session.test.ts, src/orchestrator/gallery-publisher.ts, src/orchestrator/gallery-publisher.test.ts
+- **Deferred follow-ups (recorded per human gate, NOT fixed):** (1) COMP-02 in-flight classifier flake — "Reached maximum number of turns (1)" ×3 on large-but-benign output batches → fail-closed refusal of good builds; candidate fix maxTurns:2 or batch truncation in src/orchestrator/classifier-runner.ts (compliance/** read-only). (2) Doubled "app-1: app-1:" prefix in gallery_publish audit detail (cosmetic; main.ts prepends generation to a detail that already contains it).
+---
