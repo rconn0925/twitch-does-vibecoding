@@ -184,8 +184,14 @@
 
   // --- vote panel (lower-left; visible while a round is open or the winner beat runs) ---
 
+  // A2 (quick-t5k) how-to-vote line: "type !vote 1 / !vote 2 …" derived from
+  // the candidate count. Fixed copy, never chat-derived.
   function voteHint(candidateCount) {
-    return candidateCount === 2 ? "type !vote 1 or 2" : "type !vote 1, 2 or 3";
+    const options = [];
+    for (let i = 1; i <= candidateCount; i += 1) {
+      options.push(`!vote ${i}`);
+    }
+    return `type ${options.join(" / ")}`;
   }
 
   /** The option number of the UNIQUE current leader, or null when tied/zero. */
@@ -234,20 +240,47 @@
     return row;
   }
 
-  function renderVotePanel() {
-    votePanel.replaceChildren();
-    // The build panel owns the shared lower-left slot while a build is live or
-    // the BUILT IT beat runs — the vote panel yields (mutually exclusive modes).
-    if (buildPanelActive()) {
+  // A2 (quick-t5k): the suggestion-phase guidance variant of the vote panel.
+  // Same Dominant backing panel, same countdown classes — no bare text over
+  // video, no new overlay block. Silent-absent outside the phase (D2-18).
+  function renderSuggestVariant() {
+    const sp = latest?.suggestPhase ?? null;
+    if (!sp) {
       votePanel.hidden = true;
       return;
     }
+    votePanel.hidden = false;
+    const header = el("div", "vote-header");
+    header.appendChild(el("h1", "vote-title", "SUGGESTIONS OPEN"));
+    // Countdown ticks CLIENT-side from the pushed absolute deadline — the
+    // server never streams per-second frames (same contract as the vote clock).
+    const remaining = sp.endsAtMs - Date.now();
+    const countdown = el("span", "vote-countdown", formatRemaining(remaining));
+    if (remaining <= FINAL_COUNTDOWN_MS) {
+      countdown.classList.add("countdown-final");
+    }
+    header.appendChild(countdown);
+    votePanel.appendChild(header);
+    votePanel.appendChild(el("p", "vote-hint", "type !suggest <your idea>"));
+  }
+
+  function renderVotePanel() {
+    votePanel.replaceChildren();
     const liveRound = latest?.round?.status === "open" ? latest.round : null;
+    // Slot precedence (quick-t5k reconciliation point 2): a LIVE round owns the
+    // shared lower-left slot even while a build runs — concurrent rounds must
+    // stay votable on screen; the pill still reads BUILDING. Without a live
+    // round, the build panel keeps the slot while a build is live or the BUILT
+    // IT beat runs (so the suggest guidance also yields to it).
+    if (!liveRound && buildPanelActive()) {
+      votePanel.hidden = true;
+      return;
+    }
     // A newly opened round always outranks a lingering winner beat.
     const beatActive = liveRound === null && winnerBeatRound !== null;
     const round = liveRound || winnerBeatRound;
     if (!round) {
-      votePanel.hidden = true;
+      renderSuggestVariant();
       return;
     }
     votePanel.hidden = false;
@@ -314,6 +347,13 @@
 
   function renderBuildPanel() {
     buildPanel.replaceChildren();
+    // Slot precedence (quick-t5k): a LIVE concurrent round owns the shared
+    // lower-left slot — the build story stays on the BUILDING pill until the
+    // round closes (pill precedence, reconciliation point 2).
+    if (latest?.round?.status === "open") {
+      buildPanel.hidden = true;
+      return;
+    }
     const beatActive = doneBeat !== null;
     const bs = beatActive ? doneBeat : (latest?.buildStatus ?? null);
     if (!bs || (!beatActive && bs.stage === "done")) {
@@ -415,11 +455,13 @@
     renderAll();
   }
 
-  // 1s countdown tick: re-render the vote panel while a round runs so the
-  // clock stays honest between pushes. A frozen round re-renders to the same
-  // held remainingMs — the display simply stops moving (D2-16 honesty).
+  // 1s countdown tick: re-render the vote panel while a round runs OR a
+  // suggestion phase is collecting (quick-t5k A2 — the suggest countdown ticks
+  // client-side between pushes too) so the clock stays honest between pushes.
+  // A frozen round re-renders to the same held remainingMs — the display
+  // simply stops moving (D2-16 honesty).
   setInterval(() => {
-    if (latest?.round?.status === "open" || winnerBeatRound !== null) {
+    if (latest?.round?.status === "open" || winnerBeatRound !== null || latest?.suggestPhase) {
       renderVotePanel();
     }
     // Keep the banner countdown honest between pushes while a window is active

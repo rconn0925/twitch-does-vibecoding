@@ -433,28 +433,75 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
     h.db.close();
   });
 
-  it("zero votes: no winner, no enqueue, ALL candidates return to the pool", () => {
-    const h = makeHarness();
-    const snap = h.manager.startRound();
-    expect(h.pool.list()).toHaveLength(0);
+  it("zero votes: the EARLIEST-submitted candidate wins deterministically with shuffled submission times (D-03, quick-t5k)", () => {
+    // Shuffled submittedAtMs: option 2 carries the earliest submission, so it
+    // must win regardless of pool insertion order — no repool, no re-run beat.
+    const db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    pool.add(candidate("cand-1", { submittedAtMs: 900 }), approved);
+    pool.add(candidate("cand-2", { submittedAtMs: 300 }), approved);
+    pool.add(candidate("cand-3", { submittedAtMs: 600 }), approved);
+    const enqueue = enqueueWinnerSpy();
+    const manager = new RoundManager({
+      db,
+      machine,
+      pool,
+      enqueueWinner: enqueue,
+      now: () => 1_000,
+    });
+    const snap = manager.startRound();
 
-    h.manager.closeRound();
+    manager.closeRound();
 
-    const row = h.db.prepare("SELECT * FROM rounds WHERE id = ?").get(snap.roundId) as Record<
+    const row = db.prepare("SELECT * FROM rounds WHERE id = ?").get(snap.roundId) as Record<
       string,
       unknown
     >;
     expect(row.status).toBe("closed");
-    expect(row.winner_option).toBeNull();
-    expect(h.enqueueWinner).not.toHaveBeenCalled();
+    expect(row.winner_option).toBe(2);
+    expect(row.tiebreak).toBe(0);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const [winCand] = enqueue.mock.calls[0] as unknown as [SuggestionCandidate];
+    expect(winCand.id).toBe("cand-2");
+    // Losers repool; the winner rides the SAME enqueue path as a voted winner.
     expect(
-      h.pool
+      pool
         .list()
         .map((a) => a.candidate.id)
         .sort(),
-    ).toEqual(["cand-1", "cand-2", "cand-3"]);
-    expect(h.machine.mode).toBe("IDLE");
-    h.db.close();
+    ).toEqual(["cand-1", "cand-3"]);
+    expect(machine.mode).toBe("IDLE");
+    db.close();
+  });
+
+  it("zero votes with tied earliest submissions: the LOWEST option index wins (D-03 tie rule)", () => {
+    const db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    pool.add(candidate("cand-1", { submittedAtMs: 700 }), approved);
+    pool.add(candidate("cand-2", { submittedAtMs: 400 }), approved);
+    pool.add(candidate("cand-3", { submittedAtMs: 400 }), approved);
+    const enqueue = enqueueWinnerSpy();
+    const manager = new RoundManager({
+      db,
+      machine,
+      pool,
+      enqueueWinner: enqueue,
+      now: () => 1_000,
+    });
+    const snap = manager.startRound();
+
+    manager.closeRound();
+
+    const row = db.prepare("SELECT winner_option FROM rounds WHERE id = ?").get(snap.roundId) as {
+      winner_option: number;
+    };
+    // cand-2 (option 2) and cand-3 (option 3) tie at 400ms → lowest index wins.
+    expect(row.winner_option).toBe(2);
+    const [winCand] = enqueue.mock.calls[0] as unknown as [SuggestionCandidate];
+    expect(winCand.id).toBe("cand-2");
+    db.close();
   });
 
   it("is a no-op on a halt-frozen round — frozen rounds wait for triage (WR-01)", () => {
@@ -742,6 +789,155 @@ describe("RoundManager.restore (crash recovery, D2-14)", () => {
     const restored = manager2.snapshot();
     expect(restored?.frozen).toBe(true);
     expect(restored?.remainingMs).toBe(40_000);
+    h.db.close();
+  });
+});
+
+describe("concurrent rounds (A1, quick-t5k): rounds keep cycling while a build executes", () => {
+  /** Drive the harness machine to BUILD_IN_PROGRESS via the legal IDLE row. */
+  function enterBuild(h: Harness): void {
+    h.machine.transition("BUILD_IN_PROGRESS");
+  }
+
+  it("startRound from BUILD_IN_PROGRESS opens the round with NO mode transition", () => {
+    const h = makeHarness();
+    enterBuild(h);
+
+    const snap = h.manager.startRound();
+
+    expect(snap.status).toBe("open");
+    expect(h.machine.mode).toBe("BUILD_IN_PROGRESS"); // never VOTING_ROUND
+    expect(h.manager.snapshot()?.roundId).toBe(snap.roundId);
+    h.db.close();
+  });
+
+  it("startRound from FREE_REIGN_WINDOW / CHAOS_MODE still throws not-idle", () => {
+    for (const mode of ["FREE_REIGN_WINDOW", "CHAOS_MODE"] as const) {
+      const h = makeHarness();
+      h.machine.transition(mode);
+      try {
+        h.manager.startRound();
+        expect.unreachable("startRound should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(RoundStartError);
+        expect((err as RoundStartError).reason).toBe("not-idle");
+      }
+      h.db.close();
+    }
+  });
+
+  it("recordVote succeeds during a concurrent round under BUILD_IN_PROGRESS and after the build returns to IDLE mid-round", () => {
+    const h = makeHarness();
+    enterBuild(h);
+    h.manager.startRound();
+
+    // Vote while the build is still running (mode BUILD_IN_PROGRESS).
+    expect(h.manager.recordVote("111", 1)).toBe(true);
+
+    // The build finishes mid-vote: mode returns to IDLE, the round stays open.
+    h.machine.transition("IDLE");
+    expect(h.manager.recordVote("222", 2)).toBe(true);
+    expect(h.manager.snapshot()?.totalVotes).toBe(2);
+    h.db.close();
+  });
+
+  it("closeRound of a concurrent round: winner enqueued, mode NOT transitioned, losers repooled", () => {
+    const h = makeHarness();
+    enterBuild(h);
+    h.manager.startRound();
+    h.manager.recordVote("111", 1);
+
+    h.manager.closeRound();
+
+    expect(h.machine.mode).toBe("BUILD_IN_PROGRESS"); // untouched — the build owns the mode
+    expect(h.enqueueWinner).toHaveBeenCalledTimes(1);
+    const pooledIds = h.pool.list().map((a) => a.candidate.id);
+    expect(pooledIds.sort()).toEqual(["cand-2", "cand-3"]);
+    expect(h.manager.snapshot()).toBeNull();
+    h.db.close();
+  });
+});
+
+describe("halt during a CONCURRENT round × all three recovery targets (BLOCKER-2, quick-t5k)", () => {
+  /** Open a concurrent round under BUILD_IN_PROGRESS, vote once, then halt. */
+  function haltedConcurrent(): Harness {
+    const h = makeHarness();
+    h.machine.transition("BUILD_IN_PROGRESS");
+    h.manager.startRound(); // opened at 1000, ends at 61000
+    h.manager.recordVote("111", 1);
+    h.setNow(21_000);
+    h.machine.forceTransition("HALTED", haltCtx(h.machine)); // freezes 40s remainder
+    expect(h.manager.snapshot()?.frozen).toBe(true);
+    return h;
+  }
+
+  it("(a) resume → HALTED→BUILD_IN_PROGRESS: the frozen round RESUMES with votes intact; startRound works after it closes", () => {
+    const h = haltedConcurrent();
+    h.setNow(100_000);
+
+    // halt.ts 'resume' recovers to frozen.mode — BUILD_IN_PROGRESS here.
+    h.machine.recoverTo("BUILD_IN_PROGRESS");
+
+    const resumed = h.manager.snapshot();
+    expect(resumed?.frozen).toBe(false);
+    expect(resumed?.endsAtMs).toBe(140_000); // 100_000 + the 40s frozen remainder
+    expect(resumed?.totalVotes).toBe(1); // acknowledged votes kept (D2-14 spirit)
+    expect(h.manager.recordVote("222", 2)).toBe(true); // votes flow again
+
+    // The round closes normally and a LATER startRound is not wedged (CR-01).
+    h.manager.closeRound();
+    expect(h.manager.snapshot()).toBeNull();
+    h.pool.add(candidate("cand-x"), approved);
+    h.pool.add(candidate("cand-y"), approved);
+    expect(() => h.manager.startRound()).not.toThrow();
+    h.db.close();
+  });
+
+  it("(b) discard-and-resume → HALTED→IDLE: round discarded, candidates repooled, startRound works immediately", () => {
+    const h = haltedConcurrent();
+
+    // discard-and-resume maps frozen BUILD_IN_PROGRESS → IDLE (halt.ts ~93).
+    h.machine.recoverTo("IDLE");
+
+    expect(h.manager.snapshot()).toBeNull();
+    expect(
+      h.pool
+        .list()
+        .map((a) => a.candidate.id)
+        .sort(),
+    ).toEqual(["cand-1", "cand-2", "cand-3"]);
+    expect(() => h.manager.startRound()).not.toThrow();
+    h.db.close();
+  });
+
+  it("(c) reset-to-idle → HALTED→IDLE: same discard path — nothing stays wedged behind CR-01", () => {
+    const h = haltedConcurrent();
+
+    h.machine.recoverTo("IDLE");
+
+    expect(h.manager.snapshot()).toBeNull();
+    const row = h.db.prepare("SELECT status FROM rounds ORDER BY id DESC LIMIT 1").get() as {
+      status: string;
+    };
+    expect(row.status).toBe("discarded");
+    expect(() => h.manager.startRound()).not.toThrow();
+    h.db.close();
+  });
+});
+
+describe("recordRoundOpened initiator (quick-t5k audit honesty)", () => {
+  it("startRound() defaults to operator; startRound('auto') records the auto initiator", () => {
+    const h = makeHarness({ candidates: 4 });
+    h.manager.startRound();
+    h.manager.closeRound();
+    h.pool.add(candidate("cand-5"), approved);
+    h.manager.startRound("auto");
+
+    const audit = listAuditRecords(h.db, { limit: 10, eventType: "round_opened" });
+    expect(audit).toHaveLength(2);
+    // Newest first: the auto round, then the operator round.
+    expect(audit[0]?.rationale).toContain("initiated by auto");
+    expect(audit[1]?.rationale).toContain("initiated by operator");
     h.db.close();
   });
 });

@@ -6,7 +6,12 @@ import type Database from "better-sqlite3";
 import { type Logger, pino } from "pino";
 import { openDb } from "./audit/db.js";
 import { purgeOldAuditRecords } from "./audit/purge.js";
-import { recordChaosPick, recordChaosToggled, recordPoolDropped } from "./audit/record.js";
+import {
+  recordAutoCycleToggled,
+  recordChaosPick,
+  recordChaosToggled,
+  recordPoolDropped,
+} from "./audit/record.js";
 import { pickChaos } from "./chaos/selector.js";
 import { CATEGORY_META, isLegalCategory } from "./compliance/categories.js";
 import type { ClassifierTransport } from "./compliance/classifier.js";
@@ -70,6 +75,7 @@ import {
   HALT_TRIGGERED,
   ROUND_CLOSED,
   ROUND_OPENED,
+  STATE_CHANGED,
   WINDOW_CLOSED,
   WINDOW_REVOKED,
 } from "./shared/events.js";
@@ -78,9 +84,12 @@ import type {
   ControlWindowSnapshot,
   GateResult,
   HaltContext,
+  QueuedTask,
   RoundSnapshot,
+  StateSnapshot,
   SuggestionCandidate,
 } from "./shared/types.js";
+import { AutoCycleScheduler } from "./state-machine/auto-cycle.js";
 import { type HaltDeps, triggerHalt } from "./state-machine/halt.js";
 import { expireAllPending, expireStale, reviewTtlMs } from "./state-machine/review-queue.js";
 import { RoundManager } from "./state-machine/round.js";
@@ -215,6 +224,8 @@ export interface AppHandle {
     toggle(): void;
     pick(): ChaosPickResult | null;
   };
+  /** Hands-free round cadence scheduler (quick-t5k) — always composed. */
+  autoCycle: AutoCycleScheduler;
   close: () => Promise<void>;
 }
 
@@ -233,6 +244,10 @@ const DEFAULT_POOL_MAX_SIZE = 50;
 const DEFAULT_INTAKE_COOLDOWN_SECONDS = 60;
 const DEFAULT_CHAT_SEND_INTERVAL_CAP = 15;
 const DEFAULT_CHAT_SEND_INTERVAL_MS = 30_000;
+/** quick-t5k D-01: suggestion-collection window between voting rounds. */
+const DEFAULT_SUGGEST_PHASE_SECONDS = 40;
+/** VOTE_QUEUE_MAX amendment: pause new rounds when this many vote winners wait. */
+const DEFAULT_VOTE_QUEUE_MAX = 10;
 
 /**
  * Wires the Walking Skeleton: audit db -> state machine -> operator console.
@@ -610,6 +625,56 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     },
   };
 
+  // ── Auto-cycle scheduler (quick-t5k D-01..D-04, A1) ─────────────────────
+  // Hands-free [suggest → vote → enqueue → suggest] cadence. Composed here so
+  // both the console (toggle route/pill) and the overlay (suggestPhase
+  // guidance) receive its seams below; start() is called at the END of
+  // composition so a boot into HALTED or a restored VOTING_ROUND parks it
+  // correctly. Narration is late-bound through windowNarrator (silent-safe
+  // when no chat pipeline is composed — the existing idiom).
+  const suggestPhaseSeconds = envPositive(
+    process.env.SUGGEST_PHASE_SECONDS,
+    DEFAULT_SUGGEST_PHASE_SECONDS,
+  );
+  // D-04 strict-string (SE_ACCEPT_TEST_EVENTS comment style, inverted default):
+  // auto-cycle is ON at boot unless the EXACT trimmed string "false" — any
+  // other value (including "0"/"FALSE"/blank) leaves it enabled.
+  const autoRoundEnabled = (process.env.AUTO_ROUND_ENABLED ?? "").trim() !== "false";
+  const voteQueueMax = envPositive(process.env.VOTE_QUEUE_MAX, DEFAULT_VOTE_QUEUE_MAX);
+  // Vote-origin tasks came through the pool/round loop ("chat"/"operator" —
+  // dev submits included). Window instructions carry their window's trigger
+  // ("donation"/"channel_points" — see routeWindowInstruction below), so a
+  // dead-window leftover at the queue head is identifiable: the drain skips
+  // it rather than mislabelling its build_history provenance as 'vote'
+  // (checker residual note); the streamer can veto it via /api/tasks/:id/veto.
+  const isVoteOrigin = (task: QueuedTask): boolean =>
+    task.source === "chat" || task.source === "operator";
+  // VOTE_QUEUE_MAX amendment: the count includes a currently-building vote task
+  // (it stays queued until finalize dequeues it) — a deliberate conservative
+  // off-by-one. Manual round starts are NOT capped (operator override).
+  const isVoteQueueFull = (): boolean =>
+    taskQueue.list().filter(isVoteOrigin).length >= voteQueueMax;
+  const autoCycle = new AutoCycleScheduler({
+    machine,
+    round: { snapshot: () => round.snapshot(), on: (event, handler) => round.on(event, handler) },
+    startRound: (initiator) => round.startRound(initiator),
+    isControlWindowLive: () => {
+      const s = controlWindow.snapshot();
+      return s !== null && s.endsAtMs > Date.now();
+    },
+    isChaosOn: () => chaos.enabled(),
+    isVoteQueueFull,
+    suggestPhaseMs: suggestPhaseSeconds * 1_000,
+    enabledAtBoot: autoRoundEnabled,
+    narrate: {
+      suggestionsOpen: (s) => windowNarrator?.suggestionsOpen(s),
+      stillCollecting: (s) => windowNarrator?.stillCollecting(s),
+      buildQueueFull: () => windowNarrator?.buildQueueFull(),
+    },
+    onToggled: (enabled) => recordAutoCycleToggled(db, { enabled, streamMode: machine.mode }),
+    logger,
+  });
+
   // ── Chat pipeline composition (plan 02-04) ─────────────────────────────
   // Runs whenever a chatSource/chatSink pair exists — injected fakes and the
   // entrypoint's real twurple adapters take the IDENTICAL path.
@@ -758,7 +823,14 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     const routeWindowInstruction = async (displayName: string, text: string): Promise<void> => {
       const candidate: SuggestionCandidate = {
         id: randomUUID(),
-        source: "chat",
+        // quick-t5k: carry the WINDOW'S trigger as the candidate source
+        // ("donation" | "channel_points" — the CandidateSource values minted
+        // for exactly this path) instead of "chat". Two wins: the gate_decision
+        // audit row becomes filterable by influence path (record.ts doctrine),
+        // and drainVoteQueue can tell a dead-window leftover from a vote winner
+        // (it skips non-vote-origin heads rather than building them with a
+        // mislabelled 'vote' provenance).
+        source: controlWindow.snapshot()?.trigger ?? "donation",
         kind: "suggestion",
         twitchUsername: displayName,
         text,
@@ -880,6 +952,13 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       revoke: () => controlWindow.revoke(),
     },
     chaos: { enabled: () => chaos.enabled(), toggle: () => chaos.toggle() },
+    // quick-t5k D-04: the auto-cycle pause/resume seam — POST
+    // /api/auto-cycle/toggle + the round-panel pill, mirroring the chaos seam.
+    autoCycle: {
+      snapshot: () => autoCycle.snapshot(),
+      toggle: () => autoCycle.toggle(),
+      on: (event, handler) => autoCycle.on(event, handler),
+    },
     donationsStatus: () => donationsStatus,
     logger,
   });
@@ -928,19 +1007,85 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       logger,
     });
     orchestrator = buildSession;
-    // The winner→build trigger (see enqueueWinner wrapper above): synchronously
-    // enter BUILD_IN_PROGRESS while still VOTING_ROUND, then start the pipeline.
-    onWinnerQueued = (taskId) => {
-      const task = taskQueue.list().find((t) => t.id === taskId);
-      if (!task) return;
+
+    // ── drainVoteQueue — the ONE vote-winner build starter (quick-t5k A1) ──
+    // Every path a queued winner can start on funnels through this helper, and
+    // it only EVER starts the FIFO queue head — never a caller-supplied task id
+    // (BLOCKER-1 fix: a previously-stranded winner builds before a fresh one).
+    // Returns true when a build actually STARTED. Refuses (false) when:
+    //  - a build is already running (its completion continuation drains next);
+    //  - a control window is live or chaos is on (driveWindowBuild /
+    //    driveChaosBuild own those drains — T-t5k-04);
+    //  - no vote-origin task is queued. A non-vote-origin head (a paid
+    //    instruction left over from a dead window) is SKIPPED, not built:
+    //    building it here would mislabel its build_history provenance as
+    //    'vote' (checker residual note) — it stays queued for streamer veto.
+    const drainVoteQueue = (): boolean => {
+      if (machine.mode === "BUILD_IN_PROGRESS") return false;
+      const liveWindow = controlWindow.snapshot();
+      if (liveWindow !== null && liveWindow.endsAtMs > Date.now()) return false;
+      if (chaos.enabled()) return false;
+      const head = taskQueue.list().find(isVoteOrigin);
+      if (!head) return false;
       try {
-        if (machine.mode === "VOTING_ROUND") machine.transition("BUILD_IN_PROGRESS");
+        if (machine.mode === "VOTING_ROUND" || machine.mode === "IDLE") {
+          // VOTING_ROUND → BUILD_IN_PROGRESS: the synchronous close path (as
+          // today). IDLE → BUILD_IN_PROGRESS: the Task-1 table addition — a
+          // queued winner starting after the previous build returned to IDLE.
+          machine.transition("BUILD_IN_PROGRESS");
+        } else {
+          return false; // FREE_REIGN_WINDOW / CHAOS_MODE / HALTED — not ours
+        }
       } catch (err) {
-        logger.error({ err, taskId }, "failed to enter BUILD_IN_PROGRESS for the round winner");
+        logger.error(
+          { err, taskId: head.id },
+          "failed to enter BUILD_IN_PROGRESS for a queued vote winner",
+        );
+        return false;
       }
-      // HIST-01: a round winner's provenance is always the normal vote loop.
-      void buildSession.startBuild(task, "vote");
+      void (async () => {
+        // HIST-01: a round winner's provenance is always the normal vote loop.
+        await buildSession.startBuild(head, "vote");
+        // Completion continuation (driveChaosBuild's shape): drain the NEXT
+        // queued winner. This continuation is never "from HALTED" — a halt
+        // leaves the machine HALTED, so the mode check below refuses.
+        if (machine.mode === "IDLE") drainVoteQueue();
+      })();
+      return true;
     };
+
+    // (a) The winner→build trigger (see enqueueWinner wrapper above): fired
+    // synchronously from inside closeRound. Starts the queue HEAD — when the
+    // round owned the mode (VOTING_ROUND) this starts a build synchronously as
+    // today; mode BUILD_IN_PROGRESS → the fresh winner stays queued (concurrent
+    // close mid-build); mode IDLE (the round's background build finished
+    // mid-vote — the routine 20s-vote/multi-minute-build case) → drains
+    // immediately instead of stranding the winner forever (BLOCKER-1).
+    onWinnerQueued = () => {
+      drainVoteQueue();
+    };
+
+    // (b) Build/mode returns to IDLE → drain the next queued winner. SKIP when
+    // the PREVIOUS mode was HALTED (reconciliation point 6 / Warning-3: exiting
+    // a kill-switch halt never auto-starts a build — queued work resumes at the
+    // next round close or manual start). Deferred one tick: finalize()
+    // transitions to IDLE BEFORE dequeuing the finished task, so a synchronous
+    // drain here would see the finished task still at the queue head and
+    // rebuild it.
+    let prevDrainMode: StateSnapshot["mode"] = machine.mode;
+    machine.on(STATE_CHANGED, (...args) => {
+      const snap = args[0] as StateSnapshot;
+      const prev = prevDrainMode;
+      prevDrainMode = snap.mode;
+      if (snap.mode !== "IDLE" || prev === "HALTED") return;
+      setImmediate(() => {
+        if (machine.mode === "IDLE") drainVoteQueue();
+      });
+    });
+
+    // (c) Composition-time drain: covers boot with a restored non-empty queue
+    // (a no-op today — TaskQueue is in-memory — but harmless and future-proof).
+    drainVoteQueue();
 
     // CR-03: the paid-window build trigger. A queued paid instruction enters
     // BUILD_IN_PROGRESS and runs in the sandbox exactly like a round winner. On
@@ -1057,6 +1202,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       },
       on: (event, handler) => controlWindow.on(event, handler),
     },
+    // quick-t5k A2: the suggestion-phase guidance countdown source. The server
+    // re-narrows to suggestPhase:{endsAtMs} — the enabled flag stays private.
+    autoCycle: {
+      snapshot: () => autoCycle.snapshot(),
+      on: (event, handler) => autoCycle.on(event, handler),
+    },
     logger,
   });
   logger.info(
@@ -1081,6 +1232,17 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     history.port,
   );
 
+  // Auto-cycle ignition — LAST, after restore/halt re-entry and every server is
+  // up (quick-t5k D-04): a boot into HALTED or a restored VOTING_ROUND parks
+  // the scheduler correctly; a clean IDLE boot begins the first 40s suggestion
+  // window right here — zero console clicks.
+  autoCycle.start();
+  logger.info(
+    { enabled: autoRoundEnabled, suggestPhaseSeconds, voteQueueMax },
+    "auto-cycle scheduler started (enabled=%s)",
+    autoRoundEnabled,
+  );
+
   return {
     server: console_.server,
     port: console_.port,
@@ -1094,6 +1256,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     registry,
     controlWindow,
     chaos,
+    autoCycle,
     history,
     ...(orchestrator ? { orchestrator } : {}),
     ...(preview ? { preview } : {}),
@@ -1102,6 +1265,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // closeRound() could fire after db.close() below and crash the
       // process from inside a setTimeout callback.
       round.dispose();
+      // Same WR-05 symmetry: a pending suggest-phase timer must never fire
+      // startRound against a closed db.
+      autoCycle.dispose();
       // Cancel the window expiry + 30s-left timers BEFORE db.close() (WR-05
       // symmetry): a pending window timer must never fire against a closed db.
       clearWindowThirtyBeat();

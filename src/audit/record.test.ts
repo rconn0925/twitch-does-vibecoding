@@ -134,6 +134,7 @@ describe("audit record helpers (append-only ledger)", () => {
       candidateCount: 3,
       durationMs: 60_000,
       streamMode: "VOTING_ROUND",
+      initiator: "operator",
     });
     const rows = listAuditRecords(db, { limit: 10, eventType: "round_opened" });
     expect(rows).toHaveLength(1);

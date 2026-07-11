@@ -85,6 +85,19 @@ export interface Narrator extends BuildNarrator {
   chaosOff(): void;
   /** A uniform-random chaos pick was made and queued (CHAOS-01). */
   chaosPick(title: string): void;
+
+  // ── Auto-cycle suggestion-phase beats (quick-t5k D-01/D-02) ──────────────
+  // Low-frequency transition beats, one message per phase begin — the phase
+  // countdown itself lives on the overlay (A2), never in chat.
+  /** A fresh 40s suggestion window opened — the cycle's collect beat. */
+  suggestionsOpen(seconds: number): void;
+  /** Pool was too small at phase end — another full window restarts (D-02). */
+  stillCollecting(seconds: number): void;
+  /**
+   * The vote-winner build queue hit VOTE_QUEUE_MAX — the scheduler pauses new
+   * rounds until the queue drains (user amendment). Emitted ONCE per park.
+   */
+  buildQueueFull(): void;
 }
 
 /** UI-SPEC: titles inside chat messages truncate to 60 chars (incl. the ellipsis). */
@@ -367,6 +380,24 @@ export function createNarrator(deps: {
       void deps.sender.send(
         `Chaos pick: "${truncateTitle(title)}" — no vote needed, building it now.`,
       );
+    },
+
+    // ── Auto-cycle suggestion-phase beats (quick-t5k D-01/D-02) ──────────────
+
+    suggestionsOpen(seconds: number): void {
+      void deps.sender.send(
+        `Suggestions open — type !suggest <your idea>. ${seconds}s until voting.`,
+      );
+    },
+
+    stillCollecting(seconds: number): void {
+      void deps.sender.send(
+        `Still collecting suggestions — type !suggest <your idea>. Another ${seconds}s.`,
+      );
+    },
+
+    buildQueueFull(): void {
+      void deps.sender.send("Build queue full — pausing new rounds until it drains.");
     },
   };
 }

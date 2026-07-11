@@ -184,10 +184,18 @@ export function recordReviewResolution(
 /**
  * One row per voting-round open (D2-01/COMP-05). Round lifecycle narration is
  * audit-ledger data; the vote ledger itself lives in the round_votes table.
+ * `initiator` (quick-t5k) distinguishes auto-cycle opens from operator opens in
+ * the free-text rationale — NO schema change (audit_log has no CHECK constraint).
  */
 export function recordRoundOpened(
   db: Database.Database,
-  args: { roundId: number; candidateCount: number; durationMs: number; streamMode: StreamMode },
+  args: {
+    roundId: number;
+    candidateCount: number;
+    durationMs: number;
+    streamMode: StreamMode;
+    initiator: "auto" | "operator";
+  },
 ): void {
   insert(db, {
     createdAtMs: Date.now(),
@@ -197,9 +205,31 @@ export function recordRoundOpened(
     suggestionText: null,
     decision: null,
     category: null,
-    rationale: `Round opened with ${args.candidateCount} candidates, ${args.durationMs}ms duration`,
+    rationale: `Round opened with ${args.candidateCount} candidates, ${args.durationMs}ms duration, initiated by ${args.initiator}`,
     streamMode: args.streamMode,
     taskId: String(args.roundId),
+  });
+}
+
+/**
+ * One row per auto-cycle TOGGLE (quick-t5k D-04): the streamer paused/resumed
+ * the hands-free round cadence. Mirrors recordChaosToggled's shape/idiom.
+ */
+export function recordAutoCycleToggled(
+  db: Database.Database,
+  args: { enabled: boolean; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "auto_cycle_toggled",
+    source: "operator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: args.enabled ? "enabled" : "disabled",
+    category: null,
+    rationale: `Auto-cycle ${args.enabled ? "enabled" : "disabled"}`,
+    streamMode: args.streamMode,
+    taskId: null,
   });
 }
 

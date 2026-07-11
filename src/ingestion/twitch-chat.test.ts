@@ -103,6 +103,9 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     chaosOn: vi.fn(),
     chaosOff: vi.fn(),
     chaosPick: vi.fn(),
+    suggestionsOpen: vi.fn(),
+    stillCollecting: vi.fn(),
+    buildQueueFull: vi.fn(),
   };
 }
 

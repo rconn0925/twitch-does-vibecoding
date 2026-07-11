@@ -481,6 +481,12 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Auto-cycle status pill sits beside its toggle in the round panel (quick-t5k) */
+.auto-cycle-pill {
+  margin-left: var(--space-sm);
+  vertical-align: middle;
+}
+
 /* Disabled-reason text — Label 14/600 muted (UI-SPEC) */
 .round-reason {
   margin: var(--space-sm) 0 0;
