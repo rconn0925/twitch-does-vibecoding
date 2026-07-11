@@ -258,8 +258,10 @@
     if (snapshot.chaos) {
       return "Voting is off while chaos mode is on.";
     }
-    if (snapshot.mode !== "IDLE") {
-      return `Rounds can only start from Standby (current mode: ${snapshot.mode}).`;
+    // quick-t5k A1: BUILD_IN_PROGRESS is now a startable mode — a round opened
+    // mid-build runs CONCURRENTLY (its winner queues behind the running build).
+    if (snapshot.mode !== "IDLE" && snapshot.mode !== "BUILD_IN_PROGRESS") {
+      return `Rounds can only start from Standby or mid-build (current mode: ${snapshot.mode}).`;
     }
     if (snapshot.pool.length < 2) {
       return `Need at least 2 approved candidates to start a round (have ${snapshot.pool.length}).`;
@@ -303,6 +305,17 @@
       renderAll();
     }
     // Success re-renders via the ws push (CHAOS_TOGGLED → state push).
+  }
+
+  // quick-t5k D-04: pause/resume the hands-free round cadence — mirrors the
+  // chaos toggle pattern. Never fails with a 409 (pausing is always legal).
+  async function toggleAutoCycle() {
+    const { res, data } = await postJson("/api/auto-cycle/toggle", {});
+    if (!res.ok) {
+      roundStartError = data?.error ? data.error : "Auto-cycle couldn't toggle.";
+      renderAll();
+    }
+    // Success re-renders via the ws push (AUTO_CYCLE_CHANGED → state push).
   }
 
   function renderRound(snapshot) {
@@ -350,10 +363,35 @@
       void startRound();
     });
     start.disabled = Boolean(reason);
+    // Warning-4 consequence (quick-t5k reconciliation point 7, INTENDED): a
+    // round started during a paid-window or chaos build opens concurrently —
+    // its winner queues until that subsystem finishes. No extra route gating.
+    start.title =
+      "A round started while a build runs is concurrent — its winner queues until the current build (including paid-window/chaos builds) finishes.";
     roundPanel.appendChild(start);
     if (reason) {
       roundPanel.appendChild(el("p", "round-reason", reason));
     }
+
+    // Auto-cycle pause/resume + status pill (quick-t5k D-04) — mirrors the
+    // chaos toggle below. textContent-only rendering (single-funnel invariant).
+    const auto = snapshot.autoCycle || { enabled: false, phase: null };
+    const autoToggle = button(
+      auto.enabled ? "Pause Auto-Cycle" : "Resume Auto-Cycle",
+      "button-accent",
+      () => {
+        void toggleAutoCycle();
+      },
+    );
+    roundPanel.appendChild(autoToggle);
+    let autoLabel = "Auto-cycle: paused";
+    let autoClass = "status-pill status-held";
+    if (auto.enabled) {
+      autoLabel =
+        auto.phase === "suggest" ? "Auto-cycle: on — collecting suggestions" : "Auto-cycle: on";
+      autoClass = "status-pill status-approved";
+    }
+    roundPanel.appendChild(el("span", `${autoClass} auto-cycle-pill`, autoLabel));
 
     // Chaos-mode toggle lives in the round panel — it swaps the same selection
     // concern Start Round owns (CHAOS-01). Accent (a forward, non-destructive

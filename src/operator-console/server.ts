@@ -16,7 +16,13 @@ import {
 import { submitCandidate } from "../pipeline/submit.js";
 import type { CandidatePool } from "../queue/pool.js";
 import type { TaskQueue } from "../queue/task-queue.js";
-import { ROUND_CLOSED, ROUND_OPENED, STATE_CHANGED, VOTE_RECORDED } from "../shared/events.js";
+import {
+  AUTO_CYCLE_CHANGED,
+  ROUND_CLOSED,
+  ROUND_OPENED,
+  STATE_CHANGED,
+  VOTE_RECORDED,
+} from "../shared/events.js";
 import { isLoopbackHostHeader, isLoopbackOrigin } from "../shared/loopback.js";
 import type {
   BuildStatusView,
@@ -99,12 +105,26 @@ export interface ConsoleServerDeps {
    */
   chaos?: ChaosModeSource;
   /**
+   * quick-t5k D-04 auto-cycle seam: scheduler state + the pause/resume toggle,
+   * mirroring the chaos seam. `on` lets the console push state on phase
+   * changes that don't move the stream mode. Absent composes to "paused, no
+   * phase" (snapshot → enabled false).
+   */
+  autoCycle?: ConsoleAutoCycleSource;
+  /**
    * Donation-feed connection health for the console pill (04-RESEARCH Open
    * Question 1 — never let the tip feed fail silently). Absent = "unconfigured"
    * (the expected pre-StreamElements state; the show runs without it).
    */
   donationsStatus?: () => DonationsStatus;
   logger?: Logger;
+}
+
+/** Auto-cycle seam (quick-t5k): scheduler snapshot + toggle + change events. */
+export interface ConsoleAutoCycleSource {
+  snapshot(): { enabled: boolean; phase: "suggest" | null; phaseEndsAtMs: number | null };
+  toggle(): void;
+  on(event: string, handler: (...args: unknown[]) => void): void;
 }
 
 /**
@@ -179,6 +199,8 @@ export interface ConsoleState extends StateSnapshot {
   controlWindow: ControlWindowSnapshot | null;
   /** Chaos mode on/off — drives the round-panel toggle + precedence (CHAOS-01/D-05). */
   chaos: boolean;
+  /** Auto-cycle scheduler state — drives the pause/resume toggle + pill (quick-t5k). */
+  autoCycle: { enabled: boolean; phase: "suggest" | null };
   /** Donation-feed connection health for the console pill (04-RESEARCH OQ1). */
   donations: DonationsStatus;
 }
@@ -325,6 +347,10 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       // overlay deliberately hides (PAID-04). Absent seam → no window active.
       controlWindow: deps.controlWindow?.snapshot() ?? null,
       chaos: deps.chaos?.enabled() ?? false,
+      autoCycle: (() => {
+        const ac = deps.autoCycle?.snapshot();
+        return ac ? { enabled: ac.enabled, phase: ac.phase } : { enabled: false, phase: null };
+      })(),
       donations: deps.donationsStatus?.() ?? "unconfigured",
     };
   }
@@ -379,6 +405,11 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       pushState();
     });
   }
+  // Auto-cycle phase changes don't always move the stream mode (a suggest
+  // phase begins while IDLE stays IDLE) — push so the pill tracks the phase.
+  deps.autoCycle?.on(AUTO_CYCLE_CHANGED, () => {
+    pushState();
+  });
   const VOTE_PUSH_DEBOUNCE_MS = 250;
   let votePushTimer: NodeJS.Timeout | null = null;
   deps.round.on(VOTE_RECORDED, () => {
@@ -737,6 +768,21 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
     }
     pushState();
     res.json({ chaos: deps.chaos?.enabled() ?? false });
+  });
+
+  // quick-t5k D-04 auto-cycle pause/resume — EXACT mirror of /api/chaos/toggle:
+  // strict-empty zod body, inherits the shared CSRF/DNS-rebinding middleware
+  // above (NO new middleware). toggle() never throws (pausing is always legal;
+  // resuming just parks until eligible), so no 409 branch exists.
+  app.post("/api/auto-cycle/toggle", (req, res) => {
+    const parsed = RoundStartBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid auto-cycle toggle request body" });
+      return;
+    }
+    deps.autoCycle?.toggle();
+    pushState();
+    res.json({ autoCycle: deps.autoCycle?.snapshot().enabled ?? false });
   });
 
   // Dev-only submission form backend: drives the full live slice (type text →
