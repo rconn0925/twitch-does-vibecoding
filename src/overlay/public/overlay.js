@@ -64,12 +64,12 @@
   const FINAL_COUNTDOWN_MS = 10000;
 
   // Fixed, orchestrator-authored copy — never chat-derived, so always safe.
-  const BUILD_STEPS = [
-    { key: "research", label: "Research" },
-    { key: "plan", label: "Plan" },
-    { key: "build", label: "Build" },
-  ];
-  const STAGE_STEP_INDEX = { researching: 0, planning: 1, building: 2 };
+  // quick-0iu straight-to-build: the pipeline has ONE step (Build). The legacy
+  // researching/planning keys stay mapped to step 0 so a restored/late legacy
+  // stage value renders the single step sanely (vocabulary tolerated, never
+  // emitted by the live pipeline).
+  const BUILD_STEPS = [{ key: "build", label: "Build" }];
+  const STAGE_STEP_INDEX = { researching: 0, planning: 0, building: 0 };
   const STAGE_CAPTION = {
     researching: "Digging into the idea",
     planning: "Drafting the build plan",
@@ -281,7 +281,9 @@
     if (sp) {
       phaseBanner.hidden = false;
       phaseBanner.appendChild(el("span", "phase-title", "SUGGESTIONS OPEN"));
-      phaseBanner.appendChild(el("span", "phase-hint", "type !suggest <your idea>"));
+      phaseBanner.appendChild(
+        el("span", "phase-hint", "type !suggest — new idea or a tweak to what's on screen"),
+      );
       const remaining = sp.endsAtMs - Date.now();
       const countdown = el("span", "phase-countdown", formatRemaining(remaining));
       if (remaining <= FINAL_COUNTDOWN_MS) {
@@ -343,10 +345,11 @@
 
   // --- build-status panel (lower-left; reuses the vote-panel slot) ---
 
-  // Which stepper step (0..2) is active; 3 means all steps complete (done).
-  // failed/refused carry no step of their own -> freeze at the last real step.
+  // Which stepper step (0..BUILD_STEPS.length-1) is active; BUILD_STEPS.length
+  // means all steps complete (done). failed/refused carry no step of their
+  // own -> freeze at the last real step.
   function effectiveStepIndex(stage) {
-    if (stage === "done") return 3;
+    if (stage === "done") return BUILD_STEPS.length;
     if (stage === "failed" || stage === "refused") {
       return lastActiveStage !== null ? STAGE_STEP_INDEX[lastActiveStage] : 0;
     }
@@ -405,7 +408,7 @@
       if (i > 0) stepper.appendChild(el("div", "build-connector"));
       const stepEl = el("div", "build-step");
       let stateClass;
-      if (activeIndex === 3 || i < activeIndex) stateClass = "step-complete";
+      if (activeIndex === BUILD_STEPS.length || i < activeIndex) stateClass = "step-complete";
       else if (i === activeIndex) stateClass = "step-active";
       else stateClass = "step-upcoming";
       stepEl.classList.add(stateClass);

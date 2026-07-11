@@ -233,10 +233,11 @@ export function createNarrator(deps: {
     // the reviewed 03-UI-SPEC "Bot chat narration" contract — render verbatim.
     // Task titles truncate to 60 chars (Twitch 500-char cap headroom).
 
+    // quick-0iu: no research turn exists anymore — the pickup beat goes
+    // straight to the code, truthful for BOTH a new app and a tweak to the
+    // app on screen (the title is the suggestion text either way).
     buildPickedUp(title: string): void {
-      void deps.sender.send(
-        `Building "${truncateTitle(title)}" now — researching how to pull it off.`,
-      );
+      void deps.sender.send(`Building "${truncateTitle(title)}" now — straight to the code.`);
     },
 
     stagePlanning(title: string): void {
@@ -384,15 +385,18 @@ export function createNarrator(deps: {
 
     // ── Auto-cycle suggestion-phase beats (quick-t5k D-01/D-02) ──────────────
 
+    // quick-0iu amendment D: the suggest-window beats invite BOTH new ideas
+    // and tweaks to the app currently on screen (same rhythm + seconds
+    // interpolation as before).
     suggestionsOpen(seconds: number): void {
       void deps.sender.send(
-        `Suggestions open — type !suggest <your idea>. ${seconds}s until voting.`,
+        `Suggestions open — type !suggest — new idea or a tweak to what's on screen. ${seconds}s until voting.`,
       );
     },
 
     stillCollecting(seconds: number): void {
       void deps.sender.send(
-        `Still collecting suggestions — type !suggest <your idea>. Another ${seconds}s.`,
+        `Still collecting suggestions — type !suggest — new idea or a tweak to what's on screen. Another ${seconds}s.`,
       );
     },
 
