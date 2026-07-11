@@ -1886,6 +1886,151 @@ describe("createBuildSession — distro workspace lifecycle (BL-01 / HI-01 / HI-
   });
 });
 
+describe("createBuildSession — EMPTY-01 done-guard (no phantom done for an empty workspace)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  /** Sandbox fake with a scripted committable-files probe. */
+  function fakeSandboxWithProbe(results: Array<boolean | Error>) {
+    let i = 0;
+    const workspaceHasCommittableFiles = vi.fn(async () => {
+      const r = results[Math.min(i, results.length - 1)];
+      i += 1;
+      if (r instanceof Error) throw r;
+      return r ?? true;
+    });
+    const adapter = {
+      spawn: vi.fn(),
+      terminate: vi.fn(async () => {}),
+      workspaceHasCommittableFiles,
+    } as unknown as SandboxAdapter;
+    return { adapter, workspaceHasCommittableFiles };
+  }
+
+  it("ok turn + EMPTY workspace → auto-retry once, then a narrated failed decision; NEVER done/markBuilt/onBuildDone", async () => {
+    const { machine } = fakeMachine();
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const narr = fakeNarrator();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const onBuildDone = vi.fn();
+    const ws = fakeWorkspace(false);
+    const sandbox = fakeSandboxWithProbe([false]);
+    const task = queuedTask("task-empty01", "make a page");
+    const { deps, taskQueue } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: sandbox.adapter,
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+      onBuildDone,
+      workspace: ws.workspace,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    // Two build attempts ran (auto-retry once), then the decision froze.
+    expect(calls).toHaveLength(2);
+    expect(stages(views).at(-1)).toBe("failed");
+    expect(stages(views)).not.toContain("done");
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS"); // decision pending
+    expect(onBuildDone).not.toHaveBeenCalled();
+    expect(ws.markBuilt).not.toHaveBeenCalled();
+    expect(taskQueue.list()).toHaveLength(1); // still queued for retry/skip
+    expect(narr.names).toContain("buildRetryingOnce");
+    expect(narr.names).toContain("buildDeciding");
+    const retries = listAuditRecords(db, { limit: 10, eventType: "build_retry" });
+    expect(retries).toHaveLength(1);
+    expect(retries[0]?.rationale).toContain("EMPTY-01");
+  });
+
+  it("empty on the first attempt, output on the retry → done finalizes normally", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const onBuildDone = vi.fn();
+    const ws = fakeWorkspace(false);
+    const sandbox = fakeSandboxWithProbe([false, true]);
+    const task = queuedTask("task-empty01-recover", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: sandbox.adapter,
+      comp02,
+      progress: sink,
+      onBuildDone,
+      workspace: ws.workspace,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(stages(views).at(-1)).toBe("done");
+    expect(machine.mode).toBe("IDLE");
+    expect(onBuildDone).toHaveBeenCalledTimes(1);
+    expect(ws.markBuilt).toHaveBeenCalledTimes(1);
+  });
+
+  it("a THROWING probe fails toward done — a flaky probe never fails a good live build", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const onBuildDone = vi.fn();
+    const sandbox = fakeSandboxWithProbe([new Error("wsl probe hiccup")]);
+    const task = queuedTask("task-empty01-flaky", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: sandbox.adapter,
+      comp02,
+      progress: sink,
+      onBuildDone,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(stages(views).at(-1)).toBe("done");
+    expect(onBuildDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("adapter WITHOUT the probe (legacy fakes) → guard skipped, done finalizes as before", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const onBuildDone = vi.fn();
+    const task = queuedTask("task-empty01-legacy", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      onBuildDone,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(stages(views).at(-1)).toBe("done");
+    expect(onBuildDone).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("createBuildSession — source discipline (single funnel)", () => {
   it("references no .enqueue / toQueuedTask / submitCandidate", async () => {
     const { readFileSync } = await import("node:fs");

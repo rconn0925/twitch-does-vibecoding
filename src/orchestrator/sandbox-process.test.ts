@@ -335,7 +335,7 @@ describe("createSandboxAdapter — ensureWorkspaceDir (BL-01 fail-closed distro 
 });
 
 describe("createSandboxAdapter — workspaceHasFiles (HI-01 emptiness probe)", () => {
-  it("runs `ls -A <dir>` in the SAME distro/user and maps non-empty stdout → true", async () => {
+  it("runs `ls <dir>` (NO -A — dot-entries like .claude never count, EMPTY-01) and maps non-empty stdout → true", async () => {
     const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "index.html\n" }));
     const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
 
@@ -348,7 +348,7 @@ describe("createSandboxAdapter — workspaceHasFiles (HI-01 emptiness probe)", (
       "--",
       "sh",
       "-lc",
-      "ls -A /home/builder/projects/app-1 2>/dev/null | head -1",
+      "ls /home/builder/projects/app-1 2>/dev/null | head -1",
     ]);
   });
 
@@ -367,6 +367,49 @@ describe("createSandboxAdapter — workspaceHasFiles (HI-01 emptiness probe)", (
     const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn, logger });
 
     await expect(adapter.workspaceHasFiles?.("/home/builder/projects/app-3")).resolves.toBe(true);
+    expect(logger.error).toHaveBeenCalled();
+  });
+});
+
+describe("createSandboxAdapter — workspaceHasCommittableFiles (EMPTY-01 output probe)", () => {
+  it("runs `ls <dir> | grep -v '^node_modules$'` in the SAME distro/user and maps non-empty stdout → true", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "index.html\n" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await expect(
+      adapter.workspaceHasCommittableFiles?.("/home/builder/projects/app-1"),
+    ).resolves.toBe(true);
+    expect(execFileFn).toHaveBeenCalledWith(WSL_EXE, [
+      "-d",
+      "vibecoding-build",
+      "-u",
+      "builder",
+      "--",
+      "sh",
+      "-lc",
+      "ls /home/builder/projects/app-1 2>/dev/null | grep -v '^node_modules$' | head -1",
+    ]);
+  });
+
+  it("maps empty stdout → false (dotfiles-only / node_modules-only workspace: nothing committable)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "\n" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await expect(
+      adapter.workspaceHasCommittableFiles?.("/home/builder/projects/app-1"),
+    ).resolves.toBe(false);
+  });
+
+  it("resolves TRUE when the probe rejects — a flaky probe must never fail a good live build", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => {
+      throw new Error("wsl.exe hiccup");
+    });
+    const logger = { error: vi.fn() } as unknown as NonNullable<SandboxAdapterDeps["logger"]>;
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn, logger });
+
+    await expect(
+      adapter.workspaceHasCommittableFiles?.("/home/builder/projects/app-1"),
+    ).resolves.toBe(true);
     expect(logger.error).toHaveBeenCalled();
   });
 });

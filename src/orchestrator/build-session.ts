@@ -705,8 +705,9 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     task: QueuedTask,
     planText: string | null,
     reason: "failed" | "refused",
+    summary?: string,
   ): void {
-    emitStage(task, reason);
+    emitStage(task, reason, summary);
     active = null;
     pending = { task, planText, reason };
   }
@@ -840,6 +841,45 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       }
       deps.narrator?.buildDeciding(task.text);
       enterDecision(task, taskText, "failed");
+      return;
+    }
+    // EMPTY-01: an "ok" turn is only `done` if the workspace actually holds
+    // committable output. Root-cause context: a permission-denied Write storm
+    // once ended as result:success with ZERO files — finalize then markBuilt()
+    // + published an EMPTY public repo. Probe (when the adapter provides it;
+    // fakes without it skip the guard) and route an empty "success" down the
+    // SAME transient-failure path as a failed turn: auto-retry once, then a
+    // narrated retry/skip decision. A probe error resolves true (fail toward
+    // done — a flaky probe must never fail a good live build; the publisher's
+    // own preflight still prevents an empty repo).
+    const hasOutput = deps.sandboxAdapter.workspaceHasCommittableFiles
+      ? await deps.sandboxAdapter
+          .workspaceHasCommittableFiles(deps.workspace.dir())
+          .catch(() => true)
+      : true;
+    if (!hasOutput) {
+      deps.logger?.error(
+        { taskId: task.id, dir: deps.workspace.dir() },
+        "build turn reported success but the workspace has no committable files — done withheld (EMPTY-01)",
+      );
+      if (allowAutoRetry) {
+        recordBuildRetry(deps.db, {
+          taskId: task.id,
+          streamMode: streamMode(),
+          rationale:
+            "build turn succeeded with an EMPTY workspace — auto-retry once (EMPTY-01/D3-09)",
+        });
+        deps.narrator?.buildRetryingOnce(task.text);
+        await runBuildAttempt(task, taskText, ac, false);
+        return;
+      }
+      deps.narrator?.buildDeciding(task.text);
+      enterDecision(
+        task,
+        taskText,
+        "failed",
+        "build turn succeeded but wrote no committable files (EMPTY-01)",
+      );
       return;
     }
     // ok → done.

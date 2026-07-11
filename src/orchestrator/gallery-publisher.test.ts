@@ -349,14 +349,18 @@ describe("createGalleryPublisher.publishNow — safety invariants", () => {
     expect(result.status).toBe("published");
 
     const commit = calls.find((c) => c.args.includes("commit"));
-    expect(commit?.args.slice(0, 4)).toEqual([
+    expect(commit?.args.slice(0, 8)).toEqual([
       "-C",
       "data/gallery-mirror/safe-repo",
+      "-c",
+      "user.name=Twitch Vibecodes",
+      "-c",
+      "user.email=twitchvibecodes@users.noreply.github.com",
       "commit",
       "-m",
     ]);
-    expect(commit?.args).toHaveLength(5);
-    const message = commit?.args[4] ?? "";
+    expect(commit?.args).toHaveLength(9);
+    const message = commit?.args[8] ?? "";
     expect(message).toBe(sanitizeCommitTitle(hostile));
     // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting control chars are ABSENT is the point
     expect(message).not.toMatch(/[\r\n\t\x00-\x1f]/);
@@ -514,6 +518,63 @@ describe("createGalleryPublisher.publishNow — safety invariants", () => {
     expect(result).toMatchObject({ status: "no-changes", commitHash: null });
     expect(calls.some((c) => c.args.includes("commit"))).toBe(false);
     expect(calls.some((c) => c.args.includes("push"))).toBe(false);
+  });
+
+  it("EMPTY-01 preflight: a dotfiles-only workspace (.claude debris) publishes NOTHING and creates NO repo", async () => {
+    const { exec, calls } = captureExec();
+    const { fsx, cpCalls } = captureFs({ hasGit: false, entries: [".claude", ".bash_profile"] });
+    const store = fakeStore();
+    const logger = fakeLogger();
+    const publisher = createGalleryPublisher({ config: TEST_CONFIG, store, exec, fsx, logger });
+
+    const result = await publisher.publishNow({
+      generation: 1,
+      title: "build a simple digital clock web page",
+      taskId: "t1",
+    });
+
+    expect(result).toMatchObject({ status: "no-changes", commitHash: null });
+    expect(result.detail).toContain("no committable files");
+    // The regression that motivated this: gh repo create ran BEFORE any content
+    // check and littered an empty public repo. Now: zero exec calls, no record.
+    expect(calls).toHaveLength(0);
+    expect(store.records).toEqual([]);
+    expect(cpCalls).toEqual([]);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it("EMPTY-01 preflight: a node_modules-only workspace is also skipped (copy filter would strip it)", async () => {
+    const { exec, calls } = captureExec();
+    const { fsx } = captureFs({ hasGit: false, entries: ["node_modules"] });
+    const store = fakeStore();
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.publishNow({ generation: 2, title: "t", taskId: "t2" });
+    expect(result.status).toBe("no-changes");
+    expect(calls).toHaveLength(0);
+    expect(store.records).toEqual([]);
+  });
+
+  it("EMPTY-01 preflight: an UNREADABLE workspace dir resolves { status: 'failed' } loudly — never a silent empty repo", async () => {
+    const { exec, calls } = captureExec();
+    const logger = fakeLogger();
+    const { fsx } = captureFs({ hasGit: false });
+    fsx.readdir = async () => {
+      throw new Error("ENOENT: \\\\wsl.localhost unreachable");
+    };
+    const store = fakeStore();
+    const publisher = createGalleryPublisher({ config: TEST_CONFIG, store, exec, fsx, logger });
+
+    const result = await publisher.publishNow({ generation: 1, title: "t", taskId: "t1" });
+    expect(result.status).toBe("failed");
+    expect(calls).toHaveLength(0);
+    expect(logger.error).toHaveBeenCalled();
   });
 
   it("serialization: two overlapping publishNow calls never interleave their exec sequences", async () => {

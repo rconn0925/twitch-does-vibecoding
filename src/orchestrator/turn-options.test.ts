@@ -55,6 +55,15 @@ describe("assembleSandboxedBuildOptions — MCP lockdown triple (T-22l-01)", () 
     expect(settingsObject(options.settings).disableClaudeAiConnectors).toBe(true);
   });
 
+  it("grants file-edit tools via permissionMode: 'acceptEdits' — NEVER bypassPermissions (EMPTY-01)", () => {
+    const options = assembleSandboxedBuildOptions(makeSpec(), fakeSandboxSettings());
+    // Root-cause regression: the non-interactive sandboxed turn auto-DENIED
+    // every Write in 'default' mode → phantom `done` with zero files. The
+    // grant must be exactly acceptEdits — file edits only, no blanket bypass.
+    expect(options.permissionMode).toBe("acceptEdits");
+    expect(options.allowDangerouslySkipPermissions).toBeUndefined();
+  });
+
   it("passes systemPrompt by IDENTITY (SAND-04 bare-reference invariant) plus abort/sandbox/spawn/cwd", () => {
     const spec = makeSpec();
     const sandboxSettings = fakeSandboxSettings();
@@ -98,6 +107,13 @@ describe("assembleHostTurnOptions — defense-in-depth on the unreachable host b
     expect(options.strictMcpConfig).toBe(true);
     expect(options.mcpServers).toEqual({});
     expect(settingsObject(options.settings).disableClaudeAiConnectors).toBe(true);
+  });
+
+  it("does NOT widen host-turn permissions — no permissionMode grant on the unsandboxed branch", () => {
+    const options = assembleHostTurnOptions(makeSpec());
+    // The acceptEdits grant is scoped to the SANDBOXED turn only; the host
+    // branch stays text-only with its denylist (WR-01 / CR-02).
+    expect(options.permissionMode).toBeUndefined();
   });
 
   it("passes systemPrompt by identity and does not mutate the input spec", () => {

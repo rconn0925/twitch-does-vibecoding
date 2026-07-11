@@ -118,11 +118,23 @@ export interface SandboxAdapter {
    */
   ensureWorkspaceDir?(dir: string): Promise<void>;
   /**
-   * HI-01 emptiness probe. `wsl ls -A <dir>` — resolves true when the dir has
-   * ANY entry (so continue-mode runs over debris even without a prior `done`),
-   * false when empty. OPTIONAL (existing fakes fall back to scaffolded()-only).
+   * HI-01 emptiness probe. Resolves true when the dir has any NON-HIDDEN entry
+   * (so continue-mode runs over real debris even without a prior `done`), false
+   * when empty or dotfiles-only. Dot-entries are deliberately ignored (EMPTY-01):
+   * the agent's own `.claude` session dir must never flip an unbuilt generation
+   * into continue mode. OPTIONAL (existing fakes fall back to scaffolded()-only).
    */
   workspaceHasFiles?(dir: string): Promise<boolean>;
+  /**
+   * EMPTY-01 post-build output probe: does the workspace hold anything the
+   * gallery publisher could actually commit (any non-hidden entry that isn't
+   * node_modules)? build-session consults this AFTER an ok build turn and
+   * withholds the `done` finalize (→ narrated failed decision instead) when the
+   * turn produced nothing — a phantom `done` must never markBuilt() or publish.
+   * OPTIONAL — when absent (test fakes), the guard is skipped and `done`
+   * finalizes as before.
+   */
+  workspaceHasCommittableFiles?(dir: string): Promise<boolean>;
 }
 
 /**

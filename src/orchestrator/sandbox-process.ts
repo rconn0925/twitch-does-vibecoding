@@ -233,11 +233,14 @@ export function createSandboxAdapter(deps: SandboxAdapterDeps = {}): SandboxAdap
       ]);
     },
     /**
-     * HI-01: is the distro workspace dir non-empty? `ls -A <dir> | head -1` via
-     * a login shell; returns true when stdout has any content. A probe FAILURE
-     * resolves to true (fail toward continue) — never assert "empty" when
-     * unsure, so scaffold never runs over possible debris. Same distro/user
-     * config; no env widening (separate wsl invocation from the engine spawn).
+     * HI-01: is the distro workspace dir non-empty? `ls <dir> | head -1` (NO -A:
+     * dot-entries deliberately excluded, EMPTY-01 — the agent's own `.claude`
+     * session dir or mount artifacts must never flip an unbuilt generation into
+     * continue mode) via a login shell; returns true when stdout has any
+     * content. A probe FAILURE resolves to true (fail toward continue) — never
+     * assert "empty" when unsure, so scaffold never runs over possible debris.
+     * Same distro/user config; no env widening (separate wsl invocation from
+     * the engine spawn).
      */
     async workspaceHasFiles(dir: string): Promise<boolean> {
       try {
@@ -249,13 +252,43 @@ export function createSandboxAdapter(deps: SandboxAdapterDeps = {}): SandboxAdap
           "--",
           "sh",
           "-lc",
-          `ls -A ${dir} 2>/dev/null | head -1`,
+          `ls ${dir} 2>/dev/null | head -1`,
         ])) as { stdout?: string } | undefined;
         return (result?.stdout ?? "").trim().length > 0;
       } catch (err) {
         logger?.error(
           { err, dir },
           "workspaceHasFiles probe failed — assuming non-empty (fail toward continue, HI-01)",
+        );
+        return true;
+      }
+    },
+    /**
+     * EMPTY-01: does the workspace hold anything the gallery publisher could
+     * commit? Non-hidden entries minus node_modules (mirrors the publisher's
+     * workspaceCopyFilter at the top level). Consulted by build-session AFTER
+     * an ok build turn — false withholds the `done` finalize. A probe FAILURE
+     * resolves to true (fail toward `done`): a flaky probe must never fail a
+     * good live build; the publisher's own preflight still prevents an empty
+     * repo. Same distro/user config; no env widening.
+     */
+    async workspaceHasCommittableFiles(dir: string): Promise<boolean> {
+      try {
+        const result = (await execFileFn(wslExePath, [
+          "-d",
+          config.distroName,
+          "-u",
+          config.distroUser,
+          "--",
+          "sh",
+          "-lc",
+          `ls ${dir} 2>/dev/null | grep -v '^node_modules$' | head -1`,
+        ])) as { stdout?: string } | undefined;
+        return (result?.stdout ?? "").trim().length > 0;
+      } catch (err) {
+        logger?.error(
+          { err, dir },
+          "workspaceHasCommittableFiles probe failed — assuming non-empty (fail toward done, EMPTY-01)",
         );
         return true;
       }

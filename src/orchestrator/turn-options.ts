@@ -70,6 +70,17 @@ export function assembleSandboxedBuildOptions(
     // the SDK hands spawnClaudeCodeProcess; sandbox-process.ts translates a
     // POSIX-absolute cwd to `wsl --cd <cwd>`.
     cwd: spec.workspaceDir,
+    // EMPTY-01 root-cause fix: the sandboxed build turn is NON-INTERACTIVE —
+    // there is nobody to answer a permission prompt. Without this, every
+    // Write/Edit was auto-DENIED in 'default' mode ("Claude requested
+    // permissions to write to …, but you haven't granted it yet."), the agent
+    // ended its turn with zero files, and result:success surfaced as a phantom
+    // `done`. acceptEdits auto-accepts file-edit tools ONLY; the actual safety
+    // boundaries are unchanged: the WSL2 distro + CLI bubblewrap sandbox
+    // (SAND-01/02/03) confine writes, and COMP-02 re-screens every output
+    // batch in-flight (D3-07). Deliberately NOT bypassPermissions — no wider
+    // grant than the denial that broke the build.
+    permissionMode: "acceptEdits",
     // MCP lockdown triple (T-22l-01) — see the module header for why three layers.
     strictMcpConfig: true,
     mcpServers: {},
