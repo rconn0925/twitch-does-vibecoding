@@ -161,3 +161,15 @@ CREATE TABLE IF NOT EXISTS workspace_state (
   scaffolded    INTEGER NOT NULL DEFAULT 0,        -- 1 once any build finalized done in this generation
   updated_at_ms INTEGER NOT NULL
 );
+
+-- quick-260711-hak per-project publisher routing. Maps a workspace GENERATION
+-- to the ONE public GitHub repo its first prompt created (owner TwitchVibecodes).
+-- Durable so a mid-stream host restart never re-creates a repo for a generation
+-- whose first prompt already published: the publisher's store.lookup(generation)
+-- finds this row and routes later prompts to continue-mode pushes. Recorded ONLY
+-- after a successful `gh repo create`. Additive: IF NOT EXISTS, no migration.
+CREATE TABLE IF NOT EXISTS project_repos (
+  generation    INTEGER PRIMARY KEY,               -- workspace generation (1-based)
+  repo_name     TEXT NOT NULL,                     -- sanitized slug under owner TwitchVibecodes
+  created_at_ms INTEGER NOT NULL                   -- Date.now() at the first successful publish
+);

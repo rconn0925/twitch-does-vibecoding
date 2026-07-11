@@ -58,6 +58,7 @@ import {
 } from "./operator-console/server.js";
 import {
   createGalleryPublisher,
+  createProjectRepoStore,
   type GalleryPublisher,
   resolveGalleryConfig,
 } from "./orchestrator/gallery-publisher.js";
@@ -75,6 +76,7 @@ import { type ChaosPickResult, submitChaosPick } from "./pipeline/chaos.js";
 import { submitDuringWindow } from "./pipeline/paid-window.js";
 import { enqueueWinner } from "./pipeline/round.js";
 import { type SubmitResult, submitCandidate } from "./pipeline/submit.js";
+import { collectBroadcastSafetyWarnings } from "./preflight.js";
 import { createPreviewManager, resolvePreviewDevServerPort } from "./preview/preview-manager.js";
 import { type PreviewServerHandle, startPreviewServer } from "./preview/server.js";
 import { CandidatePool } from "./queue/pool.js";
@@ -102,7 +104,6 @@ import { type HaltDeps, triggerHalt } from "./state-machine/halt.js";
 import { expireAllPending, expireStale, reviewTtlMs } from "./state-machine/review-queue.js";
 import { RoundManager } from "./state-machine/round.js";
 import { StreamModeMachine } from "./state-machine/stream-mode.js";
-import { collectBroadcastSafetyWarnings } from "./preflight.js";
 
 /**
  * Outcome of a completed OAuth code exchange (CR-03): the console callback
@@ -287,12 +288,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // test/tuning knob that is unsafe on air is still active. Warn-only — never
   // blocks boot (a streamer may want a non-default value).
   for (const w of collectBroadcastSafetyWarnings(process.env)) {
-    logger.warn(
-      { knob: w.key, value: w.value },
-      "BROADCAST-SAFETY: %s — %s",
-      w.key,
-      w.message,
-    );
+    logger.warn({ knob: w.key, value: w.value }, "BROADCAST-SAFETY: %s — %s", w.key, w.message);
   }
 
   if (opts.dbPath !== ":memory:") {
@@ -1034,6 +1030,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     const progress: ProgressSink = {
       push: (view) => logger.info({ taskId: view.taskId, stage: view.stage }, "build stage"),
     };
+    // quick-260711-hak: the real per-project publisher needs the app db (for the
+    // ProjectRepoStore), so it is built HERE from the db createApp owns — not at
+    // the entrypoint. A test-injected fake takes precedence; without a token
+    // resolveGalleryConfig returns null and buildGalleryPublisher yields
+    // undefined (publishing stays inert), preserving the injected-fake seam.
+    const galleryPublisher = opts.galleryPublisher ?? buildGalleryPublisher(db, logger);
     const buildSession = createBuildSession({
       taskQueue,
       db,
@@ -1079,9 +1081,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // console "New project" rotation cannot race it. task.text is the
       // gate-APPROVED title (D-03) — the same string build_history records.
       onBuildDone: (task) => {
-        if (!opts.galleryPublisher) return;
+        if (!galleryPublisher) return;
         const generation = workspace.generation();
-        void opts.galleryPublisher
+        void galleryPublisher
           .publishNow({ generation, title: task.text, taskId: task.id })
           .then((result) => {
             // db.open guard mirrors auditIfOpen (WR-05 shutdown drain).
@@ -1721,28 +1723,31 @@ async function buildDonationAdapter(logger: Logger): Promise<DonationEventSource
 }
 
 /**
- * Entrypoint-only gallery publisher construction (buildDonationAdapter pattern —
- * but a STATIC import of gallery-publisher.js is fine: it has no SDK/native
- * deps). Disabled (GALLERY_PUBLISH_ENABLED=false) → a loud warn + undefined, so
- * createApp composes no publisher and done builds simply don't snapshot.
- * NOTE (v1 decision): publishNow is NOT wired to any timer — per-build commits
- * ARE the periodic cadence; the exported publishNow seam is the future
- * manual-use hook.
+ * Per-project gallery publisher construction (quick-260711-hak). Built INSIDE
+ * createApp from the app db — the ProjectRepoStore needs the durable
+ * project_repos table. Disabled (GALLERY_PUBLISH_ENABLED=false OR no
+ * GALLERY_GITHUB_TOKEN) → a loud warn + undefined, so createApp composes no
+ * publisher and done builds simply don't snapshot. NOTE (v1 decision): publishNow
+ * is NOT wired to any timer — per-build commits ARE the cadence; the exported
+ * publishNow seam is the future manual-use hook.
  */
-function buildGalleryPublisher(logger: Logger): GalleryPublisher | undefined {
+function buildGalleryPublisher(
+  db: Database.Database,
+  logger: Logger,
+): GalleryPublisher | undefined {
   const config = resolveGalleryConfig(process.env);
   if (!config) {
     logger.warn(
-      "GALLERY PUBLISHING DISABLED — set GALLERY_REPO_URL / unset GALLERY_PUBLISH_ENABLED=false to enable post-build snapshots",
+      "GALLERY PUBLISHING DISABLED — set GALLERY_GITHUB_TOKEN to enable per-project post-build snapshots (owner defaults to TwitchVibecodes)",
     );
     return undefined;
   }
   logger.info(
-    { repoUrl: config.repoUrl },
-    "GALLERY PUBLISHER ARMED — done builds snapshot to %s via host-side git",
-    config.repoUrl,
+    { owner: config.owner },
+    "GALLERY PUBLISHER ARMED — done builds push one public repo per project under %s via host-side git/gh",
+    config.owner,
   );
-  return createGalleryPublisher({ config, logger });
+  return createGalleryPublisher({ config, store: createProjectRepoStore(db), logger });
 }
 
 // Run-as-entrypoint branch (npm run dev): tsx executes this file directly.
@@ -1766,8 +1771,8 @@ if (isMain) {
     buildClassifierTransport(bootLogger),
   ])
     .then(([twitchOpts, orchestratorOpts, donationSource, classifierTransport]) => {
-      // Synchronous construction alongside the Promise.all results (quick-22l).
-      const galleryPublisher = buildGalleryPublisher(bootLogger);
+      // quick-260711-hak: the gallery publisher is now composed INSIDE createApp
+      // from the app db (the ProjectRepoStore needs it) — no entrypoint build.
       return createApp({
         dbPath,
         port,
@@ -1778,7 +1783,6 @@ if (isMain) {
         ...orchestratorOpts,
         ...(donationSource ? { donationSource } : {}),
         ...(classifierTransport ? { classifierTransport } : {}),
-        ...(galleryPublisher ? { galleryPublisher } : {}),
       });
     })
     .then((app) =>
