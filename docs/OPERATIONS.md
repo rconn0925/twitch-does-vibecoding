@@ -104,7 +104,7 @@ live operation. Add an entry any time the hotkey misbehaves.
 
 | Date | Windows build / context | Symptom | Workaround |
 | --- | --- | --- | --- |
-| — | — | (none recorded yet — pending first human verification on the streaming PC) | — |
+| 2026-07-10 | Windows 11 streaming PC, first human verification | PANIC_HOTKEY=Pause rejected — uiohook-napi key map has no "Pause" entry; app fell back to F13 with loud warning (fail-safe as designed) | Use PANIC_HOTKEY=ScrollLock — confirmed working on this rig (armed log clean, double-tap → HALT verified) |
 
 Known-by-design (not bugs):
 
