@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: ALL 5 phases code-side COMPLETE (built→reviewed→fixed→verified→secured). Only end-batch human gates remain.
-last_updated: "2026-07-10T08:00:00.000Z"
-last_activity: 2026-07-10 -- Phase 05 code-side closeout complete; v1 code-complete
+stopped_at: Wave 0 WSL2 go/no-go recorded GO (2026-07-10). Remaining gates - Phase 1/2 UAT items, Phase 4 live gate 04-08, Phase 5 dry run.
+last_updated: "2026-07-11T00:49:40.000Z"
+last_activity: 2026-07-10 -- Phase 3 Wave 0 WSL2 go/no-go recorded GO (quick 260710-q1f)
 progress:
   total_phases: 5
   completed_phases: 2
@@ -28,12 +28,12 @@ See: .planning/PROJECT.md (updated 2026-07-09)
 Phase: 05 (build-history-stream-night-dry-run) — CODE COMPLETE (closeout green). ALL phases code-side done.
 Plan: All buildable plans across Phases 1–5 merged to master + 1 quick task (gate plan-billing). Suite **679 pass**, tsc + biome clean.
 Status: Phase 05 built (2 code waves + runbook doc) → reviewed (0 blocker, 4 warning + 4 info; all 4 warnings + IN-01/IN-03 fixed, IN-02/IN-04 accepted deferrals) → verified 1/1 code criterion PASS (3/3 criteria correctly deferred to the human dry run) → secured 13/13 threats, 0 open.
-Last activity: 2026-07-10 -- Phase 05 code-side closeout complete; v1 code-complete
+Last activity: 2026-07-10 -- Phase 3 Wave 0 WSL2 go/no-go recorded GO (quick 260710-q1f)
 
 Progress: [█████████▓] 95% (code-complete; remaining 5% = human-action gates)
 
 **All remaining work is the consolidated end human-gate batch (user directive: build everything against fakes, batch human gates). Nothing more is buildable without live credentials / the streaming PC. The full checklist is below under "v1 Go-Live Human-Gate Batch".** Headline gates:
-- **Phase 3 — Wave 0 WSL2 go/no-go** (`03-.../SANDBOX-SETUP.md` ⏳ PENDING): filesystem-escape, dev-server-exposure, wsl --terminate veto, A1 billing, latency. NO real build until GO.
+- **Phase 3 — Wave 0 WSL2 go/no-go** (`03-.../SANDBOX-SETUP.md` ✅ GO, recorded 2026-07-10): all 5 proofs PASS (filesystem-escape, dev-server-exposure, wsl --terminate veto, A1 billing, latency); real builds cleared.
 - **Phase 4 — Live gate 04-08 + CR-03 human-check** (AR-04-01/02): StreamElements account/JWT, `channel:read:redemptions` broadcaster re-auth, real tip/redemption smoke test, Bits AUP/chargeback manual re-read, and CR-03 build-loop under a real WSL2 build engine.
 - **Phase 5 — Stream-night dry run** (`05-DRY-RUN.md` ⏳ PENDING GO/NO-GO): the end-to-end test-channel rehearsal that exercises and depends on the two gates above.
 
@@ -50,12 +50,12 @@ Everything buildable is built and green. These are the human-action gates, defer
 - [ ] Live Twitch OAuth bootstrap + one real-channel vote round (`02-HUMAN-UAT.md`; runbook `docs/OPERATIONS.md` §6).
 - [ ] OBS overlay browser-source check (renders, reconnects on scene switch).
 
-**C. Phase 3 — Wave 0 WSL2 go/no-go** (`SANDBOX-SETUP.md`, ⏳ PENDING — hard blocker before ANY real build)
-- [ ] (a) filesystem-escape isolation (SAND-01)
-- [ ] (b) dev-server-only exposure on 127.0.0.1:5555 (SAND-02)
-- [ ] (c) `wsl.exe --terminate` kills a hung build tree (BUILD-04)
-- [ ] (d) A1 billing recorded (plan credits vs metered)
-- [ ] (e) cold/warm launch latency acceptable
+**C. Phase 3 — Wave 0 WSL2 go/no-go** (`SANDBOX-SETUP.md`, ✅ GO recorded 2026-07-10)
+- [x] (a) filesystem-escape isolation (SAND-01)
+- [x] (b) dev-server-only exposure on 127.0.0.1:5555 (SAND-02)
+- [x] (c) `wsl.exe --terminate` kills a hung build tree (BUILD-04)
+- [x] (d) A1 billing recorded (plan credits vs metered)
+- [x] (e) cold/warm launch latency acceptable
 - [ ] Phase 3 UAT judgment items: CR-01 real-veto terminal state; WR-05 shutdown-drain; WR-07 watchdog bounds (5min turn / 2s drain) suit live timing.
 
 **D. Phase 4 — live gate 04-08 + CR-03** (`04-LIVE-GATE.md` / `04-08-PLAN.md`, AR-04-01/02)
@@ -78,6 +78,7 @@ Everything buildable is built and green. These are the human-action gates, defer
 
 | Date | Task | Result |
 |------|------|--------|
+| 2026-07-10 | `260710-q1f` — Record Phase 3 Wave 0 WSL2 go/no-go | ✅ Done. All setup items complete, 5/5 proofs PASS (SAND-01, SAND-02, BUILD-04, A1 plan-credit billing, latency 259ms cold / 66ms warm), verdict GO. AR-03-1/2/3 closed. |
 | 2026-07-10 | `260710-if0` — Rework compliance-gate classifier to plan-billed Agent SDK (off API keys) | ✅ Done. Gate now bills via `claude login` plan credits (Agent SDK `query()`, tools-disabled, single-turn, Sonnet); raw metered Messages API + `@anthropic-ai/sdk` retired from `src/`. Reviewed (0 blocker, 3 warn fixed incl. WR-01 fail-closed hardening) → secured 7/7, 0 open. Both SAND-04 + single-funnel invariants stay green non-vacuously. No `ANTHROPIC_API_KEY` required anywhere now. |
 
 ## Performance Metrics
@@ -122,7 +123,6 @@ Recent decisions affecting current work:
 ### Pending Todos
 
 - **[Phase 4 — BLOCKING before any real paid use] Live gate 04-08** (`04-08-PLAN.md`, autonomous:false; accepted risks AR-04-01/02): StreamElements account + JWT setup, `channel:read:redemptions` broadcaster RE-AUTH (Phase 2 token lacks it), a real tip + real channel-points redemption smoke test, and a manual re-read of the MEDIUM-confidence Bits AUP + chargeback claims. Plus CR-03 human-check: the paid/chaos build-execution loop (window drain, chaos re-pick) under a REAL WSL2 build engine.
-- **[Phase 3 — BLOCKING before any live/real build] Wave 0 WSL2 go/no-go** (`03-.../SANDBOX-SETUP.md`, verdict ⏳ PENDING): hands-on proofs a) filesystem-escape isolation (SAND-01), b) dev-server-only exposure (SAND-02), c) `wsl.exe --terminate` kills a hung tree (BUILD-04), d) A1 billing (plan credits vs metered), e) cold/warm launch latency. NO real chat-derived build may execute until this reads GO.
 - [Phase 3] Human UAT / judgment items from review-fix: CR-01 terminal-state on a real veto; WR-05 shutdown-drain race (fix present, no dedicated automated test); WR-07 watchdog bounds — confirm DEFAULT_TURN_TIMEOUT_MS=5min / CLOSE_DRAIN_MS=2s suit the live-show timing envelope.
 - [Phase 3 — deferred ticket] COMP-02 `held` plans are narrated + audited but DROPPED, not routed to a console review queue — `main.ts` onHeldForReview carries a documented `TODO(D-08)`; implement review-queue routing (WR-03).
 - Human UAT (01-HUMAN-UAT.md): physical panic-hotkey test, live Sonnet gate:eval (bills the Claude plan via `claude login`; no ANTHROPIC_API_KEY), console browser run-through
@@ -131,11 +131,10 @@ Recent decisions affecting current work:
 - Review Info findings IN-02..IN-08 in 02-REVIEW.md remain open by scope decision (non-blocking)
 - [Phase 3] Overlay state JSON forwards full GateResult (classifier rationale) to local clients of the public surface — trim RoundSnapshot to display fields (02-SECURITY.md residual, non-blocking)
 
-*Closed this phase: T-02-18 (chat text as agent instructions) — mitigated by the prompt-injection boundary (SAND-04) + sandboxed build turn; T-01-11 per-user intake rate limiting; DNS-rebinding Host-allowlist hardening. Phase 3 code review 2 blockers + 8 findings all fixed; 27/27 threats secured; 12/12 requirements verified against fakes.*
+*Closed this phase: T-02-18 (chat text as agent instructions) — mitigated by the prompt-injection boundary (SAND-04) + sandboxed build turn; T-01-11 per-user intake rate limiting; DNS-rebinding Host-allowlist hardening. Phase 3 code review 2 blockers + 8 findings all fixed; 27/27 threats secured; 12/12 requirements verified against fakes. Wave 0 WSL2 gate closed 2026-07-10 — accepted risks AR-03-1/2/3 real-environment proofs recorded PASS on SANDBOX-SETUP.md (verdict GO); Docker escalation path not needed.*
 
 ### Blockers/Concerns
 
-- **[Phase 3] Wave 0 WSL2 real-environment validation is the single gate before live use** — code isolation is present + fake-tested; accepted risks AR-03-1/2/3 (03-SECURITY.md) hold the real filesystem-escape / loopback-exposure / teardown / billing proofs open until the streamer records GO on SANDBOX-SETUP.md. A NO-GO on isolation or veto escalates to the Docker path (03-RESEARCH.md §Alternatives).
 - [Phase 4] Donation platform choice (StreamElements vs. Streamlabs) and verbatim Bits/Channel Points AUP text need re-verification before implementation (research flag)
 
 ## Deferred Items
