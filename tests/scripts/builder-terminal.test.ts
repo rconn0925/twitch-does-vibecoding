@@ -21,7 +21,14 @@ import {
 
 const ESC = "\u001b";
 const AMBER_SGR = "38;5;214";
-const RED_SGR = /\u001b\[31m|\u001b\[38;5;196m/;
+/** Red SGR sequences that must NEVER appear in any output (D2-18). */
+const RED_CODES = [`${ESC}[31m`, `${ESC}[38;5;196m`];
+
+function expectNoRed(out: string | null): void {
+  for (const red of RED_CODES) {
+    expect(out).not.toContain(red);
+  }
+}
 
 describe("sanitizeWireText", () => {
   it("strips ESC bytes so smuggled ANSI can never restyle the terminal", () => {
@@ -81,13 +88,13 @@ describe("renderLine", () => {
   it("renders stage-warn AMBER (38;5;214) and never red (D2-18)", () => {
     const out = renderLine({ kind: "stage-warn", text: "Regrouping…" });
     expect(out).toContain(AMBER_SGR);
-    expect(out).not.toMatch(RED_SGR);
+    expectNoRed(out);
   });
 
   it("never emits red for any kind", () => {
     for (const kind of ["title", "stage", "stage-warn", "activity", "snippet"]) {
       const out = renderLine({ kind, text: "text" });
-      expect(out).not.toMatch(RED_SGR);
+      expectNoRed(out);
     }
   });
 
@@ -103,8 +110,8 @@ describe("renderLine", () => {
       const out = renderLine({ kind, text: `a${ESC}[31mb${ESC}[2Jc` });
       expect(out).toBeTypeOf("string");
       // No red SGR and no smuggled clear-screen sequence in the output.
-      expect(out).not.toMatch(RED_SGR);
-      expect(out).not.toMatch(/\u001b\[2J/);
+      expectNoRed(out);
+      expect(out).not.toContain(`${ESC}[2J`);
     }
   });
 
