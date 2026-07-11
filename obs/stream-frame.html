@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Twitch Does Vibecoding — Stream Frame (barely-there)</title>
+<style>
+/* ==========================================================================
+   stream-frame.html · 1920x1080 OBS browser source (local file)
+   Style: "barely there" — faint corner ticks + small labels only.
+   Transparent everywhere else. No external requests. No JS.
+   Layer: ABOVE content sources, BELOW the live-data overlay.
+
+   Palette: label backing rgba(15,23,42,0.80), muted text #94A3B8.
+   Violet #8B5CF6 (paid-control) and red are NEVER used here.
+
+   Reserved zones never entered (pixel-scan verified = 0):
+     R1 top band            x0–1920, y0–140
+     R2 bottom-left panel   x48–608, y500–1032
+     R3 bottom-right strip  right-anchored, y940–1032  ("NEXT UP")
+   ========================================================================== */
+  :root{
+    --tick: rgba(226,232,240,0.42);   /* faint neutral tick             */
+    --halo: rgba(6,10,14,0.55);        /* crisp 1px dark companion       */
+    --panel:rgba(15,23,42,0.80);       /* label backing (Dominant)       */
+    --muted:#94A3B8;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1920px;height:1080px;background:transparent;overflow:hidden}
+  .stage{position:absolute;inset:0;
+    font-family:"Segoe UI",-apple-system,BlinkMacSystemFont,system-ui,sans-serif}
+
+  /* corner ticks — arms point INWARD, so a tick never spills past its corner */
+  .t{position:absolute;width:16px;height:16px;pointer-events:none;
+     box-shadow:0 0 0 1px var(--halo)}
+  .t.tl{border-top:2px solid var(--tick);border-left:2px solid var(--tick)}
+  .t.tr{border-top:2px solid var(--tick);border-right:2px solid var(--tick)}
+  .t.bl{border-bottom:2px solid var(--tick);border-left:2px solid var(--tick)}
+  .t.br{border-bottom:2px solid var(--tick);border-right:2px solid var(--tick)}
+
+  .lbl{position:absolute;display:inline-flex;align-items:center;height:30px;
+    padding:0 11px;border-radius:6px;background:var(--panel);color:var(--muted);
+    font-size:20px;font-weight:600;letter-spacing:1.5px;line-height:1;white-space:nowrap;
+    box-shadow:0 0 0 1px rgba(148,163,184,0.10)}
+
+  /* ---- ZONE A · APP PREVIEW (star)  rect 620,150,900,540 ---------------- */
+  #a-tl{left:620px;top:150px}
+  #a-tr{left:1504px;top:150px}
+  #a-bl{left:620px;top:674px}
+  #a-br{left:1504px;top:674px}
+  #a-lbl{left:634px;top:164px}
+
+  /* ---- ZONE B · AI TERMINAL (widened to match app: rect 620,710,900,300) -
+     BR tick omitted — that corner (1520,1010) is inside R3/NEXT UP.         */
+  #b-tl{left:620px;top:710px}
+  #b-tr{left:1520px;top:710px}
+  #b-bl{left:620px;top:1010px}
+  #b-lbl{left:634px;top:724px}
+
+  /* ---- ZONE C · TWITCH CHAT (lightest)  rect 1550,150,360,780 ----------
+     TL tick only (right/bottom sit at the canvas edge & R3).               */
+  #c-tl{left:1550px;top:150px}
+  #c-lbl{left:1564px;top:164px}
+
+  /* ---- ZONE D · WHAT'S COMING / QUEUE  rect 48,150,550,420 -------------
+     Top ticks only; open bottom (below flows into the R2 vote-panel area). */
+  #d-tl{left:50px;top:150px}
+  #d-tr{left:582px;top:150px}
+  #d-lbl{left:64px;top:164px}
+</style>
+</head>
+<body>
+<div class="stage">
+  <!-- App preview (star) -->
+  <div class="t tl" id="a-tl"></div><div class="t tr" id="a-tr"></div>
+  <div class="t bl" id="a-bl"></div><div class="t br" id="a-br"></div>
+  <div class="lbl" id="a-lbl">LIVE BUILD</div>
+
+  <!-- AI terminal (widened) -->
+  <div class="t tl" id="b-tl"></div><div class="t tr" id="b-tr"></div>
+  <div class="t bl" id="b-bl"></div>
+  <div class="lbl" id="b-lbl">THE AI</div>
+
+  <!-- Twitch chat -->
+  <div class="t tl" id="c-tl"></div>
+  <div class="lbl" id="c-lbl">CHAT</div>
+
+  <!-- What's coming / queue -->
+  <div class="t tl" id="d-tl"></div><div class="t tr" id="d-tr"></div>
+  <div class="lbl" id="d-lbl">UP NEXT</div>
+</div>
+</body>
+</html>
