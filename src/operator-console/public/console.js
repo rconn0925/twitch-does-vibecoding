@@ -307,6 +307,35 @@
     // Success re-renders via the ws push (CHAOS_TOGGLED → state push).
   }
 
+  // quick-0iu: rotate the persistent build workspace to a fresh generation —
+  // the NEXT winner scaffolds a brand-new project (the old dir stays archived
+  // in place inside the distro). Mirrors the chaos-toggle fetch pattern.
+  async function newProject() {
+    const { res, data } = await postJson("/api/workspace/new-project", {});
+    if (!res.ok) {
+      if (data && data.reason === "build-active") {
+        roundStartError = "Can't start a new project while a build is running.";
+      } else if (data && data.reason === "halted") {
+        roundStartError = "Can't start a new project while halted — recover first.";
+      } else {
+        roundStartError = data && data.error ? data.error : "New project couldn't start.";
+      }
+      renderAll();
+    }
+    // Success re-renders via the ws state push.
+  }
+
+  /** quick-0iu new-project disabled reason, or null when rotation is allowed. */
+  function newProjectDisabledReason(snapshot) {
+    if (snapshot.mode === "BUILD_IN_PROGRESS") {
+      return "A build is active — the workspace can't rotate mid-build.";
+    }
+    if (snapshot.mode === "HALTED") {
+      return "Halted — recover before starting a new project.";
+    }
+    return null;
+  }
+
   // quick-t5k D-04: pause/resume the hands-free round cadence — mirrors the
   // chaos toggle pattern. Never fails with a 409 (pausing is always legal).
   async function toggleAutoCycle() {
@@ -417,6 +446,23 @@
           "Chaos mode on — the next task is a random pick from the approved pool. No vote runs.",
         ),
       );
+    }
+
+    // quick-0iu "New project" — rotates the persistent workspace so the next
+    // winner scaffolds from scratch. Follows the chaos-toggle button pattern
+    // (textContent-only via button()/el()); confirm() because it changes what
+    // the next winner builds. Disabled with a reason while a build is active.
+    const npReason = newProjectDisabledReason(snapshot);
+    const npButton = button("New Project", "button-accent", () => {
+      const ok = window.confirm(
+        "Start a NEW project? The next winning suggestion scaffolds from scratch — the current app is archived.",
+      );
+      if (ok) void newProject();
+    });
+    npButton.disabled = Boolean(npReason);
+    roundPanel.appendChild(npButton);
+    if (npReason) {
+      roundPanel.appendChild(el("p", "round-reason", npReason));
     }
 
     if (roundStartError) {
