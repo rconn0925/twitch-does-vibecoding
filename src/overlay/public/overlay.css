@@ -169,6 +169,57 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ── Phase banner — top-center participation guidance (auto-cycle) ───── */
+/*
+ * Mounted while a suggestion phase collects OR a round is open; silent-absent
+ * otherwise (D2-18). Fixed orchestrator-authored copy only — never
+ * chat-derived. Sits between the free-reign banner (top-left) and the state
+ * pill (top-right); independent of the shared lower-left slot, so guidance
+ * stays up while a concurrent build renders below.
+ */
+
+.phase-banner {
+  position: fixed;
+  top: var(--safe-margin);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  max-width: 900px;
+  box-sizing: border-box;
+  background: var(--dominant);
+  border-radius: 12px;
+  padding: 12px 24px;
+}
+
+.phase-title {
+  flex: none;
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.phase-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.phase-countdown {
+  flex: none;
+  font-size: 48px;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Vote panel — lower-left, 560px fixed width ─────────────────────── */
 
 .vote-panel {

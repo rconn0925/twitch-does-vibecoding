@@ -11,6 +11,7 @@
 // Empty states are silent absence — no placeholder text on stream.
 (() => {
   const statePill = document.getElementById("state-pill");
+  const phaseBanner = document.getElementById("phase-banner");
   const votePanel = document.getElementById("vote-panel");
   const queueStrip = document.getElementById("queue-strip");
 
@@ -240,28 +241,46 @@
     return row;
   }
 
-  // A2 (quick-t5k): the suggestion-phase guidance variant of the vote panel.
-  // Same Dominant backing panel, same countdown classes — no bare text over
-  // video, no new overlay block. Silent-absent outside the phase (D2-18).
-  function renderSuggestVariant() {
-    const sp = latest?.suggestPhase ?? null;
-    if (!sp) {
-      votePanel.hidden = true;
+  // --- phase banner (top-center; participation guidance + countdown) ---
+
+  // A2 (quick-t5k, repositioned): the how-to-participate guidance lives on a
+  // dedicated top-center banner — "SUGGESTIONS OPEN — type !suggest …" while
+  // the auto-cycle collects, "VOTE NOW — type !vote 1 / !vote 2 …" while a
+  // round runs. Same Dominant backing panel (no bare text over video), same
+  // countdown classes, silent-absent outside both phases (D2-18). Countdown
+  // ticks CLIENT-side from the pushed absolute deadline — the server never
+  // streams per-second frames (same contract as the vote clock). The banner is
+  // independent of the lower-left slot, so guidance stays visible while a
+  // concurrent build occupies the build panel.
+  function renderPhaseBanner() {
+    phaseBanner.replaceChildren();
+    const liveRound = latest?.round?.status === "open" ? latest.round : null;
+    if (liveRound) {
+      phaseBanner.hidden = false;
+      phaseBanner.appendChild(el("span", "phase-title", "VOTE NOW"));
+      phaseBanner.appendChild(el("span", "phase-hint", voteHint(liveRound.candidates.length)));
+      const remaining = roundRemainingMs(liveRound);
+      const countdown = el("span", "phase-countdown", formatRemaining(remaining));
+      if (!liveRound.frozen && remaining <= FINAL_COUNTDOWN_MS) {
+        countdown.classList.add("countdown-final");
+      }
+      phaseBanner.appendChild(countdown);
       return;
     }
-    votePanel.hidden = false;
-    const header = el("div", "vote-header");
-    header.appendChild(el("h1", "vote-title", "SUGGESTIONS OPEN"));
-    // Countdown ticks CLIENT-side from the pushed absolute deadline — the
-    // server never streams per-second frames (same contract as the vote clock).
-    const remaining = sp.endsAtMs - Date.now();
-    const countdown = el("span", "vote-countdown", formatRemaining(remaining));
-    if (remaining <= FINAL_COUNTDOWN_MS) {
-      countdown.classList.add("countdown-final");
+    const sp = latest?.suggestPhase ?? null;
+    if (sp) {
+      phaseBanner.hidden = false;
+      phaseBanner.appendChild(el("span", "phase-title", "SUGGESTIONS OPEN"));
+      phaseBanner.appendChild(el("span", "phase-hint", "type !suggest <your idea>"));
+      const remaining = sp.endsAtMs - Date.now();
+      const countdown = el("span", "phase-countdown", formatRemaining(remaining));
+      if (remaining <= FINAL_COUNTDOWN_MS) {
+        countdown.classList.add("countdown-final");
+      }
+      phaseBanner.appendChild(countdown);
+      return;
     }
-    header.appendChild(countdown);
-    votePanel.appendChild(header);
-    votePanel.appendChild(el("p", "vote-hint", "type !suggest <your idea>"));
+    phaseBanner.hidden = true;
   }
 
   function renderVotePanel() {
@@ -271,7 +290,7 @@
     // shared lower-left slot even while a build runs — concurrent rounds must
     // stay votable on screen; the pill still reads BUILDING. Without a live
     // round, the build panel keeps the slot while a build is live or the BUILT
-    // IT beat runs (so the suggest guidance also yields to it).
+    // IT beat runs.
     if (!liveRound && buildPanelActive()) {
       votePanel.hidden = true;
       return;
@@ -280,29 +299,18 @@
     const beatActive = liveRound === null && winnerBeatRound !== null;
     const round = liveRound || winnerBeatRound;
     if (!round) {
-      renderSuggestVariant();
+      votePanel.hidden = true;
       return;
     }
     votePanel.hidden = false;
 
-    const header = el("div", "vote-header");
+    // The participation guidance (title / how-to / countdown) lives on the
+    // top-center phase banner (renderPhaseBanner) — while a round runs this
+    // panel is tallies only. The 8s winner beat keeps its "Round over" header.
     if (beatActive) {
+      const header = el("div", "vote-header");
       header.appendChild(el("h1", "vote-title", "Round over"));
-    } else {
-      header.appendChild(el("h1", "vote-title", "VOTE NOW"));
-      // Countdown is computed CLIENT-side from endsAtMs on a 1s tick,
-      // resynced on every push — the server never streams timer frames.
-      const remaining = roundRemainingMs(round);
-      const countdown = el("span", "vote-countdown", formatRemaining(remaining));
-      if (!round.frozen && remaining <= FINAL_COUNTDOWN_MS) {
-        countdown.classList.add("countdown-final");
-      }
-      header.appendChild(countdown);
-    }
-    votePanel.appendChild(header);
-
-    if (!beatActive) {
-      votePanel.appendChild(el("p", "vote-hint", voteHint(round.candidates.length)));
+      votePanel.appendChild(header);
     }
 
     const leader = beatActive ? null : leaderOption(round);
@@ -429,6 +437,7 @@
     renderBanner();
     renderBuildPanel();
     renderVotePanel();
+    renderPhaseBanner();
   }
 
   function handleState(state) {
@@ -455,14 +464,14 @@
     renderAll();
   }
 
-  // 1s countdown tick: re-render the vote panel while a round runs OR a
-  // suggestion phase is collecting (quick-t5k A2 — the suggest countdown ticks
-  // client-side between pushes too) so the clock stays honest between pushes.
+  // 1s countdown tick: re-render the phase banner while a round runs OR a
+  // suggestion phase is collecting (quick-t5k A2 — both countdowns tick
+  // client-side between pushes) so the clock stays honest between pushes.
   // A frozen round re-renders to the same held remainingMs — the display
   // simply stops moving (D2-16 honesty).
   setInterval(() => {
-    if (latest?.round?.status === "open" || winnerBeatRound !== null || latest?.suggestPhase) {
-      renderVotePanel();
+    if (latest?.round?.status === "open" || latest?.suggestPhase) {
+      renderPhaseBanner();
     }
     // Keep the banner countdown honest between pushes while a window is active
     // (it ticks even after the pill flips to BUILDING — banner independence).

@@ -8,13 +8,15 @@
   <body>
     <!--
       Public OBS browser-source overlay (1920x1080, transparent background).
-      Three blocks only (UI-SPEC layout contract): vote panel lower-left,
+      Layout contract (UI-SPEC + auto-cycle): phase banner top-center
+      (participation guidance + countdown), vote panel lower-left (tallies),
       queue strip bottom-right, state pill top-right. Every text node sits on
       a Dominant-color backing panel — no text ever renders bare over video.
       Empty states are silent absence: no round -> no panel, empty queue ->
       no strip. The state pill is the only permanent element.
     -->
     <div id="state-pill" class="state-pill pill-standby" hidden></div>
+    <div id="phase-banner" class="phase-banner" hidden></div>
     <section id="vote-panel" class="vote-panel" hidden></section>
     <div id="queue-strip" class="queue-strip" hidden></div>
     <script src="/overlay.js"></script>
