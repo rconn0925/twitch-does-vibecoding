@@ -1,11 +1,13 @@
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import type { Logger } from "pino";
 import { WebSocketServer } from "ws";
 import {
   AUTO_CYCLE_CHANGED,
+  POOL_CHANGED,
   ROUND_CLOSED,
   ROUND_OPENED,
   STATE_CHANGED,
@@ -100,6 +102,26 @@ export interface OverlayState {
    * enabled flag is console detail that never crosses the broadcast wire.
    */
   suggestPhase: { endsAtMs: number } | null;
+  /**
+   * The approved-suggestion pool awaiting the next vote round (quick-v4e,
+   * the what's-coming page). DISPLAY FIELDS ONLY — this projection is the
+   * narrowing EXEMPLAR (per the STATE.md residual about RoundSnapshot
+   * over-projection; do NOT copy that pattern): never GateResult, never
+   * rationale/category/decision, never addedAtMs. `username` is the
+   * candidate's twitchUsername — already what RoundSnapshot exposes for vote
+   * candidates, so this field carries no MORE than the main overlay's wire.
+   * The source is CandidatePool, whose add() throws for any non-approved
+   * result (COMP-01) — approved-only by construction (T-v4e-02).
+   */
+  pool: { text: string; username: string | null }[];
+  /**
+   * The FULL build queue in FIFO order — the first `queueDisplayMax` task
+   * texts (quick-v4e). Same source and semantics as `nextUp`, just a larger
+   * slice for the what's-coming page; position numbers are client-rendered.
+   * Texts only: no task ids, no vote provenance, nothing else crosses the
+   * wire (T-v4e-01 display-fields-only).
+   */
+  queue: string[];
 }
 
 /**
@@ -190,6 +212,35 @@ const NULL_AUTO_CYCLE_SOURCE: OverlayAutoCycleSource = {
   on: () => {},
 };
 
+/**
+ * The candidate-pool sliver the overlay needs (mirrors OverlayQueueSource plus
+ * the .on subscription of OverlayBuildSource). The real CandidatePool's list()
+ * returns richer ApprovedCandidate items (GateResult, addedAtMs) — the server
+ * re-projects each item down to exactly {text, username} in buildOverlayState
+ * (T-v4e-01 defence-in-depth), so a richer source can never leak extra keys.
+ */
+export interface OverlayPoolSource {
+  list(): readonly { candidate: { text: string; twitchUsername: string | null } }[];
+  on(event: string, handler: (...args: unknown[]) => void): void;
+}
+
+/**
+ * A no-op pool source: empty pool, no change events. Mirrors NULL_BUILD_SOURCE —
+ * the composition root can wire the overlay without a pool and the what's-coming
+ * page simply shows its quiet empty state (pool: []).
+ */
+const NULL_POOL_SOURCE: OverlayPoolSource = {
+  list: () => [],
+  on: () => {},
+};
+
+/**
+ * Default cap on the what's-coming page's full-queue projection. Tied to
+ * VOTE_QUEUE_MAX (main.ts DEFAULT_VOTE_QUEUE_MAX = 10): the scheduler parks
+ * at that many queued vote winners, so 10 covers the whole queue on stream.
+ */
+const DEFAULT_QUEUE_DISPLAY_MAX = 10;
+
 export interface OverlayServerDeps {
   machine: OverlayModeSource;
   round: OverlayRoundSource;
@@ -200,6 +251,10 @@ export interface OverlayServerDeps {
   controlWindow?: OverlayControlWindowSource;
   /** Optional until quick-t5k wires the scheduler; defaults to no phase active. */
   autoCycle?: OverlayAutoCycleSource;
+  /** Optional (quick-v4e what's-coming page); defaults to an empty pool. */
+  pool?: OverlayPoolSource;
+  /** Cap on the full-queue projection; defaults to 10 (VOTE_QUEUE_MAX). */
+  queueDisplayMax?: number;
   port: number;
   /** Tally push debounce; defaults to the UI-SPEC 300ms. */
   debounceMs?: number;
@@ -243,6 +298,8 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   const build = deps.build ?? NULL_BUILD_SOURCE;
   const controlWindow = deps.controlWindow ?? NULL_CONTROL_WINDOW_SOURCE;
   const autoCycle = deps.autoCycle ?? NULL_AUTO_CYCLE_SOURCE;
+  const poolSource = deps.pool ?? NULL_POOL_SOURCE;
+  const queueDisplayMax = deps.queueDisplayMax ?? DEFAULT_QUEUE_DISPLAY_MAX;
   const app = express();
 
   // ── DNS-rebinding defense (CR-02, shared with the console) ──────────
@@ -282,8 +339,29 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
         .list()
         .slice(0, 3)
         .map((task) => task.text),
+      // Explicit narrowing (T-v4e-01, the controlWindow re-projection idiom):
+      // even a richer pool source (the real CandidatePool carries GateResult
+      // and addedAtMs) can never leak extra keys — only {text, username}
+      // display fields are ever constructed for the wire.
+      pool: poolSource
+        .list()
+        .map((item) => ({ text: item.candidate.text, username: item.candidate.twitchUsername })),
+      // Full queue projection for the what's-coming page: texts only, FIFO,
+      // capped at queueDisplayMax (VOTE_QUEUE_MAX) — same source as nextUp.
+      queue: taskQueue
+        .list()
+        .slice(0, queueDisplayMax)
+        .map((task) => task.text),
     };
   }
+
+  // The what's-coming page (quick-v4e) — a second OBS browser-source URL on
+  // this SAME read-only server. GET only; the Host-allowlist middleware above
+  // is app-level FIRST middleware, so /queue inherits the CR-02 DNS-rebinding
+  // posture automatically.
+  app.get("/queue", (_req, res) => {
+    res.sendFile(path.join(publicDir, "queue.html"));
+  });
 
   app.get("/api/state", (_req, res) => {
     res.json(buildOverlayState());
@@ -361,6 +439,14 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   // push IMMEDIATELY, exactly like ROUND_OPENED — never the vote-tally
   // debounce (quick-t5k A2: the countdown itself ticks client-side).
   autoCycle.on(AUTO_CYCLE_CHANGED, () => {
+    pushState();
+  });
+
+  // Pool changes push IMMEDIATELY like the lifecycle events: adds are
+  // rate-limited by classifier latency + the per-user intake cooldown, and
+  // removes are round-open/chaos beats — never the vote-tally debounce
+  // (T-v4e-06 accepted: worst burst is a handful of small localhost frames).
+  poolSource.on(POOL_CHANGED, () => {
     pushState();
   });
 
