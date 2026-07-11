@@ -1208,11 +1208,22 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       snapshot: () => autoCycle.snapshot(),
       on: (event, handler) => autoCycle.on(event, handler),
     },
+    // quick-v4e what's-coming page: CandidatePool structurally satisfies
+    // OverlayPoolSource (list() + EventEmitter.on); the server re-narrows each
+    // item to {text, username} display fields only — GateResult never crosses
+    // the wire. queueDisplayMax mirrors the scheduler's VOTE_QUEUE_MAX cap.
+    pool,
+    queueDisplayMax: voteQueueMax,
     logger,
   });
   logger.info(
     { port: overlay.port },
     "public overlay listening at http://127.0.0.1:%d — add as OBS browser source at 1920x1080",
+    overlay.port,
+  );
+  logger.info(
+    { port: overlay.port },
+    "what's-coming page at http://127.0.0.1:%d/queue — optional OBS browser source",
     overlay.port,
   );
 

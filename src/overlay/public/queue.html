@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>What's Coming — Twitch Does Vibecoding</title>
+    <link rel="stylesheet" href="/overlay.css" />
+    <link rel="stylesheet" href="/queue.css" />
+  </head>
+  <body>
+    <!--
+      Dedicated "what's coming" OBS browser source (quick-v4e). Two sections:
+      the approved suggestion pool awaiting the next vote round (top) and the
+      full vote-winner build queue up to 10 with position numbers (bottom).
+      Unlike the main overlay, quiet placeholder empty-states are allowed on
+      THIS page ("waiting for suggestions…" / "queue is empty"). All rendering
+      is JS textContent — no text is authored in this markup.
+    -->
+    <section id="pool-panel" class="wc-panel"></section>
+    <section id="queue-panel" class="wc-panel"></section>
+    <script src="/queue.js"></script>
+  </body>
+</html>

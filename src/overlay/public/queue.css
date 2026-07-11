@@ -1,0 +1,86 @@
+/*
+ * What's-coming page (quick-v4e) — page-specific LAYOUT only; the palette
+ * tokens and transparent body come from overlay.css :root (loaded first).
+ *
+ * Design language: two stacked Dominant backing panels — every text node
+ * sits on a backed panel, no bare text over video. Type scale per the
+ * binding contract: section labels 24px/700, rows 20px/600, nothing under
+ * 20px. No red anywhere; no new accent colors — Secondary number badges
+ * only, staying inside the 60/30/10 budget.
+ */
+
+body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--block-gap);
+  padding: var(--safe-margin);
+  box-sizing: border-box;
+}
+
+.wc-panel {
+  background: var(--dominant);
+  border-radius: 12px;
+  padding: var(--panel-pad);
+}
+
+.wc-label {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.wc-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.wc-pos {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--secondary);
+  border-radius: 8px;
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.wc-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  /* CSS backstop behind the JS-side 80-char truncation */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wc-user {
+  flex: none;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--muted);
+  /* CSS backstop behind the JS-side 24-char truncation */
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wc-empty {
+  margin-top: 12px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--muted);
+}

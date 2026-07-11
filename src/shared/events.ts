@@ -53,6 +53,14 @@ export const CHAOS_PICK = "chaos:pick" as const;
  */
 export const AUTO_CYCLE_CHANGED = "auto-cycle:changed" as const;
 
+/**
+ * Emitted by CandidatePool after add/evict/remove (quick-v4e) so the overlay's
+ * what's-coming page pushes fresh state. Low-frequency by construction: adds
+ * are serialized behind classifier calls (+ the per-user intake cooldown), and
+ * removes are round-open/chaos beats — never a per-vote flood.
+ */
+export const POOL_CHANGED = "pool:changed" as const;
+
 export type AppEvent =
   | typeof STATE_CHANGED
   | typeof HALT_TRIGGERED
@@ -68,4 +76,5 @@ export type AppEvent =
   | typeof WINDOW_DENIED
   | typeof CHAOS_TOGGLED
   | typeof CHAOS_PICK
-  | typeof AUTO_CYCLE_CHANGED;
+  | typeof AUTO_CYCLE_CHANGED
+  | typeof POOL_CHANGED;

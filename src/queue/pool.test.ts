@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { POOL_CHANGED } from "../shared/events.js";
 import type { GateResult, SuggestionCandidate } from "../shared/types.js";
 import { type ApprovedCandidate, CandidatePool } from "./pool.js";
 
@@ -69,5 +70,68 @@ describe("CandidatePool bounded mode (D2-13)", () => {
     expect(pool.list()).toHaveLength(1);
     pool.remove("a");
     expect(pool.list()).toHaveLength(0);
+  });
+});
+
+describe("CandidatePool approved-only invariant (COMP-01 / quick-v4e T-v4e-02)", () => {
+  // The what's-coming page's pool section is gate-approved BY CONSTRUCTION:
+  // add() throws for every non-approved decision, so nothing pre-gate or
+  // rejected can ever sit in the pool (and thus never reach the overlay wire).
+  it("add() throws for a rejected result and stores nothing", () => {
+    const pool = new CandidatePool();
+    expect(() =>
+      pool.add(candidate("r"), { decision: "rejected", category: "spam-malware", rationale: "no" }),
+    ).toThrow(/approved/);
+    expect(pool.list()).toHaveLength(0);
+  });
+
+  it("add() throws for a held-for-review result and stores nothing", () => {
+    const pool = new CandidatePool();
+    expect(() =>
+      pool.add(candidate("h"), {
+        decision: "held-for-review",
+        category: null,
+        rationale: "unsure",
+      }),
+    ).toThrow(/approved/);
+    expect(pool.list()).toHaveLength(0);
+  });
+});
+
+describe("CandidatePool POOL_CHANGED notifications (quick-v4e)", () => {
+  it("add() emits POOL_CHANGED exactly once", () => {
+    const pool = new CandidatePool();
+    let emits = 0;
+    pool.on(POOL_CHANGED, () => {
+      emits += 1;
+    });
+    pool.add(candidate("a"), APPROVED);
+    expect(emits).toBe(1);
+  });
+
+  it("add() that evicts still emits exactly once (one notification covers add + eviction)", () => {
+    const pool = new CandidatePool({ maxSize: 1 });
+    pool.add(candidate("a"), APPROVED);
+    let emits = 0;
+    pool.on(POOL_CHANGED, () => {
+      emits += 1;
+    });
+    pool.add(candidate("b"), APPROVED);
+    expect(emits).toBe(1);
+    expect(pool.list().map((entry) => entry.candidate.id)).toEqual(["b"]);
+  });
+
+  it("remove() of a present id emits; remove() of an absent id does NOT (no phantom pushes)", () => {
+    const pool = new CandidatePool();
+    pool.add(candidate("a"), APPROVED);
+    let emits = 0;
+    pool.on(POOL_CHANGED, () => {
+      emits += 1;
+    });
+    pool.remove("a");
+    expect(emits).toBe(1);
+    pool.remove("a"); // already gone
+    pool.remove("never-existed");
+    expect(emits).toBe(1);
   });
 });
