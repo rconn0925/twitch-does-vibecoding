@@ -232,6 +232,11 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "chaosOn",
         "chaosOff",
         "chaosPick",
+        // Auto-cycle suggestion-phase beats (quick-t5k) — seconds counts and a
+        // fixed park line, never a tally.
+        "suggestionsOpen",
+        "stillCollecting",
+        "buildQueueFull",
       ].sort(),
     );
   });
@@ -402,6 +407,13 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       expect(sent).toEqual([
         "Still collecting suggestions — type !suggest <your idea>. Another 40s.",
       ]);
+    });
+
+    it("buildQueueFull renders the queue-cap park template (VOTE_QUEUE_MAX amendment)", () => {
+      const { sent, sender } = capturingSender();
+      const narrator = createNarrator({ sender });
+      narrator.buildQueueFull();
+      expect(sent).toEqual(["Build queue full — pausing new rounds until it drains."]);
     });
   });
 

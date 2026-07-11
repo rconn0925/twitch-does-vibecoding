@@ -456,7 +456,7 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
     expect(row.winner_option).toBe(2);
     expect(row.tiebreak).toBe(0);
     expect(enqueue).toHaveBeenCalledTimes(1);
-    const [winCand] = enqueue.mock.calls[0] as [SuggestionCandidate];
+    const [winCand] = enqueue.mock.calls[0] as unknown as [SuggestionCandidate];
     expect(winCand.id).toBe("cand-2");
     // Losers repool; the winner rides the SAME enqueue path as a voted winner.
     expect(
@@ -487,7 +487,7 @@ describe("RoundManager.closeRound (D2-03/D2-05)", () => {
     };
     // cand-2 (option 2) and cand-3 (option 3) tie at 400ms → lowest index wins.
     expect(row.winner_option).toBe(2);
-    const [winCand] = enqueue.mock.calls[0] as [SuggestionCandidate];
+    const [winCand] = enqueue.mock.calls[0] as unknown as [SuggestionCandidate];
     expect(winCand.id).toBe("cand-2");
     db.close();
   });

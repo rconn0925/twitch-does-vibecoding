@@ -53,7 +53,7 @@ export class RoundStartError extends Error {
       reason === "round-active"
         ? "Can't start a round while another round is still loaded"
         : reason === "not-idle"
-          ? "Can't start a round unless the stream is IDLE"
+          ? "Can't start a round unless the stream is IDLE or BUILD_IN_PROGRESS"
           : "Can't start a round with fewer than 2 pooled candidates (D2-04)",
     );
     this.name = "RoundStartError";
@@ -112,6 +112,15 @@ interface StoredOption {
 interface ActiveRound {
   roundId: number;
   status: RoundStatus;
+  /**
+   * True when this round OWNS the stream mode (opened from IDLE and drove the
+   * IDLE→VOTING_ROUND transition). False for a CONCURRENT round opened while a
+   * build held BUILD_IN_PROGRESS (A1, quick-t5k): no mode transition at open,
+   * and closeRound's existing `mode === VOTING_ROUND → IDLE` conditional keeps
+   * its hands off the build's mode at close. NOT persisted — restore()
+   * defaults it to true (a restored round re-enters VOTING_ROUND at boot).
+   */
+  ownsMode: boolean;
   frozen: boolean;
   openedAtMs: number;
   durationMs: number;
@@ -193,22 +202,33 @@ export class RoundManager {
       this.#freeze();
     });
     // Recovery triage (D-04): HALTED→VOTING_ROUND resumes, HALTED→IDLE discards.
+    // HALTED→BUILD_IN_PROGRESS ALSO resumes (BLOCKER-2 fix, quick-t5k): halt.ts's
+    // 'resume' action recovers to frozen.mode, which is BUILD_IN_PROGRESS when
+    // the halt hit during a CONCURRENT round (A1) — without this branch the
+    // round would stay frozen forever and the CR-01 round-active guard would
+    // wedge every future startRound until a process restart. #resume() is
+    // mode-agnostic (it only re-arms the frozen remainder), so a frozen round
+    // resumes into whichever mode recovery lands in.
     this.#machine.on(STATE_CHANGED, (...args: unknown[]) => {
       const snap = args[0] as StateSnapshot;
       const prev = this.#lastMode;
       this.#lastMode = snap.mode;
       if (prev !== "HALTED") return;
-      if (snap.mode === "VOTING_ROUND") this.#resume();
+      if (snap.mode === "VOTING_ROUND" || snap.mode === "BUILD_IN_PROGRESS") this.#resume();
       else if (snap.mode === "IDLE") this.#discard();
     });
   }
 
   /**
-   * Streamer-triggered round open (D2-01 — the console route in plan 02-03 is
-   * the only caller). Draws the first min(3, pool size) candidates in pool
-   * insertion order; requires at least 2 (D2-04).
+   * Round open (D2-01 + quick-t5k D-04): the console route and the
+   * AutoCycleScheduler are the only callers — `initiator` records which one in
+   * the audit ledger. Opens from IDLE (owns the mode: IDLE→VOTING_ROUND as
+   * always) OR from BUILD_IN_PROGRESS (a CONCURRENT round per A1: no mode
+   * transition — the running build owns the mode; the winner queues). Draws
+   * the first min(3, pool size) candidates in pool insertion order; requires
+   * at least 2 (D2-04).
    */
-  startRound(): RoundSnapshot {
+  startRound(initiator: "auto" | "operator" = "operator"): RoundSnapshot {
     // CR-01: refuse while ANY round is still loaded — mode alone is not
     // enough (a crash-restored frozen round sits in memory while the machine
     // is IDLE). Overwriting #round would orphan its acknowledged votes and
@@ -216,7 +236,8 @@ export class RoundManager {
     if (this.#round !== null) {
       throw new RoundStartError("round-active");
     }
-    if (this.#machine.mode !== "IDLE") {
+    const openedFrom = this.#machine.mode;
+    if (openedFrom !== "IDLE" && openedFrom !== "BUILD_IN_PROGRESS") {
       throw new RoundStartError("not-idle");
     }
     const pooled = this.#pool.list();
@@ -275,6 +296,7 @@ export class RoundManager {
     this.#round = {
       roundId,
       status: "open",
+      ownsMode: openedFrom === "IDLE",
       frozen: false,
       openedAtMs,
       durationMs,
@@ -287,12 +309,17 @@ export class RoundManager {
       votesByUser: new Map(),
     };
 
-    this.#machine.transition("VOTING_ROUND");
+    // A concurrent round (opened under BUILD_IN_PROGRESS) never touches the
+    // mode — BUILDING keeps the overlay pill while the vote panel renders (A1).
+    if (openedFrom === "IDLE") {
+      this.#machine.transition("VOTING_ROUND");
+    }
     recordRoundOpened(this.#db, {
       roundId,
       candidateCount: options.length,
       durationMs,
       streamMode: this.#machine.mode,
+      initiator,
     });
     this.#armTimer(durationMs);
 
@@ -316,7 +343,11 @@ export class RoundManager {
   recordVote(twitchUserId: string, option: number): boolean {
     const round = this.#round;
     if (round?.status !== "open" || round.frozen) return false;
-    if (this.#machine.mode !== "VOTING_ROUND") return false;
+    // A1 (quick-t5k): a vote counts whenever a round is open and not frozen —
+    // concurrent rounds run under BUILD_IN_PROGRESS, and a round whose
+    // background build finished mid-vote runs under IDLE. The explicit HALTED
+    // refusal is defence-in-depth (a halt already froze the round above).
+    if (this.#machine.mode === "HALTED") return false;
     if (!Number.isInteger(option) || option < 1 || option > round.options.length) return false;
 
     this.#upsertVote.run({
@@ -348,9 +379,10 @@ export class RoundManager {
   }
 
   /**
-   * Close the round: pick the winner (random among tied leaders, D2-03),
-   * hand it to the injected funnel with its PERSISTED pooled_at_ms (D2-05),
-   * return the losers (or, on zero votes, everyone) to the pool.
+   * Close the round: pick the winner (random among tied leaders, D2-03; on
+   * ZERO votes the earliest-submitted candidate wins — D-03, quick-t5k), hand
+   * it to the injected funnel with its PERSISTED pooled_at_ms (D2-05), return
+   * the losers to the pool.
    */
   closeRound(): void {
     const round = this.#round;
@@ -372,6 +404,23 @@ export class RoundManager {
         const pick = Math.min(Math.floor(this.#rng() * leaders.length), leaders.length - 1);
         winnerOption = leaders[pick]?.option ?? null;
       }
+    } else {
+      // UI-SPEC amendment (D-03, quick-t5k): zero votes → the FIRST suggestion
+      // wins — smallest submittedAtMs, tie broken by the LOWEST option index
+      // (strict < keeps the earlier option on equal timestamps). Deterministic,
+      // no RNG. The winner flows into the SAME enqueue path as a voted winner,
+      // so winnerQueued honesty (WR-02) and D2-05 staleness both apply. This
+      // REPLACES the old everyone-repools "run it back" beat.
+      let earliest: StoredOption | undefined;
+      for (const option of round.options) {
+        if (
+          earliest === undefined ||
+          option.candidate.submittedAtMs < earliest.candidate.submittedAtMs
+        ) {
+          earliest = option;
+        }
+      }
+      winnerOption = earliest?.option ?? null;
     }
 
     const closedAtMs = this.#now();
@@ -512,6 +561,9 @@ export class RoundManager {
     this.#round = {
       roundId: row.id,
       status: "open",
+      // ownsMode is not persisted: a restored live round re-enters VOTING_ROUND
+      // at boot (main.ts), so it owns the mode again (quick-t5k).
+      ownsMode: true,
       frozen,
       openedAtMs: row.opened_at_ms,
       durationMs: row.duration_ms,

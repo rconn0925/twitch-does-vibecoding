@@ -45,6 +45,14 @@ export const WINDOW_DENIED = "window:denied" as const;
 export const CHAOS_TOGGLED = "chaos:toggled" as const;
 export const CHAOS_PICK = "chaos:pick" as const;
 
+/**
+ * Auto-cycle lifecycle beat (quick-t5k, D-04/A2): the scheduler's enabled flag
+ * or suggest-phase state changed — toggle, phase begin, phase end, halt park.
+ * Low-frequency show beats: consoles/overlays push IMMEDIATELY on it (never
+ * the vote-tally debounce).
+ */
+export const AUTO_CYCLE_CHANGED = "auto-cycle:changed" as const;
+
 export type AppEvent =
   | typeof STATE_CHANGED
   | typeof HALT_TRIGGERED
@@ -59,4 +67,5 @@ export type AppEvent =
   | typeof WINDOW_REVOKED
   | typeof WINDOW_DENIED
   | typeof CHAOS_TOGGLED
-  | typeof CHAOS_PICK;
+  | typeof CHAOS_PICK
+  | typeof AUTO_CYCLE_CHANGED;

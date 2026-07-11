@@ -25,7 +25,12 @@ export class InvalidTransitionError extends Error {
  * src/state-machine/halt.ts (D-04: nothing auto-resumes).
  */
 const TRANSITIONS: Record<StreamMode, StreamMode[]> = {
-  IDLE: ["VOTING_ROUND", "FREE_REIGN_WINDOW", "CHAOS_MODE"],
+  // IDLE → BUILD_IN_PROGRESS (quick-t5k, A1): used SOLELY by main.ts's
+  // drainVoteQueue — a queued vote winner starting AFTER the previous build
+  // already returned to IDLE (the continuous round cadence never waits for
+  // builds, so winners queue up and drain FIFO from wherever IDLE is reached).
+  // No other caller may take this edge.
+  IDLE: ["VOTING_ROUND", "FREE_REIGN_WINDOW", "CHAOS_MODE", "BUILD_IN_PROGRESS"],
   VOTING_ROUND: ["IDLE", "BUILD_IN_PROGRESS"],
   // CR-03: a build triggered by a paid-window instruction or a chaos pick returns
   // to its originating mode so the window can drain its NEXT queued instruction

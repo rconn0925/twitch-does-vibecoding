@@ -458,6 +458,9 @@ describe("EventSub disconnect → ready reconciliation (INFRA-02, D2-14)", () =>
         chaosOn() {},
         chaosOff() {},
         chaosPick() {},
+        suggestionsOpen() {},
+        stillCollecting() {},
+        buildQueueFull() {},
       },
       reconcile: () => {
         reconcileRuns += 1;
