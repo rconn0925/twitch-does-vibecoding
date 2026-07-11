@@ -16,6 +16,10 @@ import type {
 } from "../shared/types.js";
 import { type BuildSessionDeps, createBuildSession } from "./build-session.js";
 import type { Comp02Deps } from "./comp02.js";
+import {
+  BUILD_SYSTEM_PROMPT_CONTINUE,
+  BUILD_SYSTEM_PROMPT_SCAFFOLD,
+} from "./prompt-boundary.js";
 import type {
   AgentMessage,
   AgentRunner,
@@ -23,14 +27,16 @@ import type {
   BuildMachineView,
   ProgressSink,
   SandboxAdapter,
+  WorkspaceView,
 } from "./types.js";
 
 /**
  * BUILD-01 + COMP-02 (in-flight, D3-07) — the build-session orchestrator drives
- * one QueuedTask through research→plan→COMP-02→build→done with EVERYTHING
+ * one QueuedTask STRAIGHT to the sandboxed build (quick-0iu): COMP-02 pre-build
+ * re-screen (input = the suggestion text) → build → done, with EVERYTHING
  * injected: fake AgentRunner (scripted SDK-message streams), fake SandboxAdapter,
- * fake COMP-02 classify, fake machine/registry, real TaskQueue + in-memory db.
- * No real WSL2 / query() / network.
+ * fake WorkspaceView, fake COMP-02 classify, fake machine/registry, real
+ * TaskQueue + in-memory db. No real WSL2 / query() / network.
  */
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
@@ -68,16 +74,15 @@ function fakeMachine(initial: StreamMode = "IDLE") {
   return { machine, transitions, activeTasks };
 }
 
-type Script = { research?: unknown[]; plan?: unknown[]; build?: unknown[] };
+type Script = { build?: unknown[] };
 
-/** Fake AgentRunner: research vs plan vs (sandboxed) build streams by spec shape. */
+/** Fake AgentRunner: every pipeline turn is the single sandboxed build turn (quick-0iu). */
 function fakeAgentRunner(script: Script) {
   const calls: AgentRunSpec[] = [];
   const runner: AgentRunner = {
     run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
       calls.push(spec);
-      const kind = spec.agent === "research" ? "research" : spec.sandbox ? "build" : "plan";
-      const messages = script[kind] ?? [];
+      const messages = script.build ?? [];
       return (async function* () {
         for (const message of messages) {
           yield message as AgentMessage;
@@ -88,24 +93,15 @@ function fakeAgentRunner(script: Script) {
   return { runner, calls };
 }
 
-/** Fake AgentRunner whose build stream throws mid-turn. */
-function throwingBuildRunner(script: Script) {
+/** Fake AgentRunner whose build stream throws from run() itself. */
+function throwingBuildRunner() {
   const calls: AgentRunSpec[] = [];
   const runner: AgentRunner = {
     run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
       calls.push(spec);
-      const kind = spec.agent === "research" ? "research" : spec.sandbox ? "build" : "plan";
-      if (kind === "build") {
-        // run() itself throws for the build turn — the orchestrator must catch
-        // it and fail closed, never letting it escape startBuild.
-        throw new Error("boom: query() blew up mid-build");
-      }
-      const messages = script[kind] ?? [];
-      return (async function* () {
-        for (const message of messages) {
-          yield message as AgentMessage;
-        }
-      })();
+      // run() itself throws for the build turn — the orchestrator must catch
+      // it and fail closed, never letting it escape startBuild.
+      throw new Error("boom: query() blew up mid-build");
     },
   };
   return { runner, calls };
@@ -113,8 +109,8 @@ function throwingBuildRunner(script: Script) {
 
 /**
  * Fake AgentRunner whose BUILD turn yields a DIFFERENT scripted stream on each
- * successive build-turn call (research/plan reuse HAPPY_SCRIPT). Drives the
- * auto-retry-once path: e.g. [failed] then [ok] proves exactly one retry.
+ * successive call. Drives the auto-retry-once path: e.g. [failed] then [ok]
+ * proves exactly one retry.
  */
 function sequencedBuildRunner(buildSequence: unknown[][]) {
   const calls: AgentRunSpec[] = [];
@@ -122,14 +118,8 @@ function sequencedBuildRunner(buildSequence: unknown[][]) {
   const runner: AgentRunner = {
     run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
       calls.push(spec);
-      const kind = spec.agent === "research" ? "research" : spec.sandbox ? "build" : "plan";
-      let messages: unknown[];
-      if (kind === "build") {
-        messages = buildSequence[Math.min(buildIdx, buildSequence.length - 1)] ?? [];
-        buildIdx += 1;
-      } else {
-        messages = HAPPY_SCRIPT[kind] ?? [];
-      }
+      const messages = buildSequence[Math.min(buildIdx, buildSequence.length - 1)] ?? [];
+      buildIdx += 1;
       return (async function* () {
         for (const message of messages) {
           yield message as AgentMessage;
@@ -145,6 +135,28 @@ function fakeSandbox(): SandboxAdapter & { terminate: ReturnType<typeof vi.fn> }
     spawn: vi.fn(),
     terminate: vi.fn(async () => {}),
   } as unknown as SandboxAdapter & { terminate: ReturnType<typeof vi.fn> };
+}
+
+/** Fake persistent-workspace seam (quick-0iu): mutable scaffolded flag + spies. */
+function fakeWorkspace(initialScaffolded = false) {
+  let scaffolded = initialScaffolded;
+  let generation = 1;
+  const markBuilt = vi.fn(() => {
+    scaffolded = true;
+  });
+  const newProject = vi.fn(() => {
+    generation += 1;
+    scaffolded = false;
+    return generation;
+  });
+  const workspace: WorkspaceView = {
+    dir: () => `/home/builder/projects/app-${generation}`,
+    scaffolded: () => scaffolded,
+    markBuilt,
+    newProject,
+    generation: () => generation,
+  };
+  return { workspace, markBuilt, newProject };
 }
 
 /** A BuildNarrator that records every beat (name + title) for assertions. */
@@ -199,10 +211,6 @@ function capturingSink(): { sink: ProgressSink; views: BuildStatusView[] } {
 }
 
 // SDK-ish message fixtures (plain objects fed through translate/extractors).
-const assistantText = (text: string) => ({
-  type: "assistant",
-  message: { content: [{ type: "text", text }] },
-});
 const writeBatch = (filePath: string, content: string) => ({
   type: "assistant",
   message: {
@@ -214,8 +222,6 @@ const resultFailed = { type: "result", subtype: "error_max_turns", is_error: tru
 const modelRefusal = { subtype: "model_refusal_no_fallback" };
 
 const HAPPY_SCRIPT: Script = {
-  research: [assistantText("research notes about the feature"), resultSuccess],
-  plan: [assistantText("1. build a page\n2. wire a button"), resultSuccess],
   build: [writeBatch("app.js", "console.log('hello stream')"), resultSuccess],
 };
 
@@ -232,6 +238,7 @@ function makeDeps(over: {
   comp02: Comp02Deps;
   progress: ProgressSink;
   registry?: AbortRegistry;
+  workspace?: WorkspaceView;
   onHeldForReview?: (task: QueuedTask, planText: string) => void;
   narrator?: BuildNarrator;
   builderFeed?: BuilderFeedSink;
@@ -245,6 +252,7 @@ function makeDeps(over: {
     registry: over.registry ?? new AbortRegistry(),
     agentRunner: over.agentRunner,
     sandboxAdapter: over.sandboxAdapter,
+    workspace: over.workspace ?? fakeWorkspace().workspace,
     comp02: over.comp02,
     progress: over.progress,
     ...(over.onHeldForReview ? { onHeldForReview: over.onHeldForReview } : {}),
@@ -256,7 +264,7 @@ function makeDeps(over: {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("createBuildSession — full pipeline (BUILD-01)", () => {
+describe("createBuildSession — straight-to-build pipeline (BUILD-01, quick-0iu)", () => {
   let db: Database.Database;
 
   beforeEach(() => {
@@ -266,7 +274,7 @@ describe("createBuildSession — full pipeline (BUILD-01)", () => {
     db.close();
   });
 
-  it("drives researching→planning→building→done and transitions BUILD_IN_PROGRESS→IDLE", async () => {
+  it("drives building→done and transitions BUILD_IN_PROGRESS→IDLE — no research/plan stages", async () => {
     const { machine, transitions } = fakeMachine();
     const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
     const sandbox = fakeSandbox();
@@ -286,7 +294,7 @@ describe("createBuildSession — full pipeline (BUILD-01)", () => {
     const session = createBuildSession(deps);
     await session.startBuild(task);
 
-    expect(stages(views)).toEqual(["researching", "planning", "building", "done"]);
+    expect(stages(views)).toEqual(["building", "done"]);
     expect(transitions).toEqual(["BUILD_IN_PROGRESS", "IDLE"]);
     expect(machine.mode).toBe("IDLE");
     // DEQUEUE-only: the finished task is removed from the queue.
@@ -294,19 +302,24 @@ describe("createBuildSession — full pipeline (BUILD-01)", () => {
     // overlay snapshot collapses after done.
     expect(session.snapshot()).toBeNull();
 
-    // Model policy: research = Sonnet; plan + build = Fable (model undefined);
-    // ONLY the build turn is sandboxed.
-    const research = calls.find((c) => c.agent === "research");
-    const buildCall = calls.find((c) => c.agent === "build" && c.sandbox);
-    const planCall = calls.find((c) => c.agent === "build" && !c.sandbox);
-    expect(research?.model).toBe("sonnet");
-    expect(planCall?.model).toBeUndefined();
-    expect(buildCall?.model).toBeUndefined();
-    expect(buildCall?.spawnClaudeCodeProcess).toBeTypeOf("function");
-    expect(research?.sandbox).toBeUndefined();
+    // EXACTLY ONE agent turn ran — the sandboxed build turn. Model policy is
+    // structural: the spec carries NO model key at all (Fable session default).
+    expect(calls).toHaveLength(1);
+    const spec = calls[0];
+    expect(spec?.agent).toBe("build");
+    expect(spec && "model" in spec).toBe(false);
+    expect(spec?.sandbox).toBeDefined();
+    expect(spec?.spawnClaudeCodeProcess).toBeTypeOf("function");
+    expect(spec?.workspaceDir).toBe("/home/builder/projects/app-1");
+    // SAND-04: the suggestion text travels ONLY as delimited chat-sourced DATA.
+    expect(spec?.userPrompt).toContain(
+      '<task_description source="chat">\nmake a clicker\n</task_description>',
+    );
+    expect(spec?.systemPrompt).toBe(BUILD_SYSTEM_PROMPT_SCAFFOLD);
+    expect(spec?.systemPrompt).not.toContain("make a clicker");
   });
 
-  it("audits one pipeline_stage row per stage (D3-13)", async () => {
+  it("audits one pipeline_stage row per stage (D3-13) — building + done only", async () => {
     const { machine } = fakeMachine();
     const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
     const { deps: comp02 } = fakeComp02(() => APPROVED);
@@ -325,11 +338,11 @@ describe("createBuildSession — full pipeline (BUILD-01)", () => {
 
     const rows = listAuditRecords(db, { limit: 50, eventType: "pipeline_stage" });
     const decisions = rows.map((r) => r.decision).sort();
-    expect(decisions).toEqual(["building", "done", "planning", "researching"].sort());
+    expect(decisions).toEqual(["building", "done"].sort());
   });
 });
 
-describe("createBuildSession — COMP-02 pre-write re-screen (D3-06)", () => {
+describe("createBuildSession — COMP-02 pre-build suggestion re-screen (D3-06)", () => {
   let db: Database.Database;
   beforeEach(() => {
     db = openDb(":memory:");
@@ -338,16 +351,12 @@ describe("createBuildSession — COMP-02 pre-write re-screen (D3-06)", () => {
     db.close();
   });
 
-  it("a REJECTED plan aborts before the build query() runs and returns to IDLE", async () => {
+  it("an APPROVED screen runs the build: one spec with agent 'build', no model key, workspaceDir, delimited suggestion", async () => {
     const { machine } = fakeMachine();
     const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
-    const { deps: comp02 } = fakeComp02((id) =>
-      id.endsWith("-plan")
-        ? { decision: "rejected", category: "tos-risk", rationale: "no" }
-        : APPROVED,
-    );
+    const { deps: comp02, classify } = fakeComp02(() => APPROVED);
     const { sink, views } = capturingSink();
-    const task = queuedTask("task-2", "do something risky");
+    const task = queuedTask("task-ok", "make a snake game");
     const { deps } = makeDeps({
       task,
       db,
@@ -360,23 +369,65 @@ describe("createBuildSession — COMP-02 pre-write re-screen (D3-06)", () => {
 
     await createBuildSession(deps).startBuild(task);
 
-    expect(stages(views)).toEqual(["researching", "planning", "refused"]);
-    // No build turn ran (no sandboxed agent call).
-    expect(calls.some((c) => c.agent === "build" && c.sandbox)).toBe(false);
+    // The pre-build screen received the SUGGESTION text (there is no plan).
+    const planCall = classify.mock.calls.find(([c]) => c.id.endsWith("-plan"));
+    expect(planCall?.[0].text).toBe("make a snake game");
+    // The fake runner received EXACTLY ONE spec — the sandboxed build turn.
+    expect(calls).toHaveLength(1);
+    const spec = calls[0];
+    expect(spec?.agent).toBe("build");
+    expect(spec && "model" in spec).toBe(false);
+    expect(spec?.sandbox).toBeDefined();
+    expect(spec?.workspaceDir).toBe("/home/builder/projects/app-1");
+    expect(spec?.userPrompt).toContain('<task_description source="chat">');
+    expect(spec?.userPrompt).toContain("make a snake game");
+    expect(stages(views)).toEqual(["building", "done"]);
+  });
+
+  it("a REJECTED screen ends refused with comp02Rejected narrated and the AgentRunner NEVER invoked", async () => {
+    const { machine } = fakeMachine();
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02((id) =>
+      id.endsWith("-plan")
+        ? { decision: "rejected", category: "tos-risk", rationale: "no" }
+        : APPROVED,
+    );
+    const { sink, views } = capturingSink();
+    const narr = fakeNarrator();
+    const task = queuedTask("task-2", "do something risky");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    // The pre-build screen rejection is the ONLY stage emit — terminal refused.
+    expect(stages(views)).toEqual(["refused"]);
+    // The AgentRunner was NEVER invoked (zero specs).
+    expect(calls).toHaveLength(0);
+    expect(narr.names).toContain("comp02Rejected");
     expect(machine.mode).toBe("IDLE");
     const comp02Rows = listAuditRecords(db, { limit: 10, eventType: "comp02_decision" });
     expect(comp02Rows[0]?.decision).toBe("rejected");
   });
 
-  it("a HELD plan routes to the review hook and never builds", async () => {
+  it("a HELD screen narrates buildHeld, routes (task, task.text) to the review hook, and NEVER invokes the runner", async () => {
     const { machine } = fakeMachine();
     const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
     const { deps: comp02 } = fakeComp02((id) =>
       id.endsWith("-plan")
-        ? { decision: "held-for-review", category: "self-harm", rationale: "escalate" }
+        ? { decision: "held-for-review", category: "gambling", rationale: "escalate" }
         : APPROVED,
     );
     const { sink, views } = capturingSink();
+    const narr = fakeNarrator();
     const onHeldForReview = vi.fn();
     const task = queuedTask("task-3", "borderline idea");
     const { deps } = makeDeps({
@@ -387,6 +438,7 @@ describe("createBuildSession — COMP-02 pre-write re-screen (D3-06)", () => {
       sandboxAdapter: fakeSandbox(),
       comp02,
       progress: sink,
+      narrator: narr.narrator,
       onHeldForReview,
     });
 
@@ -394,9 +446,101 @@ describe("createBuildSession — COMP-02 pre-write re-screen (D3-06)", () => {
 
     expect(onHeldForReview).toHaveBeenCalledTimes(1);
     expect(onHeldForReview.mock.calls[0]?.[0]).toBe(task);
-    expect(stages(views)).toEqual(["researching", "planning", "refused"]);
-    expect(calls.some((c) => c.agent === "build" && c.sandbox)).toBe(false);
+    // The hook receives the SUGGESTION text (no plan exists anymore).
+    expect(onHeldForReview.mock.calls[0]?.[1]).toBe("borderline idea");
+    expect(narr.names).toContain("buildHeld");
+    expect(stages(views)).toEqual(["refused"]);
+    // The AgentRunner was NEVER invoked (zero specs).
+    expect(calls).toHaveLength(0);
     expect(machine.mode).toBe("IDLE");
+    const comp02Rows = listAuditRecords(db, { limit: 10, eventType: "comp02_decision" });
+    expect(comp02Rows[0]?.decision).toBe("held-for-review");
+  });
+});
+
+describe("createBuildSession — scaffold/continue persistent workspace (quick-0iu)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  it("an unscaffolded workspace gets the SCAFFOLD system prompt and a done build calls markBuilt()", async () => {
+    const { machine } = fakeMachine();
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const ws = fakeWorkspace(false);
+    const task = queuedTask("task-scaffold", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      workspace: ws.workspace,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(calls[0]?.systemPrompt).toBe(BUILD_SYSTEM_PROMPT_SCAFFOLD);
+    expect(ws.markBuilt).toHaveBeenCalledTimes(1);
+  });
+
+  it("a scaffolded workspace gets the CONTINUE system prompt", async () => {
+    const { machine } = fakeMachine();
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const ws = fakeWorkspace(true);
+    const task = queuedTask("task-continue", "make the background red");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      workspace: ws.workspace,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(calls[0]?.systemPrompt).toBe(BUILD_SYSTEM_PROMPT_CONTINUE);
+    // The suggestion text stays delimited DATA in continue mode too (SAND-04).
+    expect(calls[0]?.userPrompt).toContain(
+      '<task_description source="chat">\nmake the background red\n</task_description>',
+    );
+  });
+
+  it("a FAILED build never calls markBuilt() — the next attempt scaffolds again", async () => {
+    const { machine } = fakeMachine();
+    const seq = sequencedBuildRunner([[resultFailed], [resultFailed]]);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const ws = fakeWorkspace(false);
+    const task = queuedTask("task-nofail-flip", "make a page");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: seq.runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      workspace: ws.workspace,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(ws.markBuilt).not.toHaveBeenCalled();
+    // Both attempts (initial + auto-retry) stayed in scaffold mode.
+    expect(seq.calls.every((c) => c.systemPrompt === BUILD_SYSTEM_PROMPT_SCAFFOLD)).toBe(true);
   });
 });
 
@@ -432,13 +576,12 @@ describe("createBuildSession — in-flight COMP-02 output re-screen (D3-07)", ()
     const outputCall = classify.mock.calls.find(([c]) => c.id.endsWith("-output"));
     expect(outputCall).toBeDefined();
     expect(outputCall?.[0].text).toContain("console.log('hello stream')");
-    expect(stages(views)).toEqual(["researching", "planning", "building", "done"]);
+    expect(stages(views)).toEqual(["building", "done"]);
   });
 
   it("a REJECTED output batch aborts the build (abort + sandbox teardown), never reaching done", async () => {
     const { machine } = fakeMachine();
     const { runner } = fakeAgentRunner({
-      ...HAPPY_SCRIPT,
       build: [writeBatch("evil.js", "leak the secrets"), resultSuccess],
     });
     const sandbox = fakeSandbox();
@@ -465,7 +608,7 @@ describe("createBuildSession — in-flight COMP-02 output re-screen (D3-07)", ()
     await createBuildSession(deps).startBuild(task);
 
     // Never reached done; the compliance-failure stage was narrated.
-    expect(stages(views)).toEqual(["researching", "planning", "building", "refused"]);
+    expect(stages(views)).toEqual(["building", "refused"]);
     expect(stages(views)).not.toContain("done");
     // The build's AbortController was aborted + the sandbox was torn down.
     const controller = controllerSpy.mock.calls[0]?.[1];
@@ -480,7 +623,6 @@ describe("createBuildSession — in-flight COMP-02 output re-screen (D3-07)", ()
   it("a BROKEN sandbox (throwing terminate) still finalizes to IDLE — degrades, never crashes (T-03-23)", async () => {
     const { machine } = fakeMachine();
     const { runner } = fakeAgentRunner({
-      ...HAPPY_SCRIPT,
       build: [writeBatch("evil.js", "leak the secrets"), resultSuccess],
     });
     const sandbox = {
@@ -523,7 +665,7 @@ describe("createBuildSession — fail-closed / never-throw (T-03-22)", () => {
 
   it("a model refusal maps to `refused` (D3-08), narrates, and freezes a streamer decision — never silent, never auto-IDLE", async () => {
     const { machine } = fakeMachine();
-    const { runner } = fakeAgentRunner({ ...HAPPY_SCRIPT, build: [modelRefusal] });
+    const { runner } = fakeAgentRunner({ build: [modelRefusal] });
     const { deps: comp02 } = fakeComp02(() => APPROVED);
     const { sink, views } = capturingSink();
     const narr = fakeNarrator();
@@ -544,7 +686,7 @@ describe("createBuildSession — fail-closed / never-throw (T-03-22)", () => {
 
     // Refusal is a first-class narrated event, NOT an error, and it surfaces a
     // decision (the machine stays BUILD_IN_PROGRESS — never a silent auto-IDLE).
-    expect(stages(views).at(-1)).toBe("refused");
+    expect(stages(views)).toEqual(["building", "refused"]);
     expect(machine.mode).toBe("BUILD_IN_PROGRESS");
     expect(session.snapshot()?.stage).toBe("refused");
     expect(narr.names).toContain("buildRefused");
@@ -611,7 +753,7 @@ describe("createBuildSession — fail-closed / never-throw (T-03-22)", () => {
 
   it("a THROWN agent error resolves to `failed`, auto-retries once, then decides — never escapes startBuild", async () => {
     const { machine } = fakeMachine();
-    const { runner } = throwingBuildRunner(HAPPY_SCRIPT);
+    const { runner } = throwingBuildRunner();
     const { deps: comp02 } = fakeComp02(() => APPROVED);
     const { sink, views } = capturingSink();
     const task = queuedTask("task-8", "make a page");
@@ -664,7 +806,7 @@ describe("createBuildSession — streamer retry/skip decision (BUILD-03 / D3-09)
   /** Drive a build to a decision-pending `refused` freeze and return the handle. */
   async function freezeRefused(narr = fakeNarrator()) {
     const { machine } = fakeMachine();
-    const { runner } = fakeAgentRunner({ ...HAPPY_SCRIPT, build: [modelRefusal] });
+    const { runner } = fakeAgentRunner({ build: [modelRefusal] });
     const { deps: comp02 } = fakeComp02(() => APPROVED);
     const { sink, views } = capturingSink();
     const task = queuedTask("task-decide", "make a page");
@@ -700,16 +842,13 @@ describe("createBuildSession — streamer retry/skip decision (BUILD-03 / D3-09)
     expect(skips[0]?.rationale).toContain("gut-feeling");
   });
 
-  it("retryBuild re-runs the build from the approved plan and can reach done", async () => {
-    // The build refuses first (freeze), then the SAME runner's build script is
-    // swapped to succeed on retry via a fresh session is overkill — instead use a
-    // sequenced runner: build turn 1 refuses, build turn 2 (streamer retry) ok.
+  it("retryBuild re-runs the build from the suggestion text WITHOUT re-screening and can reach done", async () => {
     const { machine } = fakeMachine();
     const seq = sequencedBuildRunner([
       [modelRefusal],
       [writeBatch("app.js", "console.log('ok')"), resultSuccess],
     ]);
-    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { deps: comp02, classify } = fakeComp02(() => APPROVED);
     const { sink, views } = capturingSink();
     const narr = fakeNarrator();
     const task = queuedTask("task-retry", "make a page");
@@ -728,6 +867,9 @@ describe("createBuildSession — streamer retry/skip decision (BUILD-03 / D3-09)
     // Frozen on the refusal.
     expect(machine.mode).toBe("BUILD_IN_PROGRESS");
     expect(session.snapshot()?.stage).toBe("refused");
+    const preScreensBeforeRetry = classify.mock.calls.filter(([c]) =>
+      c.id.endsWith("-plan"),
+    ).length;
 
     session.retryBuild(task.id);
     // The retry re-runs the build turn asynchronously through the p-queue.
@@ -736,6 +878,11 @@ describe("createBuildSession — streamer retry/skip decision (BUILD-03 / D3-09)
     expect(stages(views).at(-1)).toBe("done");
     expect(taskQueue.list()).toHaveLength(0);
     expect(narr.names).toContain("buildRetryChosen");
+    // Retry re-runs the build WITHOUT a second pre-build screen (same as the
+    // old approved-plan retry semantics).
+    expect(classify.mock.calls.filter(([c]) => c.id.endsWith("-plan"))).toHaveLength(
+      preScreensBeforeRetry,
+    );
     // A streamer-chosen retry writes a build_retry row.
     expect(
       listAuditRecords(db, { limit: 10, eventType: "build_retry" }).length,
@@ -812,6 +959,7 @@ describe("createBuildSession — concurrency-1 (D3-04)", () => {
       registry: new AbortRegistry(),
       agentRunner: runner,
       sandboxAdapter: fakeSandbox(),
+      workspace: fakeWorkspace().workspace,
       comp02,
       progress: sink,
     };
@@ -819,18 +967,9 @@ describe("createBuildSession — concurrency-1 (D3-04)", () => {
 
     await Promise.all([session.startBuild(t1), session.startBuild(t2)]);
 
-    // All of task-a's stages precede all of task-b's (no interleave).
+    // All of task-a's stages (building, done) precede all of task-b's.
     const order = views.map((v) => v.taskId);
-    expect(order).toEqual([
-      "task-a",
-      "task-a",
-      "task-a",
-      "task-a",
-      "task-b",
-      "task-b",
-      "task-b",
-      "task-b",
-    ]);
+    expect(order).toEqual(["task-a", "task-a", "task-b", "task-b"]);
     expect(machine.mode).toBe("IDLE");
   });
 });
@@ -876,16 +1015,17 @@ describe("createBuildSession — provenance → build_history (HIST-01, 05-01)",
     return { machine, halt: () => (mode = "HALTED") };
   }
 
-  /** A runner that flips the machine to HALTED DURING the research turn. */
-  function haltingResearchRunner(onResearch: () => void): AgentRunner {
+  /** A runner that flips the machine to HALTED DURING the build turn's stream
+   *  (quick-0iu: the research turn no longer exists — the mid-build veto now
+   *  fires from within the surviving sandboxed build stream). */
+  function haltingBuildRunner(onBuild: () => void): AgentRunner {
     return {
-      run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
-        const kind = spec.agent === "research" ? "research" : spec.sandbox ? "build" : "plan";
-        const messages = HAPPY_SCRIPT[kind] ?? [];
+      run(): AsyncIterable<AgentMessage> {
+        const messages = HAPPY_SCRIPT.build ?? [];
         return (async function* () {
           for (const message of messages) {
             yield message as AgentMessage;
-            if (kind === "research") onResearch();
+            onBuild();
           }
         })();
       },
@@ -975,7 +1115,7 @@ describe("createBuildSession — provenance → build_history (HIST-01, 05-01)",
     expect(listBuildHistory(db, { limit: 10 })[0]?.provenance).toBe("vote");
   });
 
-  it("maps a COMP-02 plan rejection to a build_history row with result 'refused'", async () => {
+  it("maps a COMP-02 pre-build rejection to a build_history row with result 'refused'", async () => {
     const { machine } = fakeMachine();
     const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
     const { deps: comp02 } = fakeComp02((id) =>
@@ -1024,7 +1164,7 @@ describe("createBuildSession — provenance → build_history (HIST-01, 05-01)",
 
   it("finalizeAborted writes ZERO build_history rows — an abort is neither success nor narrated failure (CR-01)", async () => {
     const { machine, halt } = haltableMachine();
-    const runner = haltingResearchRunner(halt);
+    const runner = haltingBuildRunner(halt);
     const { deps: comp02 } = fakeComp02(() => APPROVED);
     const { sink } = capturingSink();
     const task = queuedTask("task-hist-7", "vetoed mid-build");
@@ -1038,7 +1178,8 @@ describe("createBuildSession — provenance → build_history (HIST-01, 05-01)",
       progress: sink,
     });
     await createBuildSession(deps).startBuild(task, "vote");
-    // The abort path fired (a teardown row exists) but NO changelog row was written.
+    // The abort path fired (a teardown row exists) but NO changelog row was
+    // written — and no stage "done" was ever emitted.
     expect(machine.mode).toBe("HALTED");
     expect(listAuditRecords(db, { limit: 10, eventType: "sandbox_teardown" })).toHaveLength(1);
     expect(listBuildHistory(db, { limit: 10 })).toHaveLength(0);
@@ -1077,7 +1218,6 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
   it("(a) STRUCTURAL GATE: a COMP-02-rejected batch contributes ZERO feed bytes — path and content absent from the serialized wire", async () => {
     const { machine } = fakeMachine();
     const { runner } = fakeAgentRunner({
-      ...HAPPY_SCRIPT,
       build: [writeBatch("sandbox/evil.txt", "FORBIDDEN-PAYLOAD"), resultSuccess],
     });
     const { deps: comp02 } = fakeComp02((id) =>
@@ -1113,7 +1253,6 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
   it("(b) an APPROVED batch lands 'Writing <path>' plus the capped snippet on the feed", async () => {
     const { machine } = fakeMachine();
     const { runner } = fakeAgentRunner({
-      ...HAPPY_SCRIPT,
       build: [writeBatch("sandbox/evil.txt", "FORBIDDEN-PAYLOAD"), resultSuccess],
     });
     const { deps: comp02 } = fakeComp02(() => APPROVED);
@@ -1136,7 +1275,7 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
     const lines = feed.list();
     expect(lines).toContainEqual({ kind: "activity", text: "Writing sandbox/evil.txt" });
     expect(lines).toContainEqual({ kind: "snippet", text: "FORBIDDEN-PAYLOAD" });
-    // The full happy-path shape around it: title → stage beats → done caption.
+    // The full happy-path shape around it: title → building beat → done caption.
     expect(lines[0]).toEqual({ kind: "title", text: "NOW BUILDING: make a page" });
     expect(lines.at(-1)).toEqual({ kind: "stage", text: "Live on screen now" });
   });
@@ -1159,7 +1298,6 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
       },
     };
     const { runner } = fakeAgentRunner({
-      ...HAPPY_SCRIPT,
       build: [multiEditBatch, resultSuccess],
     });
     const { deps: comp02 } = fakeComp02(() => APPROVED);
@@ -1198,7 +1336,7 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
   });
 
   it("(d) abort semantics: no 'Live on screen now' ever; lines freeze, then the NEXT build clears them", async () => {
-    // Halt DURING the first build's research turn (the finalizeAborted
+    // Halt DURING the first build's sandboxed build turn (the finalizeAborted
     // pattern), then run a clean second build to prove clear-on-next-start.
     let mode: StreamMode = "IDLE";
     const machine: BuildMachineView = {
@@ -1212,15 +1350,14 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
     };
     let halted = false;
     const runner: AgentRunner = {
-      run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
-        const kind = spec.agent === "research" ? "research" : spec.sandbox ? "build" : "plan";
-        const messages = HAPPY_SCRIPT[kind] ?? [];
+      run(): AsyncIterable<AgentMessage> {
+        const messages = HAPPY_SCRIPT.build ?? [];
         return (async function* () {
           for (const message of messages) {
             yield message as AgentMessage;
-            if (kind === "research" && !halted) {
+            if (!halted) {
               halted = true;
-              mode = "HALTED"; // streamer veto mid-research (first build only)
+              mode = "HALTED"; // streamer veto mid-build (first build only)
             }
           }
         })();
@@ -1246,7 +1383,7 @@ describe("createBuildSession — /builder feed taps (quick-x7d)", () => {
     // The aborted build's feed just STOPPED: frozen lines, no false BUILT IT.
     expect(mode).toBe("HALTED");
     const frozen = feed.list();
-    expect(frozen.length).toBeGreaterThanOrEqual(2); // title + researching beat
+    expect(frozen.length).toBeGreaterThanOrEqual(2); // title + building beat
     expect(frozen[0]).toEqual({ kind: "title", text: "NOW BUILDING: vetoed build" });
     expect(JSON.stringify(frozen)).not.toContain("Live on screen now");
 

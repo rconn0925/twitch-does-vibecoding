@@ -7,13 +7,14 @@
  * test-reachable module-top-level position. vitest injects a fake AgentRunner
  * instead and this file is never loaded in a test run.
  *
- * It wraps each AgentRunSpec into one `query()` turn:
- *   - research turns run host-side on Sonnet with a read-only tool allowlist
- *     (RESEARCH Open Question 1);
- *   - build turns run on the Fable session default (model undefined) INSIDE the
- *     WSL2 sandbox — spec.spawnClaudeCodeProcess redirects the Claude Code
- *     engine into the distro and buildSandboxOptions() applies SAND-01/02/03
- *     (failIfUnavailable: true → never silently unsandboxed, T-03-23).
+ * It wraps each AgentRunSpec into one `query()` turn. Since quick-0iu
+ * (straight-to-build) there are no research/plan turns: EVERY live pipeline
+ * turn is the sandboxed Fable build turn — spec.spawnClaudeCodeProcess
+ * redirects the Claude Code engine into the WSL2 distro and
+ * buildSandboxOptions() applies SAND-01/02/03 (failIfUnavailable: true → never
+ * silently unsandboxed, T-03-23). The build inherits the Fable session default
+ * (AgentRunSpec carries no model field — the pipeline structurally cannot
+ * request an override; the Sonnet classifier gate is a separate surface).
  *
  * The orchestrator-authored systemPrompt is passed by BARE REFERENCE (never an
  * interpolating template literal) so the SAND-04 prompt-boundary invariant
@@ -25,25 +26,11 @@ import { buildSandboxOptions } from "./sandbox-process.js";
 import type { AgentMessage, AgentRunner, AgentRunSpec } from "./types.js";
 
 /**
- * Read-only tool allowlist for the host-side research turn (RESEARCH Open Q1).
- *
- * CR-02: WebSearch/WebFetch are DELIBERATELY absent. The research turn runs
- * UNSANDBOXED on the host with the process cwd that holds the very secrets the
- * sandbox design protects (`.env`, `./data/twitch-token.json`, the audit DB) and
- * its only input is untrusted, chat-derived `task.text`. Read/Grep/Glob alone
- * cannot exfiltrate; pairing them with WebFetch would give a
- * read-then-egress channel a prompt injection could drive. Breaking that pairing
- * structurally (allowlist, not prompt wording) removes the exfiltration channel.
- * Sandboxing the research turn too is the ideal, deferred to Wave-0 sandbox
- * validation so the test path stays on fakes (no real WSL2 dependency).
- */
-const RESEARCH_TOOLS = ["Read", "Grep", "Glob"];
-
-/**
- * Tools structurally FORBIDDEN on every unsandboxed host turn (research + plan):
- * network egress plus host write/exec. A defensive denylist alongside the
- * allowlist so the host tool boundary never depends on an SDK default (CR-02 /
- * WR-01) — even if a future SDK widens the implicit default tool set.
+ * Tools structurally FORBIDDEN on any unsandboxed host turn: network egress
+ * plus host write/exec. The live pipeline no longer runs host-side turns, but
+ * the denylist stays as structural defense-in-depth (CR-02 / WR-01) — if a
+ * future spec ever reaches the unsandboxed fallback branch below, the host
+ * tool boundary never depends on an SDK default.
  */
 const HOST_TURN_DISALLOWED = [
   "WebFetch",
@@ -67,19 +54,23 @@ export function createSdkAgentRunner(): AgentRunner {
         systemPrompt: spec.systemPrompt,
         abortController: spec.abortController,
       };
-      if (spec.model !== undefined) options.model = spec.model;
       if (spec.sandbox && spec.spawnClaudeCodeProcess) {
         // Sandboxed build turn: WSL2 process isolation IS the boundary — the
         // Claude Code engine runs inside the distro (SAND-01/02/03).
         options.sandbox = buildSandboxOptions();
         options.spawnClaudeCodeProcess = spec.spawnClaudeCodeProcess;
-      } else if (spec.agent === "research") {
-        // Unsandboxed host research turn: read-only, NO egress (CR-02).
-        options.allowedTools = RESEARCH_TOOLS;
-        options.disallowedTools = HOST_TURN_DISALLOWED;
+        // Persistent workspace (quick-0iu): Options.cwd flows into the
+        // SpawnOptions the SDK hands spawnClaudeCodeProcess (verified against
+        // the installed SDK's sdk.mjs — the transport destructures `cwd` from
+        // its options and passes `{ command, args, cwd, env, signal }`).
+        // sandbox-process.ts:184 translates a POSIX-absolute cwd to
+        // `wsl --cd <cwd>` (anything else falls back to `~`) — that file is
+        // untouched; this line is the only new hand-off.
+        options.cwd = spec.workspaceDir;
       } else {
-        // Unsandboxed host plan turn: text-only — NO tools reachable on the host
-        // (WR-01). Do not depend on an SDK default for this safety boundary.
+        // Unsandboxed host turn (unreachable from the live pipeline): text-only
+        // — NO tools reachable on the host (WR-01). Kept as defense-in-depth;
+        // do not depend on an SDK default for this safety boundary.
         options.allowedTools = [];
         options.disallowedTools = HOST_TURN_DISALLOWED;
       }

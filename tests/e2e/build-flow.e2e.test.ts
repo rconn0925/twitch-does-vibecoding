@@ -7,12 +7,14 @@ import { BUILD_STAGE_CHANGED } from "../../src/overlay/server.js";
 import type { PipelineStage } from "../../src/shared/types.js";
 
 /**
- * MVP e2e (plan 03-06): the FULL happy-path slice, now GREEN.
+ * MVP e2e (plan 03-06, reshaped by quick-0iu straight-to-build): the FULL
+ * happy-path slice, GREEN.
  *
- *   pooled winner → funnel → machine enters BUILD_IN_PROGRESS → stages emit
- *   researching → planning → (COMP-02 re-screens the plan and approves) →
- *   building → done → machine returns to IDLE; the overlay reflects the live
- *   stage; a refused build narrates `refused` and never silently stalls.
+ *   pooled winner → funnel → machine enters BUILD_IN_PROGRESS → COMP-02
+ *   re-screens the winning SUGGESTION text and approves → the SINGLE sandboxed
+ *   build turn runs → building → done → machine returns to IDLE; the overlay
+ *   reflects the live stage; a refused build narrates `refused` and never
+ *   silently stalls. No research/plan turns exist anymore.
  *
  * Driven against createApp's injected-fake seams (fake AgentRunner, fake
  * SandboxAdapter, fake DevServerProbe, fakeClassifier) — NO real WSL2 / query()
@@ -24,10 +26,6 @@ import type { PipelineStage } from "../../src/shared/types.js";
 type AppHandle = Awaited<ReturnType<typeof createApp>>;
 
 // ── SDK-ish message fixtures (plain objects; no SDK type import) ──────────────
-const assistantText = (text: string) => ({
-  type: "assistant",
-  message: { content: [{ type: "text", text }] },
-});
 const writeBatch = (filePath: string, content: string) => ({
   type: "assistant",
   message: {
@@ -38,57 +36,37 @@ const resultSuccess = { type: "result", subtype: "success", is_error: false };
 const modelRefusal = { subtype: "model_refusal_no_fallback" };
 
 const PIPELINE_FIXTURES: unknown[] = [
-  { hook_event_name: "SubagentStart", agent_type: "research" },
-  { type: "system", subtype: "task_progress", subagent_type: "plan" },
   { hook_event_name: "SubagentStart", agent_type: "build" },
   { type: "result", subtype: "success", is_error: false },
 ];
 
-/** A fake AgentRunner whose sandboxed BUILD turn blocks on a gate the test releases. */
+/** A fake AgentRunner whose single sandboxed BUILD turn blocks on a gate the test releases. */
 function gatedHappyRunner() {
   let release: () => void = () => {};
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
+  let specsConsumed = 0;
   const runner: AgentRunner = {
-    run(spec) {
-      const sandboxed = spec.sandbox !== undefined;
+    run() {
+      specsConsumed += 1;
       return (async function* () {
-        if (spec.agent === "research") {
-          yield assistantText("research: a small counter web app") as never;
-          yield resultSuccess as never;
-        } else if (spec.agent === "build" && !sandboxed) {
-          yield assistantText(
-            "Build plan: create index.html with a button that increments a counter and shows the total.",
-          ) as never;
-          yield resultSuccess as never;
-        } else {
-          // Sandboxed build turn — pause so the test can observe `building`.
-          await gate;
-          yield writeBatch("index.html", "<button id=b>count: 0</button>") as never;
-          yield resultSuccess as never;
-        }
+        // The one sandboxed build turn — pause so the test can observe `building`.
+        await gate;
+        yield writeBatch("index.html", "<button id=b>count: 0</button>") as never;
+        yield resultSuccess as never;
       })();
     },
   };
-  return { runner, release: () => release() };
+  return { runner, release: () => release(), specsConsumed: () => specsConsumed };
 }
 
 /** A fake AgentRunner whose BUILD turn refuses (model refusal). */
 function refusingRunner(): AgentRunner {
   return {
-    run(spec) {
-      const sandboxed = spec.sandbox !== undefined;
+    run() {
       return (async function* () {
-        if (spec.agent === "research") {
-          yield assistantText("research notes") as never;
-          yield resultSuccess as never;
-        } else if (spec.agent === "build" && !sandboxed) {
-          yield assistantText("Build plan: make a small page.") as never;
-          yield resultSuccess as never;
-        } else {
-          yield modelRefusal as never;
-        }
+        yield modelRefusal as never;
       })();
     },
   };
@@ -160,14 +138,18 @@ describe("build-flow e2e (MVP happy path) — 03-06 GREEN", () => {
   let finalMachineMode = "";
 
   const recordedIds: string[] = [];
+  /** (id, text, runner-specs-consumed-at-call) per classify call. */
+  const recordedCalls: Array<{ id: string; text: string; specsAtCall: number }> = [];
+  let gated: ReturnType<typeof gatedHappyRunner>;
 
   beforeAll(async () => {
-    const gated = gatedHappyRunner();
+    gated = gatedHappyRunner();
     app = await createApp({
       dbPath: ":memory:",
       port: 0,
       fakeClassifier: (c) => {
         recordedIds.push(c.id);
+        recordedCalls.push({ id: c.id, text: c.text, specsAtCall: gated.specsConsumed() });
         return { decision: "approved", category: null, rationale: "test: approved" };
       },
       agentRunner: gated.runner,
@@ -205,9 +187,9 @@ describe("build-flow e2e (MVP happy path) — 03-06 GREEN", () => {
     await app.close();
   });
 
-  it("encodes the observable stage sequence the fake AgentRunner emits (research→plan→build→done)", () => {
+  it("encodes the observable stage sequence the fake AgentRunner emits (build→done)", () => {
     const stages = PIPELINE_FIXTURES.map((m) => translate(m)).filter((s) => s !== null);
-    expect(stages).toEqual(["researching", "planning", "building", "done"]);
+    expect(stages).toEqual(["building", "done"]);
   });
 
   it("boots the full app harness the orchestrator slice plugs into (createApp injected-fake seam)", async () => {
@@ -219,13 +201,20 @@ describe("build-flow e2e (MVP happy path) — 03-06 GREEN", () => {
     expect(midMachineMode).toBe("BUILD_IN_PROGRESS");
   });
 
-  it("emits researching → planning pipeline stages to the progress sink (03-06)", () => {
-    expect(stagesSeen.slice(0, 2)).toEqual(["researching", "planning"]);
+  it("goes STRAIGHT to build: the FIRST stage seen is 'building' — no researching/planning ever emits", () => {
+    expect(stagesSeen[0]).toBe("building");
+    expect(stagesSeen).not.toContain("researching");
+    expect(stagesSeen).not.toContain("planning");
   });
 
-  it("COMP-02 re-screens the generated plan and approves BEFORE any build write (03-04)", () => {
-    // The plan re-screen ran (a `-plan` candidate hit the gate) BEFORE the build
-    // wrote anything (no `-output` in-flight re-screen had happened yet).
+  it("COMP-02 re-screens the winning SUGGESTION text BEFORE any runner spec is consumed (03-04 / quick-0iu)", () => {
+    // The pre-build re-screen ran (a `-plan` candidate hit the gate) with the
+    // raw suggestion text as input, BEFORE the AgentRunner consumed any spec —
+    // and no `-output` in-flight re-screen had happened yet at the gate.
+    const preScreen = recordedCalls.find((c) => c.id.endsWith("-plan"));
+    expect(preScreen).toBeDefined();
+    expect(preScreen?.text).toBe("make a counter app");
+    expect(preScreen?.specsAtCall).toBe(0);
     expect(classifyIdsAtGate.some((id) => id.endsWith("-plan"))).toBe(true);
     expect(classifyIdsAtGate.some((id) => id.endsWith("-output"))).toBe(false);
     const rows = listAuditRecords(app.db, { limit: 20, eventType: "comp02_decision" });
@@ -233,7 +222,7 @@ describe("build-flow e2e (MVP happy path) — 03-06 GREEN", () => {
   });
 
   it("emits building → done and returns the machine to IDLE (03-06)", () => {
-    expect(stagesSeen).toEqual(["researching", "planning", "building", "done"]);
+    expect(stagesSeen).toEqual(["building", "done"]);
     expect(finalMachineMode).toBe("IDLE");
   });
 

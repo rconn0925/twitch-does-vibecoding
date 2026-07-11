@@ -2,11 +2,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ADVERSARIAL_FIXTURES } from "../../src/compliance/fixtures/adversarial.fixtures.js";
 import {
+  BUILD_SYSTEM_PROMPT_CONTINUE,
+  BUILD_SYSTEM_PROMPT_SCAFFOLD,
+  type BuildPromptMode,
   buildBuildPrompt,
-  buildResearchPrompt,
-  RESEARCH_SYSTEM_PROMPT,
 } from "../../src/orchestrator/prompt-boundary.js";
-import type { SuggestionCandidate } from "../../src/shared/types.js";
 import { allMatches, collectFiles, type ScannedFile } from "./scan-helpers.js";
 
 /**
@@ -35,18 +35,6 @@ import { allMatches, collectFiles, type ScannedFile } from "./scan-helpers.js";
 
 const SRC_DIR = fileURLToPath(new URL("../../src", import.meta.url));
 
-/** Build a chat-sourced candidate from raw untrusted text. */
-function candidateFrom(id: string, text: string): SuggestionCandidate {
-  return {
-    id,
-    source: "chat",
-    kind: "suggestion",
-    twitchUsername: "adv_viewer",
-    text,
-    submittedAtMs: 1_700_000_000_000,
-  };
-}
-
 /** Extract the text between an open/close delimiter, or null if not framed. */
 function between(haystack: string, open: string, close: string): string | null {
   const afterOpen = haystack.split(open)[1];
@@ -56,6 +44,17 @@ function between(haystack: string, open: string, close: string): string | null {
 }
 
 // ─── (1) Prompt-boundary fixture suite (reused Phase 1 adversarial fixtures) ──
+//
+// quick-0iu made this suite MORE load-bearing: the research/plan turns are
+// gone, so the build prompt is fed RAW CHAT TEXT directly. The FULL adversarial
+// sweep therefore runs against buildBuildPrompt in BOTH modes (scaffold +
+// continue), keeping the system-prompt-invariance AND outsideFrame containment
+// assertions from the retired research-prompt block.
+
+const BUILD_MODES: Array<{ mode: BuildPromptMode; fixed: string }> = [
+  { mode: "scaffold", fixed: BUILD_SYSTEM_PROMPT_SCAFFOLD },
+  { mode: "continue", fixed: BUILD_SYSTEM_PROMPT_CONTINUE },
+];
 
 describe("SAND-04 prompt-boundary: chat text never reaches instruction position", () => {
   it("reuses a NON-EMPTY set of Phase 1 adversarial fixtures", () => {
@@ -64,47 +63,33 @@ describe("SAND-04 prompt-boundary: chat text never reaches instruction position"
     expect(ADVERSARIAL_FIXTURES.length).toBeGreaterThan(0);
   });
 
-  it.each(
-    ADVERSARIAL_FIXTURES,
-  )("$id: research systemPrompt is injection-invariant + text is delimited-only", (fixture) => {
-    const { systemPrompt, userPrompt } = buildResearchPrompt(
-      candidateFrom(fixture.id, fixture.text),
-    );
+  for (const { mode, fixed } of BUILD_MODES) {
+    it.each(
+      ADVERSARIAL_FIXTURES,
+    )(`$id: ${mode} build systemPrompt is injection-invariant + text is delimited-only`, (fixture) => {
+      const { systemPrompt, userPrompt } = buildBuildPrompt(fixture.text, mode);
 
-    // (a) system prompt unchanged from the injection-free baseline.
-    expect(systemPrompt).toBe(RESEARCH_SYSTEM_PROMPT);
-    // The untrusted fixture text never leaks into the system prompt.
-    expect(systemPrompt).not.toContain(fixture.text);
+      // (a) system prompt unchanged from the injection-free baseline — and
+      // byte-identical to the fixed, orchestrator-authored constant.
+      expect(systemPrompt).toBe(buildBuildPrompt("a benign viewer suggestion", mode).systemPrompt);
+      expect(systemPrompt).toBe(fixed);
+      // The untrusted fixture text never leaks into the system prompt.
+      expect(systemPrompt).not.toContain(fixture.text);
 
-    // (b) the fixture text is fully contained within the delimiter frame of
-    // the user turn, and nowhere else in the user prompt.
-    const inner = between(userPrompt, '<task_description source="chat">', "</task_description>");
-    expect(inner).not.toBeNull();
-    expect(inner).toContain(fixture.text);
+      // (b) the fixture text is fully contained within the delimiter frame of
+      // the user turn, and nowhere else in the user prompt.
+      const inner = between(userPrompt, '<task_description source="chat">', "</task_description>");
+      expect(inner).not.toBeNull();
+      expect(inner).toContain(fixture.text);
 
-    // Removing the delimited region leaves NO trace of the fixture text.
-    const outsideFrame = userPrompt.replace(
-      `<task_description source="chat">\n${fixture.text}\n</task_description>`,
-      "",
-    );
-    expect(outsideFrame).not.toContain(fixture.text);
-  });
-
-  it.each(
-    ADVERSARIAL_FIXTURES,
-  )("$id: build systemPrompt is injection-invariant when the SAME text is a plan", (fixture) => {
-    // Same discipline for the build agent: even a malicious "plan" text can
-    // only ever appear inside the <build_plan> data frame.
-    const baseline = buildBuildPrompt("a benign approved plan").systemPrompt;
-    const { systemPrompt, userPrompt } = buildBuildPrompt(fixture.text);
-
-    expect(systemPrompt).toBe(baseline);
-    expect(systemPrompt).not.toContain(fixture.text);
-
-    const inner = between(userPrompt, '<build_plan source="orchestrator">', "</build_plan>");
-    expect(inner).not.toBeNull();
-    expect(inner).toContain(fixture.text);
-  });
+      // Removing the delimited region leaves NO trace of the fixture text.
+      const outsideFrame = userPrompt.replace(
+        `<task_description source="chat">\n${fixture.text}\n</task_description>`,
+        "",
+      );
+      expect(outsideFrame).not.toContain(fixture.text);
+    });
+  }
 });
 
 // ─── (2) Agent-SDK-confinement source scan (mirrors single-funnel check (c)) ──

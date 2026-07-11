@@ -21,10 +21,6 @@ import type { PipelineStage } from "../../src/shared/types.js";
 type AppHandle = Awaited<ReturnType<typeof createApp>>;
 
 // ── SDK-ish message fixtures (plain objects; no SDK type import) ──────────────
-const assistantText = (text: string) => ({
-  type: "assistant",
-  message: { content: [{ type: "text", text }] },
-});
 const writeBatch = (filePath: string, content: string) => ({
   type: "assistant",
   message: {
@@ -35,21 +31,12 @@ const resultSuccess = { type: "result", subtype: "success", is_error: false };
 const resultFailed = { type: "result", subtype: "error_max_turns", is_error: true };
 const modelRefusal = { subtype: "model_refusal_no_fallback" };
 
-/** research + plan happy; the SANDBOXED build turn yields `buildStream` each call. */
+/** Every spec is the single sandboxed build turn (quick-0iu) — yields `buildStream` each call. */
 function buildTurnRunner(buildStream: unknown[]): AgentRunner {
   return {
-    run(spec) {
-      const sandboxed = spec.sandbox !== undefined;
+    run() {
       return (async function* () {
-        if (spec.agent === "research") {
-          yield assistantText("research notes") as never;
-          yield resultSuccess as never;
-        } else if (spec.agent === "build" && !sandboxed) {
-          yield assistantText("Build plan: make a small page.") as never;
-          yield resultSuccess as never;
-        } else {
-          for (const m of buildStream) yield m as never;
-        }
+        for (const m of buildStream) yield m as never;
       })();
     },
   };
@@ -62,20 +49,11 @@ function gatedBuildRunner() {
     release = resolve;
   });
   const runner: AgentRunner = {
-    run(spec) {
-      const sandboxed = spec.sandbox !== undefined;
+    run() {
       return (async function* () {
-        if (spec.agent === "research") {
-          yield assistantText("research notes") as never;
-          yield resultSuccess as never;
-        } else if (spec.agent === "build" && !sandboxed) {
-          yield assistantText("Build plan: make a small page.") as never;
-          yield resultSuccess as never;
-        } else {
-          await gate; // hold `building` open until the test halts + releases
-          yield writeBatch("index.html", "<h1>ok</h1>") as never;
-          yield resultSuccess as never;
-        }
+        await gate; // hold `building` open until the test halts + releases
+        yield writeBatch("index.html", "<h1>ok</h1>") as never;
+        yield resultSuccess as never;
       })();
     },
   };

@@ -13,10 +13,10 @@ import type { Comp02Deps } from "../../src/orchestrator/comp02.js";
 import type {
   AgentMessage,
   AgentRunner,
-  AgentRunSpec,
   BuildMachineView,
   ProgressSink,
   SandboxAdapter,
+  WorkspaceView,
 } from "../../src/orchestrator/types.js";
 import { TaskQueue } from "../../src/queue/task-queue.js";
 import type {
@@ -42,10 +42,6 @@ import type {
  */
 
 // ── SDK-ish message fixtures (plain objects; no SDK type import) ─────────────
-const assistantText = (text: string) => ({
-  type: "assistant",
-  message: { content: [{ type: "text", text }] },
-});
 const writeBatch = (filePath: string, content: string) => ({
   type: "assistant",
   message: {
@@ -54,10 +50,8 @@ const writeBatch = (filePath: string, content: string) => ({
 });
 const resultSuccess = { type: "result", subtype: "success", is_error: false };
 
-type Script = { research?: unknown[]; plan?: unknown[]; build?: unknown[] };
+type Script = { build?: unknown[] };
 const HAPPY_SCRIPT: Script = {
-  research: [assistantText("research notes about the feature"), resultSuccess],
-  plan: [assistantText("1. build a page\n2. wire a button"), resultSuccess],
   build: [writeBatch("app.js", "console.log('hello stream')"), resultSuccess],
 };
 
@@ -126,12 +120,11 @@ function haltableMachine(): { machine: BuildMachineView; halt: () => void } {
   };
 }
 
-/** Fake AgentRunner: research vs plan vs (sandboxed) build streams by spec shape. */
+/** Fake AgentRunner: every spec is the single sandboxed build turn (quick-0iu). */
 function fakeAgentRunner(script: Script): AgentRunner {
   return {
-    run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
-      const kind = spec.agent === "research" ? "research" : spec.sandbox ? "build" : "plan";
-      const messages = script[kind] ?? [];
+    run(): AsyncIterable<AgentMessage> {
+      const messages = script.build ?? [];
       return (async function* () {
         for (const message of messages) yield message as AgentMessage;
       })();
@@ -139,16 +132,17 @@ function fakeAgentRunner(script: Script): AgentRunner {
   };
 }
 
-/** A runner that flips the machine to HALTED DURING the research turn. */
-function haltingResearchRunner(onResearch: () => void): AgentRunner {
+/** A runner that flips the machine to HALTED DURING the build turn's stream
+ *  (quick-0iu: the research turn no longer exists — the mid-build veto now
+ *  fires from within the surviving sandboxed build stream). */
+function haltingBuildRunner(onBuild: () => void): AgentRunner {
   return {
-    run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
-      const kind = spec.agent === "research" ? "research" : spec.sandbox ? "build" : "plan";
-      const messages = HAPPY_SCRIPT[kind] ?? [];
+    run(): AsyncIterable<AgentMessage> {
+      const messages = HAPPY_SCRIPT.build ?? [];
       return (async function* () {
         for (const message of messages) {
           yield message as AgentMessage;
-          if (kind === "research") onResearch();
+          onBuild();
         }
       })();
     },
@@ -157,6 +151,25 @@ function haltingResearchRunner(onResearch: () => void): AgentRunner {
 
 const fakeSandbox = (): SandboxAdapter =>
   ({ spawn: () => ({}), terminate: async () => {} }) as unknown as SandboxAdapter;
+
+/** Fake persistent-workspace seam (quick-0iu): app-1, mutable scaffolded flag. */
+function fakeWorkspaceView(): WorkspaceView {
+  let scaffolded = false;
+  let generation = 1;
+  return {
+    dir: () => `/home/builder/projects/app-${generation}`,
+    scaffolded: () => scaffolded,
+    markBuilt: () => {
+      scaffolded = true;
+    },
+    newProject: () => {
+      generation += 1;
+      scaffolded = false;
+      return generation;
+    },
+    generation: () => generation,
+  };
+}
 
 function fakeComp02(byId: (id: string) => GateResult): Comp02Deps {
   return { classify: async (candidate: SuggestionCandidate) => byId(candidate.id) };
@@ -180,6 +193,7 @@ function makeDeps(over: {
     registry: new AbortRegistry(),
     agentRunner: over.agentRunner,
     sandboxAdapter: fakeSandbox(),
+    workspace: fakeWorkspaceView(),
     comp02: over.comp02,
     progress: nullSink,
   };
@@ -217,7 +231,7 @@ async function driveBuild(
   await createBuildSession(deps).startBuild(task, args.provenance);
 }
 
-/** Drive a build that is VETOED mid-research → finalizeAborted (zero rows). */
+/** Drive a build that is VETOED mid-build → finalizeAborted (zero rows). */
 async function driveAborted(
   db: Database.Database,
   args: { taskId: string; title: string },
@@ -228,7 +242,7 @@ async function driveAborted(
     task,
     db,
     machine,
-    agentRunner: haltingResearchRunner(halt),
+    agentRunner: haltingBuildRunner(halt),
     comp02: fakeComp02(() => APPROVED),
   });
   await createBuildSession(deps).startBuild(task, "vote");
