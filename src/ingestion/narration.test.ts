@@ -389,12 +389,18 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       n.windowOpenedDonation("alice", "$5.00", 60_000);
       n.windowOpenedChannelPoints("bob", "Take the Wheel", 30_000);
       expect(sent).toEqual([
-        "@alice tipped $5.00 and takes the wheel — free reign for 1:00! Type !build <your instruction> to use it.",
-        "@bob redeemed Take the Wheel — direct control for 0:30! Type !build <your instruction> to use it.",
+        "@alice tipped $5.00 and takes the wheel — free reign for 1:00! Type !build or !suggest <your instruction> — it goes straight to the build queue.",
+        "@bob redeemed Take the Wheel — direct control for 0:30! Type !build or !suggest <your instruction> — it goes straight to the build queue.",
       ]);
       // A channel-points redeemer is NEVER labelled a "donor"/"tipped".
       expect(sent[1]).not.toContain("tipped");
       expect(sent[1]).toContain("redeemed");
+      // Donor-privilege directive (quick-260711-raz): BOTH commands are
+      // announced on window open — !suggest aliases !build during a window.
+      for (const message of sent) {
+        expect(message).toContain("!build");
+        expect(message).toContain("!suggest");
+      }
     });
 
     it("renders denial, held, accepted, 30s, expiry, revoke templates verbatim", () => {
