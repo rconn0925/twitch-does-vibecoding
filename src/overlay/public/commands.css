@@ -11,7 +11,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--block-gap);
-  padding: var(--safe-margin);
+  /* Thin side padding so the panels nearly fill the card width (the card is
+     scaled into a narrow right-column rail in the live scene, where the chat
+     is matched to the panel width); extra top padding leaves room for the
+     frame's floating COMMANDS label above the first panel. */
+  padding: 40px 10px 24px;
   box-sizing: border-box;
 }
 
