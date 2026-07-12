@@ -81,6 +81,12 @@
   // failed/refused caption is amber (honest but calm) — never red on stream.
   const AMBER_STAGES = new Set(["failed", "refused"]);
 
+  // quick-ur2 command layer C: the CLIENT-side chip label for a candidate's
+  // CandidateKind. The enum string is the ONLY thing on the wire; this fixed
+  // lookup composes the human label. An unknown/missing kind yields undefined →
+  // NO chip (fail closed) — we never build a chip for an unrecognized kind.
+  const KIND_CHIP = { "project-switch": "NEW", suggestion: "TWEAK", swap: "SWAP", revert: "REVERT" };
+
   // --- tiny DOM helpers (textContent-only construction, from console.js) ---
 
   function el(tag, className, text) {
@@ -222,6 +228,13 @@
       countdown.classList.add("countdown-final");
     }
     banner.appendChild(countdown);
+
+    // quick-ur2 T5: a fixed muted usage hint telling the donor HOW to spend
+    // their window. FREE-REIGN-only: the DEMOCRATIC and CHAOS branches above
+    // both return before reaching here, so this appends solely while a control
+    // window is active. Fixed, orchestrator-authored copy — NO amount, NO
+    // donation-message text ever rides here (T-04-12/13 hold).
+    banner.appendChild(el("span", "banner-hint", "!build or !suggest — straight to the queue"));
   }
 
   // --- vote panel (lower-left; visible while a round is open or the winner beat runs) ---
@@ -272,6 +285,13 @@
     top.appendChild(
       el("span", "vote-candidate-title", truncate(entry.candidate.text, VOTE_TITLE_MAX)),
     );
+    // quick-ur2: kind chip (NEW/TWEAK/SWAP/REVERT) from the closed enum already
+    // on the wire (entry.candidate.kind). Fail-closed: an unknown/missing kind
+    // yields no label → no chip. textContent-only via el().
+    const kindLabel = KIND_CHIP[entry.candidate.kind];
+    if (kindLabel) {
+      top.appendChild(el("span", "kind-chip", kindLabel));
+    }
     if (beatActive && entry.option === round.winnerOption) {
       top.appendChild(el("span", "winner-label", "WINNER"));
     }
@@ -317,9 +337,10 @@
     if (sp) {
       phaseBanner.hidden = false;
       phaseBanner.appendChild(el("span", "phase-title", "SUGGESTIONS OPEN"));
-      phaseBanner.appendChild(
-        el("span", "phase-hint", "type !suggest — new idea or a tweak to what's on screen"),
-      );
+      // quick-ur2 T4: shortened so the 24px hint fits ONE line inside the
+      // 900px phase banner at 1080p (the old copy truncated mid-word). Fixed,
+      // orchestrator-authored copy — never chat-derived.
+      phaseBanner.appendChild(el("span", "phase-hint", "type !suggest — an idea or a tweak"));
       const remaining = sp.endsAtMs - Date.now();
       const countdown = el("span", "phase-countdown", formatRemaining(remaining));
       if (remaining <= FINAL_COUNTDOWN_MS) {

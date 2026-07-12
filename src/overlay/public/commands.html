@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Commands — Twitch Does Vibecoding</title>
+    <link rel="stylesheet" href="/overlay.css" />
+    <link rel="stylesheet" href="/commands.css" />
+  </head>
+  <body>
+    <!--
+      Static command-reference OBS browser source (quick-ur2, command layer C).
+      PURE STATIC: zero JS, no /api/state, no ws — the copy below is fixed,
+      server-authored text baked directly into markup (safe here BECAUSE it is a
+      static file, never chat-derived). Every command token is guarded against
+      parser drift by commands-page.test.ts: the page can only ever advertise
+      tokens parseCommand actually recognizes (fail-closed). Two backed panels
+      (no bare text over video); palette + type come from overlay.css :root.
+    -->
+    <main class="cmd-page">
+      <section class="cmd-group">
+        <h2 class="cmd-group-label">VOTE COMMANDS</h2>
+        <ul class="cmd-list">
+          <li class="cmd-row">
+            <span class="cmd-token">!build &lt;idea&gt;</span>
+            <span class="cmd-desc">start a brand-new project</span>
+          </li>
+          <li class="cmd-row">
+            <span class="cmd-token">!suggest &lt;tweak&gt;</span>
+            <span class="cmd-desc">change or add to what's on screen</span>
+          </li>
+          <li class="cmd-row">
+            <span class="cmd-token">!swapbuild "name"</span>
+            <span class="cmd-desc">switch to another project in the portfolio</span>
+          </li>
+          <li class="cmd-row">
+            <span class="cmd-token">!revert</span>
+            <span class="cmd-desc">undo the last change (alias !undo)</span>
+          </li>
+        </ul>
+      </section>
+      <section class="cmd-group">
+        <h2 class="cmd-group-label">INSTANT COMMANDS</h2>
+        <ul class="cmd-list">
+          <li class="cmd-row">
+            <span class="cmd-token">!vote 1-5</span>
+            <span class="cmd-desc">pick an option in the live round</span>
+          </li>
+          <li class="cmd-row">
+            <span class="cmd-token">!chaos</span>
+            <span class="cmd-desc">vote to trigger a random-pick chaos window</span>
+          </li>
+          <li class="cmd-row">
+            <span class="cmd-token">!projects</span>
+            <span class="cmd-desc">list the current portfolio</span>
+          </li>
+          <li class="cmd-row">
+            <span class="cmd-token">!current</span>
+            <span class="cmd-desc">show what's building right now</span>
+          </li>
+          <li class="cmd-row">
+            <span class="cmd-token">!repo</span>
+            <span class="cmd-desc">get the project's repo link</span>
+          </li>
+          <li class="cmd-row">
+            <span class="cmd-token">!help</span>
+            <span class="cmd-desc">show this command list</span>
+          </li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>

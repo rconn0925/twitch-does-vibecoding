@@ -200,6 +200,20 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * Free-reign usage hint (quick-ur2 T5) — a fixed muted line telling the donor
+ * how to spend their window. Mounted ONLY in the FREE REIGN branch (never
+ * DEMOCRATIC/CHAOS). Muted text, no new accent, never red; fixed copy carries
+ * no amount or donation-message text (T-04-12/13).
+ */
+.banner-hint {
+  flex: none;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
 /* ── Phase banner — top-center participation guidance (auto-cycle) ───── */
 /*
  * Mounted while a suggestion phase collects OR a round is open; silent-absent
@@ -470,6 +484,25 @@ body {
 
 .chip-chaos {
   color: var(--text); /* neutral — chaos never uses the paid violet */
+}
+
+/*
+ * Kind chip (quick-ur2, command layer C) — the NEW/TWEAK/SWAP/REVERT intent
+ * label on vote rows, composed client-side from the closed CandidateKind enum.
+ * Mirrors .provenance-chip: Secondary bg, muted text, small rounded box. NO new
+ * accent color, NEVER red — it stays inside the neutral Secondary/muted budget.
+ */
+.kind-chip {
+  flex: none;
+  align-self: center;
+  background: var(--secondary);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
 }
 
 .build-task {

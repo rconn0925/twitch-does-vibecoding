@@ -429,3 +429,24 @@ and stale state, which a pidfile approach would not.
   the app to force a fresh reroot.
 - §10's terminal viewer and this server are independent surfaces — the
   cross-reference there stays as-is.
+
+## 12. Command-Reference OBS Browser Source (`/commands`)
+
+A static on-screen card listing every working chat command (quick-ur2, command
+layer C) — a fourth OBS browser source on the SAME read-only overlay server as
+`/queue` and `/builder`.
+
+- **URL:** `http://127.0.0.1:<overlayPort>/commands` (default port 4901, the
+  same overlay server; loopback-only — non-loopback Host headers get 403).
+- **Static by construction:** pure server-authored copy, zero JS, no `/api/state`
+  and no websocket — it has NO live-state or wire dependency, so it is safe to
+  leave running on any scene and never goes blank or "standing by."
+- **Always accurate:** the card advertises only parser-recognized tokens; a
+  drift-guard test (`commands-page.test.ts`) fails the build if the page and the
+  command parser ever disagree, so it can never show a dead command on stream.
+
+**Suggested size/placement (suggestions, not requirements):**
+
+- Full-frame **1920x1080** for a dedicated "commands" scene, or
+- a side panel (e.g. **~460x1080**, matching the `/queue` what's-coming rail) as
+  an always-on column on a build scene.

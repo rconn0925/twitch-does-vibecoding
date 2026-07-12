@@ -1,0 +1,71 @@
+/*
+ * Command-reference page (quick-ur2, command layer C) — page-specific LAYOUT
+ * only; the palette tokens and transparent body come from overlay.css :root
+ * (loaded first). Design language mirrors the what's-coming page: backed
+ * Dominant panels (no bare text over video), 60/30/10 palette from the shared
+ * :root tokens ONLY — no new accent, no red anywhere. Command tokens use
+ * --text, descriptions --muted; nothing below 20px (the overlay type floor).
+ */
+
+body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--block-gap);
+  padding: var(--safe-margin);
+  box-sizing: border-box;
+}
+
+.cmd-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--block-gap);
+}
+
+.cmd-group {
+  background: var(--dominant);
+  border-radius: 12px;
+  padding: var(--panel-pad);
+}
+
+.cmd-group-label {
+  margin: 0 0 12px;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.cmd-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cmd-row {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+}
+
+.cmd-token {
+  flex: none;
+  min-width: 260px;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.cmd-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--muted);
+}

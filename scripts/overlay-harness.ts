@@ -28,9 +28,12 @@
  */
 
 import { startOverlayServer } from "../src/overlay/server.js";
-import type { RoundSnapshot, StreamMode } from "../src/shared/types.js";
+import type { CandidateKind, RoundSnapshot, StreamMode } from "../src/shared/types.js";
 
 const PORT = 4999;
+
+/** Cycle the four CandidateKinds so the harness exercises every chip (quick-ur2). */
+const FAKE_KINDS: CandidateKind[] = ["suggestion", "project-switch", "swap", "revert"];
 
 const mode: "vote" | "suggest" = process.argv.includes("--mode=suggest") ? "suggest" : "vote";
 
@@ -92,12 +95,14 @@ const fakePool = Array.from({ length: 5 }, (_, i) => ({
       i === 2
         ? null // dev-submitted: the username line must simply be absent
         : `viewer_with_a_very_long_name_${String(i + 1).padStart(2, "0")}`.slice(0, 24),
+    kind: FAKE_KINDS[i % FAKE_KINDS.length] as CandidateKind,
   },
 }));
 
-/** 10 queued builds (the VOTE_QUEUE_MAX cap) — all long texts. */
+/** 10 queued builds (the VOTE_QUEUE_MAX cap) — all long texts, cycling kinds. */
 const fakeQueue = Array.from({ length: 10 }, (_, i) => ({
   text: `${i + 1 < 10 ? "queued build " : ""}${LONG_80} (#${i + 1})`,
+  kind: FAKE_KINDS[i % FAKE_KINDS.length] as CandidateKind,
 }));
 
 const now = Date.now();

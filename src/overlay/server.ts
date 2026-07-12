@@ -18,7 +18,7 @@ import {
   WINDOW_REVOKED,
 } from "../shared/events.js";
 import { isLoopbackHostHeader, isLoopbackOrigin } from "../shared/loopback.js";
-import type { BuildStatusView, RoundSnapshot, StreamMode } from "../shared/types.js";
+import type { BuildStatusView, CandidateKind, RoundSnapshot, StreamMode } from "../shared/types.js";
 
 /**
  * Emitted by the OverlayBuildSource whenever the pipeline stage advances
@@ -113,16 +113,24 @@ export interface OverlayState {
    * candidates, so this field carries no MORE than the main overlay's wire.
    * The source is CandidatePool, whose add() throws for any non-approved
    * result (COMP-01) — approved-only by construction (T-v4e-02).
+   *
+   * `kind` (quick-ur2, command layer C) is the ONE closed-enum addition to this
+   * projection — a CandidateKind ("suggestion" | "project-switch" | "revert" |
+   * "swap"), the server-composed intent label the client turns into a chip. It
+   * is the ONLY new wire field this plan adds; no chat-derived text, gate
+   * rationale/category/decision, amount or message ever rides alongside it.
    */
-  pool: { text: string; username: string | null }[];
+  pool: { text: string; username: string | null; kind: CandidateKind }[];
   /**
    * The FULL build queue in FIFO order — the first `queueDisplayMax` task
    * texts (quick-v4e). Same source and semantics as `nextUp`, just a larger
    * slice for the what's-coming page; position numbers are client-rendered.
    * Texts only: no task ids, no vote provenance, nothing else crosses the
-   * wire (T-v4e-01 display-fields-only).
+   * wire (T-v4e-01 display-fields-only) — EXCEPT `kind` (quick-ur2), the one
+   * closed CandidateKind enum this plan adds so the /queue rows can show an
+   * intent chip. nextUp (the main-overlay strip) deliberately stays string[].
    */
-  queue: string[];
+  queue: { text: string; kind: CandidateKind }[];
   /**
    * The CHAT-activated timed chaos window (quick-rs3), or null when chaos is
    * not live. Server-composed, narrowed to EXACTLY {endsAtMs} regardless of
@@ -161,7 +169,7 @@ export interface OverlayRoundSource {
 }
 
 export interface OverlayQueueSource {
-  list(): readonly { text: string }[];
+  list(): readonly { text: string; kind: CandidateKind }[];
 }
 
 /**
@@ -266,7 +274,9 @@ const NULL_AUTO_CYCLE_SOURCE: OverlayAutoCycleSource = {
  * (T-v4e-01 defence-in-depth), so a richer source can never leak extra keys.
  */
 export interface OverlayPoolSource {
-  list(): readonly { candidate: { text: string; twitchUsername: string | null } }[];
+  list(): readonly {
+    candidate: { text: string; twitchUsername: string | null; kind: CandidateKind };
+  }[];
   on(event: string, handler: (...args: unknown[]) => void): void;
 }
 
@@ -426,17 +436,21 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
         .map((task) => task.text),
       // Explicit narrowing (T-v4e-01, the controlWindow re-projection idiom):
       // even a richer pool source (the real CandidatePool carries GateResult
-      // and addedAtMs) can never leak extra keys — only {text, username}
-      // display fields are ever constructed for the wire.
-      pool: poolSource
-        .list()
-        .map((item) => ({ text: item.candidate.text, username: item.candidate.twitchUsername })),
-      // Full queue projection for the what's-coming page: texts only, FIFO,
-      // capped at queueDisplayMax (VOTE_QUEUE_MAX) — same source as nextUp.
+      // and addedAtMs) can never leak extra keys — only {text, username, kind}
+      // display fields are ever constructed for the wire. `kind` (quick-ur2) is
+      // the closed CandidateKind enum only; no gate/rationale field rides along.
+      pool: poolSource.list().map((item) => ({
+        text: item.candidate.text,
+        username: item.candidate.twitchUsername,
+        kind: item.candidate.kind,
+      })),
+      // Full queue projection for the what's-coming page: {text, kind} only,
+      // FIFO, capped at queueDisplayMax (VOTE_QUEUE_MAX) — same source as
+      // nextUp, plus the closed CandidateKind enum for the row chip (quick-ur2).
       queue: taskQueue
         .list()
         .slice(0, queueDisplayMax)
-        .map((task) => task.text),
+        .map((task) => ({ text: task.text, kind: task.kind })),
       // Explicit narrowing (T-x7d-04, the T-v4e-01/controlWindow idiom): even
       // a richer feed source can never leak extra keys onto the wire — only
       // {kind, text} is ever constructed for the /builder page.
@@ -462,6 +476,17 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   // rationale as /queue.
   app.get("/builder", (_req, res) => {
     res.sendFile("builder.html", { root: publicDir });
+  });
+
+  // The command-reference page (quick-ur2, command layer C) — a fourth
+  // OBS browser-source URL on this SAME read-only server. PURE STATIC: it has
+  // no wire dependency (no /api/state, no ws), just a fixed reference card of
+  // the parser-recognized chat commands. GET only; the app-level Host-allowlist
+  // middleware above covers /commands automatically (CR-02 DNS-rebinding
+  // posture), and no mutation route exists by construction. Same `root`-option
+  // rationale as /queue and /builder.
+  app.get("/commands", (_req, res) => {
+    res.sendFile("commands.html", { root: publicDir });
   });
 
   app.get("/api/state", (_req, res) => {
