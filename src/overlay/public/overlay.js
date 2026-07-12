@@ -330,9 +330,10 @@
     if (sp) {
       phaseBanner.hidden = false;
       phaseBanner.appendChild(el("span", "phase-title", "SUGGESTIONS OPEN"));
-      phaseBanner.appendChild(
-        el("span", "phase-hint", "type !suggest — new idea or a tweak to what's on screen"),
-      );
+      // quick-ur2 T4: shortened so the 24px hint fits ONE line inside the
+      // 900px phase banner at 1080p (the old copy truncated mid-word). Fixed,
+      // orchestrator-authored copy — never chat-derived.
+      phaseBanner.appendChild(el("span", "phase-hint", "type !suggest — an idea or a tweak"));
       const remaining = sp.endsAtMs - Date.now();
       const countdown = el("span", "phase-countdown", formatRemaining(remaining));
       if (remaining <= FINAL_COUNTDOWN_MS) {
