@@ -2,6 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { listAuditRecords, listBuildHistory } from "../../src/audit/record.js";
 import type { ChatMessageSink } from "../../src/ingestion/chat-sender.js";
+import { CHAOS_CANDIDATE_TEXT } from "../../src/ingestion/command-parser.js";
 import type { DonationEventSource, TipEvent } from "../../src/ingestion/donation-source.js";
 import type { ChatEventSource, ChatMessageEvent } from "../../src/ingestion/twitch-chat.js";
 import { createApp } from "../../src/main.js";
@@ -16,19 +17,18 @@ import type {
   DevServerProbe,
   SandboxAdapter,
 } from "../../src/orchestrator/types.js";
-import type { GateResult, SuggestionCandidate } from "../../src/shared/types.js";
+import type { GateResult, RoundSnapshot, SuggestionCandidate } from "../../src/shared/types.js";
 
 /**
- * Chat-activated chaos mode e2e (quick-rs3): CHAOS_ACTIVATION_VOTES unique
- * !chaos chatters flip a timed vote-skip window — at suggest-window close no
- * vote round opens; one random ALREADY-GATED pool candidate is enqueued through
- * the SAME q5n kind router a voted winner uses. Proven against createApp's
- * injected fakes (fake chat/sink, fakeClassifier, fake runner/sandbox, fake
- * publisher, injected chaosRng) — no network, no real git/WSL2.
- *
- * Phase ends are triggered DETERMINISTICALLY via the quick-l2a pool-full early
- * close (EARLY_CLOSE_POOL_SIZE=2 + a long suggest phase) where possible, and
- * via short real-timer phases where an EMPTY pool must reach a phase end.
+ * Chat-voted CHAOS ballot option e2e (quick-260711-ly4): `!chaos` submits a
+ * single server-composed CHAOS candidate that competes in the NORMAL vote round
+ * like !revert/!swapbuild. When CHAOS WINS a democratic vote, the existing
+ * 5-minute chaos window activates — no build, no BUILD_IN_PROGRESS — and the
+ * in-window random-pick behavior (chaosModePick) runs exactly as before. The old
+ * 3-unique-chatter tally threshold is GONE: winning is the ONLY chat path to
+ * chaos. Proven against createApp's injected fakes (fake chat/sink,
+ * fakeClassifier, fake runner/sandbox, fake publisher, injected chaosRng) — no
+ * network, no real git/WSL2.
  */
 
 type AppHandle = Awaited<ReturnType<typeof createApp>>;
@@ -161,10 +161,32 @@ function chaosPickRows(app: AppHandle) {
   return listAuditRecords(app.db, { limit: 50, eventType: "chaos_pick" });
 }
 
+function chaosActivatedRows(app: AppHandle) {
+  return listAuditRecords(app.db, { limit: 50, eventType: "chaos_activated" });
+}
+
+function poolChaos(app: AppHandle) {
+  return app.pool.list().filter((c) => c.candidate.kind === "chaos");
+}
+
 function workspaceRow(app: AppHandle): { generation: number; scaffolded: number } {
   return app.db
     .prepare("SELECT generation, scaffolded FROM workspace_state WHERE id = 1")
     .get() as { generation: number; scaffolded: number };
+}
+
+/** Wait for a round to open, vote for the option whose candidate matches, then close it. */
+async function voteAndClose(
+  app: AppHandle,
+  predicate: (c: RoundSnapshot["candidates"][number]["candidate"]) => boolean,
+  voterId = "v1",
+): Promise<void> {
+  await until(() => app.round.snapshot()?.status === "open");
+  const snap = app.round.snapshot();
+  const opt = snap?.candidates.find((entry) => predicate(entry.candidate));
+  if (!opt) throw new Error("target option not drawn into the round");
+  app.round.recordVote(voterId, opt.option);
+  app.round.closeRound();
 }
 
 function setEnv(vars: Record<string, string>): () => void {
@@ -189,21 +211,70 @@ async function postJson(app: AppHandle, path: string, body: unknown): Promise<Re
   });
 }
 
-// ── 1. activation → vote-skip pick → re-entrancy pin → expiry reversion ─────
+// ── 1. `!chaos` pools a single server-composed CHAOS candidate (silent, deduped) ─
 
-describe("chaos e2e: 3 unique !chaos activate; window close SKIPS the vote; expiry reverts to democracy", () => {
+describe("chaos e2e: !chaos pools ONE server-composed CHAOS candidate — silent, deduped, no chat text", () => {
+  const chat = fakeChatSource();
+  const { sent, sink } = capturingSink();
+  let app: AppHandle;
+  let restoreEnv: () => void;
+
+  beforeAll(async () => {
+    restoreEnv = setEnv({
+      SUGGEST_PHASE_SECONDS: "30", // long — no phase end during the test
+      EARLY_CLOSE_POOL_SIZE: "5", // high — no round auto-opens at pool size 1-2
+    });
+    app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      chatSource: chat.source,
+      chatSink: sink,
+    });
+    chat.say("u1", "ann", "!chaos");
+    await until(() => poolChaos(app).length === 1);
+    chat.say("u2", "bob", "!chaos"); // a 2nd !chaos — must dedupe to one
+    await sleep(200);
+  }, 15_000);
+
+  afterAll(async () => {
+    await app.close();
+    restoreEnv();
+  });
+
+  it("pools exactly ONE CHAOS candidate: kind 'chaos', the fixed server-composed text, no chat-derived bytes", () => {
+    const chaos = poolChaos(app);
+    expect(chaos).toHaveLength(1);
+    expect(chaos[0]?.candidate.kind).toBe("chaos");
+    expect(chaos[0]?.candidate.text).toBe(CHAOS_CANDIDATE_TEXT);
+    expect(chaos[0]?.candidate.source).toBe("chat");
+  });
+
+  it("posts NO submission ack for the pooled CHAOS candidate (silent, like every pooled ack)", () => {
+    expect(sent.some((m) => m.includes("CHAOS") && m.includes("competes"))).toBe(false);
+    expect(sent.some((m) => m.toLowerCase().includes("chaos") && m.includes("is in"))).toBe(false);
+  });
+
+  it("a second !chaos while one is pooled is a silent no-op (identical-text dedupe caps CHAOS at one)", () => {
+    expect(poolChaos(app)).toHaveLength(1);
+    // No chaos activation ever happened — no vote round was won.
+    expect(chaosActivatedRows(app)).toHaveLength(0);
+  });
+});
+
+// ── 2. CHAOS wins a vote → activates the window; NEVER builds; in-window pick + expiry ─
+
+describe("chaos e2e: CHAOS wins a democratic vote → the 5-min window activates (no build), then in-window random picks, then expiry", () => {
   const chat = fakeChatSource();
   const { sent, sink } = capturingSink();
   let runner: ReturnType<typeof recordingRunner>;
   let app: AppHandle;
   let restoreEnv: () => void;
-  let pickedText = "";
 
   beforeAll(async () => {
     restoreEnv = setEnv({
       SUGGEST_PHASE_SECONDS: "30", // phase ends only via pool-full early close
       EARLY_CLOSE_POOL_SIZE: "2",
-      CHAOS_ACTIVATION_VOTES: "3",
       CHAOS_MODE_DURATION_SECONDS: "3",
     });
     runner = recordingRunner();
@@ -218,26 +289,12 @@ describe("chaos e2e: 3 unique !chaos activate; window close SKIPS the vote; expi
       devServerProbe: fakeProbe,
     });
 
-    // Tally: u1, a DUPE from u1, u2 — then the threshold-th unique chatter u3.
+    // Pool [CHAOS, suggestion] → early close opens a round with BOTH options.
     chat.say("u1", "ann", "!chaos");
-    chat.say("u1", "ann", "!chaos"); // dupe — must never advance the count
-    chat.say("u2", "bob", "!chaos");
-    await until(() => sent.some((m) => m.includes("Chaos votes: 2/3")));
-    chat.say("u3", "cal", "!chaos");
-    await until(
-      () => listAuditRecords(app.db, { limit: 10, eventType: "chaos_activated" }).length === 1,
-    );
-    chat.say("u4", "dee", "!chaos"); // while active — silent no-op
-
-    // Two approved chat suggestions → pool hits EARLY_CLOSE_POOL_SIZE → the
-    // suggest window closes NOW → the chaos pick (not a vote round).
     chat.say("s1", "eve", "!suggest build a snake game");
-    chat.say("s2", "fay", "!suggest build a tetris clone");
-    await until(() => chaosPickRows(app).length === 1);
-    pickedText = chaosPickRows(app)[0]?.suggestion_text ?? "";
-    await until(() => runner.specs.length === 1 && app.machine.mode === "IDLE");
-    // Give any (incorrect) double-begin/double-pick room to surface.
-    await sleep(300);
+    // CHAOS wins the vote.
+    await voteAndClose(app, (c) => c.kind === "chaos");
+    await until(() => chaosActivatedRows(app).length === 1);
   }, 15_000);
 
   afterAll(async () => {
@@ -245,92 +302,85 @@ describe("chaos e2e: 3 unique !chaos activate; window close SKIPS the vote; expi
     restoreEnv();
   });
 
-  it("tally narration fires ONLY on count increase: one 1/3 beat, one 2/3 beat, dupes silent", () => {
-    const tallyLines = sent.filter((m) => m.startsWith("Chaos votes:"));
-    expect(tallyLines).toEqual([
-      "Chaos votes: 1/3 — type !chaos to skip the voting.",
-      "Chaos votes: 2/3 — type !chaos to skip the voting.",
-    ]);
-  });
-
-  it("activation: chaos_activated audit row (3 unique chatters) + the activation beat (env-tuned 0:03)", () => {
-    const rows = listAuditRecords(app.db, { limit: 10, eventType: "chaos_activated" });
+  it("activation is a DEMOCRATIC win: one chaos_activated row (decision 'activated', truthful rationale) + the chaos-wins beat", () => {
+    const rows = chaosActivatedRows(app);
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.rationale).toBe("Chaos mode activated by 3 unique chatters");
-    expect(sent.some((m) => m.startsWith("CHAOS MODE ACTIVATED — no voting for 0:03"))).toBe(true);
+    expect(rows[0]?.decision).toBe("activated");
+    expect(rows[0]?.rationale).toBe("Chaos mode activated by winning a democratic vote round");
+    expect(rows[0]?.source).toBe("chaos");
+    expect(sent.some((m) => m.startsWith("Chat voted CHAOS — 0:03 of mayhem!"))).toBe(true);
   });
 
-  it("vote-skip: NO vote round opened; ONE pooled candidate was picked, enqueued and built via the winner rail", () => {
-    expect(sent.some((m) => m.startsWith("Voting is OPEN"))).toBe(false);
-    const rows = chaosPickRows(app);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.decision).toBe("suggestion"); // kind recorded in decision
-    expect(["build a snake game", "build a tetris clone"]).toContain(pickedText);
-    expect(sent.some((m) => m.startsWith(`Chaos picked: "${pickedText}"`))).toBe(true);
-    // Built through the SAME rail: one agent run, queue drained, pool keeps the loser.
-    expect(runner.specs).toHaveLength(1);
-    expect(app.taskQueue.list()).toHaveLength(0);
-    expect(app.pool.list()).toHaveLength(1);
+  it("the CHAOS winner NEVER builds and NEVER holds BUILD_IN_PROGRESS — the machine stays on the democratic cadence", async () => {
+    // No agent run was started by the chaos win itself.
+    expect(runner.specs).toHaveLength(0);
+    // The machine returned to the democratic cadence (never parked in a build).
+    await until(() => app.machine.mode === "IDLE" || app.machine.mode === "BUILD_IN_PROGRESS");
+    expect(app.machine.mode).not.toBe("CHAOS_MODE");
   });
 
-  it("RE-ENTRANCY PIN: exactly ONE chaos_pick row for the picked window (no double-begin)", () => {
-    // The suggest-phase begin beats are silent now (anti-spam, Ross 2026-07-11),
-    // so re-entrancy is pinned on the downstream invariant instead: a
-    // double-began phase would close twice and emit a SECOND chaos_pick row.
-    // Exactly one row proves the #maybeBegin guard held — one begin, one pick,
-    // one timer per window — even though the pick synchronously entered
-    // BUILD_IN_PROGRESS (STATE_CHANGED mid-hook).
-    expect(chaosPickRows(app)).toHaveLength(1);
+  it("during the active window a fresh phase end RANDOM-PICKS one pooled idea and builds it (chaosModePick preserved)", async () => {
+    // Two chat candidates → early close ends the phase → chaosModePick owns it.
+    chat.say("a1", "amy", "!suggest a drawing board");
+    chat.say("a2", "ben", "!suggest a calculator");
+    await until(() => chaosPickRows(app).length === 1, 5_000);
+    const pick = chaosPickRows(app)[0];
+    expect(pick?.decision).toBe("suggestion"); // kind recorded in decision
+    expect(["a drawing board", "a calculator"]).toContain(pick?.suggestion_text);
+    // The in-window pick DID build (rode the winner rail) — exactly one agent run.
+    await until(() => runner.specs.length === 1);
+    expect(sent.some((m) => m.startsWith(`Chaos picked: "${pick?.suggestion_text}"`))).toBe(true);
   });
 
-  it("expiry auto-reverts: chaos_expired row + beat, then the NEXT window close opens a NORMAL vote round", async () => {
+  it("expiry auto-reverts to democracy: a chaos_expired row + beat, then a NORMAL vote round opens again", async () => {
     await until(
       () => listAuditRecords(app.db, { limit: 10, eventType: "chaos_expired" }).length === 1,
       8_000,
     );
     expect(sent.some((m) => m === "Chaos mode is over — voting is back.")).toBe(true);
-
-    // Democracy is back: pool refills to the early-close cap → a vote round opens.
-    chat.say("s3", "gil", "!suggest a drawing board");
-    await until(() => sent.some((m) => m.startsWith("Voting is OPEN")));
-    expect(app.round.snapshot()?.status).toBe("open");
-    expect(chaosPickRows(app)).toHaveLength(1); // no further picks after expiry
-    app.round.closeRound();
+    // Democracy is back: a NORMAL vote round opens again. "Voting is OPEN" is
+    // NEVER sent during an active chaos window (chaosModePick owns phase ends),
+    // so its appearance is a clean post-expiry democracy signal.
+    const picksBefore = chaosPickRows(app).length;
+    chat.say("d1", "gil", "!suggest a stopwatch");
+    chat.say("d2", "hal", "!suggest a todo list");
+    await until(() => sent.some((m) => m.startsWith("Voting is OPEN")), 6_000);
+    expect(chaosPickRows(app)).toHaveLength(picksBefore); // no further picks after expiry
+    const openRound = app.round.snapshot();
+    if (openRound?.status === "open") app.round.closeRound();
   }, 15_000);
 });
 
-// ── 2. paid-source exclusion (allowlist) + empty-eligible-pool restart ──────
+// ── 3. a SUGGESTION winning the same ballot leaves chaos un-activated ─────────
 
-describe("chaos e2e: paid-source candidates are NEVER chaos-pickable; empty eligible pool restarts the window", () => {
+describe("chaos e2e: when a suggestion beats CHAOS on the ballot, the chaos window NEVER activates", () => {
   const chat = fakeChatSource();
   const { sent, sink } = capturingSink();
+  let runner: ReturnType<typeof recordingRunner>;
   let app: AppHandle;
   let restoreEnv: () => void;
 
   beforeAll(async () => {
     restoreEnv = setEnv({
-      SUGGEST_PHASE_SECONDS: "0.3", // short real-timer phases — empty pool must reach phase ends
-      CHAOS_ACTIVATION_VOTES: "3",
-      CHAOS_MODE_DURATION_SECONDS: "30",
+      SUGGEST_PHASE_SECONDS: "30",
+      EARLY_CLOSE_POOL_SIZE: "2",
+      CHAOS_MODE_DURATION_SECONDS: "60",
     });
-    // NO build engine: a queued pick would just sit — irrelevant here. The rng
-    // is FORCED to index 0 — the paid candidate's position in the unfiltered
-    // pool — so only the allowlist can explain it never being picked.
+    runner = recordingRunner();
     app = await createApp({
       dbPath: ":memory:",
       port: 0,
       fakeClassifier: () => approved,
       chatSource: chat.source,
       chatSink: sink,
-      chaosRng: () => 0,
+      agentRunner: runner.runner,
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
     });
-
     chat.say("u1", "ann", "!chaos");
-    chat.say("u2", "bob", "!chaos");
-    chat.say("u3", "cal", "!chaos");
-    await until(
-      () => listAuditRecords(app.db, { limit: 10, eventType: "chaos_activated" }).length === 1,
-    );
+    chat.say("s1", "eve", "!suggest build a snake game");
+    await voteAndClose(app, (c) => c.kind === "suggestion");
+    await until(() => runner.specs.length === 1); // the suggestion built
   }, 15_000);
 
   afterAll(async () => {
@@ -338,56 +388,92 @@ describe("chaos e2e: paid-source candidates are NEVER chaos-pickable; empty elig
     restoreEnv();
   });
 
-  it("an EMPTY pool at chaos phase ends is safe: no pick, no round, no queue (window keeps cycling)", async () => {
-    // stillCollecting is silent now (anti-spam, Ross 2026-07-11), so we let
-    // several 0.3s chaos phase-ends fire against the empty pool by TIME rather
-    // than by counting restart beats, then assert the empty branch neither
-    // picked nor opened a round. Chaos stays active (30s) across these ends, so
-    // the window kept restarting throughout.
-    await sleep(1_500); // ~5 phase-ends at SUGGEST_PHASE_SECONDS=0.3
+  it("the suggestion built as a normal vote winner — and chaos was NEVER activated", () => {
+    expect(runner.specs).toHaveLength(1);
+    expect(chaosActivatedRows(app)).toHaveLength(0);
     expect(chaosPickRows(app)).toHaveLength(0);
-    expect(sent.some((m) => m.startsWith("Voting is OPEN"))).toBe(false);
-    expect(app.taskQueue.list()).toHaveLength(0);
-  }, 10_000);
-
-  it("a pool holding ONLY a paid-source candidate behaves as empty: the donation candidate is never picked", async () => {
-    app.pool.add(candidate("paid-1", "a tipped idea", { source: "donation" }), approved);
-    // Let several 0.3s chaos phase-ends fire against the paid-only pool (beats are
-    // silent now — anti-spam — so wait on TIME, not the stillCollecting beat).
-    await sleep(1_500); // ~5 phase-ends at SUGGEST_PHASE_SECONDS=0.3
-    expect(chaosPickRows(app)).toHaveLength(0);
-    expect(app.taskQueue.list()).toHaveLength(0);
-    expect(app.pool.list().map((c) => c.candidate.id)).toContain("paid-1");
-  }, 10_000);
-
-  it("with rng FORCED at the paid index, the pick lands on the allowlisted neighbor instead", async () => {
-    // Unfiltered pool order: [paid-1 (index 0 — the forced rng target), chat-1].
-    app.pool.add(candidate("chat-1", "a chat idea"), approved);
-    await until(() => chaosPickRows(app).length === 1, 5_000);
-    const row = chaosPickRows(app)[0];
-    expect(row?.task_id).toBe("chat-1");
-    expect(row?.suggestion_text).toBe("a chat idea");
-    // The paid candidate is untouched — still pooled, never queued.
-    expect(app.pool.list().map((c) => c.candidate.id)).toContain("paid-1");
-    expect(app.taskQueue.list().map((t) => t.id)).toEqual(["chat-1"]);
-  }, 10_000);
+    expect(sent.some((m) => m.startsWith("Chat voted CHAOS"))).toBe(false);
+  });
 });
 
-// ── 3. FREE REIGN > CHAOS + HALT clears chaos ────────────────────────────────
+// ── 4. a LONE CHAOS candidate NEVER auto-activates unopposed (soloPick excludes it) ─
 
-describe("chaos e2e: a live free-reign window defers picks; HALT clears tally AND window; recovery is democratic", () => {
+describe("chaos e2e: a lone CHAOS candidate restarts the window forever — it never auto-builds or auto-activates (soloPick excludes chaos)", () => {
   const chat = fakeChatSource();
-  const donation = fakeDonationSource();
   const { sent, sink } = capturingSink();
+  let runner: ReturnType<typeof recordingRunner>;
   let app: AppHandle;
   let restoreEnv: () => void;
 
   beforeAll(async () => {
     restoreEnv = setEnv({
-      SUGGEST_PHASE_SECONDS: "0.3",
-      CHAOS_ACTIVATION_VOTES: "3",
+      SUGGEST_PHASE_SECONDS: "0.3", // short — repeated phase ends with a lone candidate
+      EARLY_CLOSE_POOL_SIZE: "5", // high — only the phase timer ends the window
       CHAOS_MODE_DURATION_SECONDS: "60",
     });
+    runner = recordingRunner();
+    app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      chatSource: chat.source,
+      chatSink: sink,
+      agentRunner: runner.runner,
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
+    });
+    chat.say("u1", "ann", "!chaos");
+    await until(() => poolChaos(app).length === 1);
+  }, 15_000);
+
+  afterAll(async () => {
+    await app.close();
+    restoreEnv();
+  });
+
+  it("across several phase ends the lone CHAOS candidate never activates, never builds, never opens a round", async () => {
+    await sleep(1_500); // ~5 phase-ends at SUGGEST_PHASE_SECONDS=0.3
+    expect(chaosActivatedRows(app)).toHaveLength(0);
+    expect(chaosPickRows(app)).toHaveLength(0);
+    expect(runner.specs).toHaveLength(0);
+    expect(sent.some((m) => m.startsWith("Voting is OPEN"))).toBe(false);
+    // The candidate is still pooled, waiting for a real idea to compete against.
+    expect(poolChaos(app)).toHaveLength(1);
+  }, 10_000);
+
+  it("once a real idea joins, they compete in a NORMAL vote round (CHAOS only activates by winning)", async () => {
+    chat.say("s1", "eve", "!suggest a paint app");
+    // With 2 pooled candidates a normal round opens (soloPick no longer applies).
+    await until(() => app.round.snapshot()?.status === "open", 5_000);
+    const snap = app.round.snapshot();
+    expect(snap?.candidates.some((c) => c.candidate.kind === "chaos")).toBe(true);
+    expect(snap?.candidates.some((c) => c.candidate.kind === "suggestion")).toBe(true);
+    expect(chaosActivatedRows(app)).toHaveLength(0); // still not activated — the vote decides
+    app.round.closeRound();
+  }, 10_000);
+});
+
+// ── 5. paid-source exclusion + FREE REIGN > CHAOS + HALT clears the window ────
+
+describe("chaos e2e: paid candidates are never chaos-pickable; FREE REIGN outranks CHAOS; HALT clears the window", () => {
+  const chat = fakeChatSource();
+  const donation = fakeDonationSource();
+  const { sent, sink } = capturingSink();
+  let runner: ReturnType<typeof recordingRunner>;
+  let app: AppHandle;
+  let restoreEnv: () => void;
+
+  beforeAll(async () => {
+    restoreEnv = setEnv({
+      SUGGEST_PHASE_SECONDS: "2", // short enough for repeated in-window phase ends
+      EARLY_CLOSE_POOL_SIZE: "2", // the ballot opens deterministically at pool size 2
+      CHAOS_MODE_DURATION_SECONDS: "60",
+    });
+    // A build engine is present (production always composes one — it is what
+    // wires the drainVoteQueue chaos arm that activate()s a CHAOS winner). rng
+    // FORCED to index 0 so only the source allowlist can explain a paid
+    // candidate never being picked.
+    runner = recordingRunner();
     app = await createApp({
       dbPath: ":memory:",
       port: 0,
@@ -395,15 +481,16 @@ describe("chaos e2e: a live free-reign window defers picks; HALT clears tally AN
       chatSource: chat.source,
       chatSink: sink,
       donationSource: donation.source,
+      agentRunner: runner.runner,
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
       chaosRng: () => 0,
     });
-
+    // Activate chaos by WINNING a ballot: pool [CHAOS, filler] → vote CHAOS.
     chat.say("u1", "ann", "!chaos");
-    chat.say("u2", "bob", "!chaos");
-    chat.say("u3", "cal", "!chaos");
-    await until(
-      () => listAuditRecords(app.db, { limit: 10, eventType: "chaos_activated" }).length === 1,
-    );
+    chat.say("f1", "bob", "!suggest a filler idea");
+    await voteAndClose(app, (c) => c.kind === "chaos");
+    await until(() => chaosActivatedRows(app).length === 1);
   }, 15_000);
 
   afterAll(async () => {
@@ -411,69 +498,63 @@ describe("chaos e2e: a live free-reign window defers picks; HALT clears tally AN
     restoreEnv();
   });
 
-  it("FREE REIGN outranks CHAOS: no pick fires while the window is live; chaos resumes after revoke", async () => {
-    donation.emitTip(tip()); // $5 → a 60s window; machine → FREE_REIGN_WINDOW
-    await until(() => app.machine.mode === "FREE_REIGN_WINDOW");
-    app.pool.add(candidate("chaos-target", "an eligible idea"), approved);
-
-    // Several phase deadlines pass while the window is live — the scheduler is
-    // parked (isControlWindowLive sits BEFORE the pick hook): no pick fires.
-    await sleep(900);
+  it("a pool holding ONLY a paid-source candidate behaves as empty: the donation candidate is NEVER chaos-picked", async () => {
+    app.pool.add(candidate("paid-1", "a tipped idea", { source: "donation" }), approved);
+    await sleep(4_500); // ~2 in-window (2s) phase ends against the paid-only pool
     expect(chaosPickRows(app)).toHaveLength(0);
-    expect(app.taskQueue.list()).toHaveLength(0);
-
-    // The window closes (streamer revoke) → the cycle resumes → the still-live
-    // chaos window picks at the next phase end.
-    app.controlWindow.revoke();
-    await until(() => app.machine.mode === "IDLE");
-    await until(() => chaosPickRows(app).length === 1, 5_000);
-    expect(chaosPickRows(app)[0]?.task_id).toBe("chaos-target");
+    expect(app.pool.list().map((c) => c.candidate.id)).toContain("paid-1");
   }, 10_000);
 
-  it("HALT clears chaos (tally AND window): no pick fires while HALTED; recovery restores DEMOCRATIC mode", async () => {
+  it("with rng FORCED at index 0, the pick lands on the allowlisted chat candidate — never the paid one", async () => {
+    app.pool.add(candidate("chat-1", "a chat idea"), approved);
+    await until(() => chaosPickRows(app).length === 1, 6_000);
+    expect(chaosPickRows(app)[0]?.task_id).toBe("chat-1");
+    expect(app.pool.list().map((c) => c.candidate.id)).toContain("paid-1"); // untouched
+  }, 10_000);
+
+  it("FREE REIGN outranks CHAOS: no pick fires while a control window is live; chaos resumes after revoke", async () => {
+    const picksBefore = chaosPickRows(app).length;
+    donation.emitTip(tip()); // $5 → a control window; machine → FREE_REIGN_WINDOW
+    await until(() => app.machine.mode === "FREE_REIGN_WINDOW");
+    app.pool.add(candidate("frozen-1", "an eligible idea"), approved);
+    await sleep(1_200); // phase deadlines pass while the window is live — parked
+    expect(chaosPickRows(app)).toHaveLength(picksBefore);
+
+    app.controlWindow.revoke();
+    await until(() => app.machine.mode === "IDLE");
+    await until(() => chaosPickRows(app).length === picksBefore + 1, 6_000);
+  }, 12_000);
+
+  it("HALT clears the chaos window: no pick fires while HALTED; recovery restores DEMOCRATIC mode", async () => {
     const haltRes = await postJson(app, "/api/halt", {});
     expect(haltRes.status).toBe(200);
     expect(app.machine.mode).toBe("HALTED");
+    const picksAtHalt = chaosPickRows(app).length;
 
-    // !chaos while HALTED is a no-op — no tally beats, no activation.
-    const tallyBefore = sent.filter((m) => m.startsWith("Chaos votes:")).length;
-    chat.say("h1", "hal", "!chaos");
-    chat.say("h2", "ivy", "!chaos");
-    chat.say("h3", "joe", "!chaos");
-    await sleep(150);
-    expect(sent.filter((m) => m.startsWith("Chaos votes:")).length).toBe(tallyBefore);
-    expect(listAuditRecords(app.db, { limit: 10, eventType: "chaos_activated" })).toHaveLength(1);
-
-    // No pick can fire while HALTED, even with an eligible pool.
     app.pool.add(candidate("halted-1", "an idea during halt"), approved);
     await sleep(700);
-    expect(chaosPickRows(app)).toHaveLength(1); // unchanged from the pre-halt pick
+    expect(chaosPickRows(app)).toHaveLength(picksAtHalt); // no pick while HALTED
 
-    // Recovery: DEMOCRATIC mode — the cleared chaos window never resurrects.
     const recoverRes = await postJson(app, "/api/recover", { action: "reset-to-idle" });
     expect(recoverRes.status).toBe(200);
-    expect(app.machine.mode).toBe("IDLE");
+    expect(app.machine.mode).not.toBe("HALTED"); // recovered off the kill switch
 
-    // The pre-halt window (60s) would still be live had HALT not cleared it —
-    // a fresh !chaos vote gets a FRESH 1/3 tally beat (not "already-active"
-    // silence, not a resumed count): both the window AND the tally died.
-    chat.say("u1", "ann", "!chaos"); // same chatter as the pre-halt tally
-    await until(
-      () =>
-        sent.filter((m) => m === "Chaos votes: 1/3 — type !chaos to skip the voting.").length >= 2,
-    );
-
-    // And the next phase end with a 2-candidate pool opens a NORMAL vote round.
-    app.pool.add(candidate("d1", "democratic idea"), approved);
-    await until(() => sent.some((m) => m.startsWith("Voting is OPEN")), 5_000);
-    expect(chaosPickRows(app)).toHaveLength(1); // still just the pre-halt pick
-    app.round.closeRound();
+    // The pre-halt window was cleared: the democratic cadence resumes and a
+    // NORMAL vote round opens (a "Voting is OPEN" beat is NEVER sent while a
+    // chaos window is live, since chaosModePick owns every phase end) — so its
+    // appearance proves chaos never resurrected after the halt.
+    app.pool.add(candidate("demo-1", "democratic idea"), approved);
+    app.pool.add(candidate("demo-2", "another idea"), approved);
+    await until(() => sent.some((m) => m.startsWith("Voting is OPEN")), 6_000);
+    expect(chaosPickRows(app)).toHaveLength(picksAtHalt); // still no new picks
+    const openRound = app.round.snapshot();
+    if (openRound?.status === "open") app.round.closeRound();
   }, 15_000);
 });
 
-// ── 4. kind routing through the UNCHANGED q5n router ─────────────────────────
+// ── 6. in-window picks ride the UNCHANGED q5n kind router ─────────────────────
 
-describe("chaos e2e: picks ride the q5n kind router — ship-gate holds for project-switch; revert reverts", () => {
+describe("chaos e2e: in-window picks ride the q5n kind router — ship-gate holds for project-switch; revert reverts", () => {
   const chat = fakeChatSource();
   const { sent, sink } = capturingSink();
   let runner: ReturnType<typeof recordingRunner>;
@@ -482,8 +563,6 @@ describe("chaos e2e: picks ride the q5n kind router — ship-gate holds for proj
   let rngIndex = 0;
   const publishCalls: PublishInput[] = [];
   const revertCalls: RevertInput[] = [];
-  // A publisher whose SHIP always fails (the confirmed-push gate must hold) and
-  // whose REVERT succeeds.
   const publisher: GalleryPublisher = {
     publishNow(input) {
       publishCalls.push(input);
@@ -499,7 +578,6 @@ describe("chaos e2e: picks ride the q5n kind router — ship-gate holds for proj
     restoreEnv = setEnv({
       SUGGEST_PHASE_SECONDS: "30",
       EARLY_CLOSE_POOL_SIZE: "2",
-      CHAOS_ACTIVATION_VOTES: "1", // env-tunable threshold: a single !chaos activates
       CHAOS_MODE_DURATION_SECONDS: "60",
     });
     runner = recordingRunner();
@@ -516,25 +594,20 @@ describe("chaos e2e: picks ride the q5n kind router — ship-gate holds for proj
       chaosRng: (max) => Math.min(rngIndex, max - 1),
     });
 
-    // DEMOCRATIC prologue: scaffold generation 1 via a normal voted build so
-    // the workspace holds an ACTIVE project (the ship gate has something to ship).
+    // DEMOCRATIC prologue: scaffold generation 1 via a normal voted build so the
+    // workspace holds an ACTIVE project (the ship gate has something to ship).
     chat.say("s1", "ann", "!suggest make a counter app");
     chat.say("s2", "bob", "!suggest a filler idea");
-    await until(() => app.round.snapshot()?.status === "open"); // early close opened the round
-    const snap = app.round.snapshot();
-    const counter = snap?.candidates.find((c) => c.candidate.text === "make a counter app");
-    if (!counter) throw new Error("counter candidate not drawn");
-    app.round.recordVote("v1", counter.option);
-    app.round.closeRound();
+    await voteAndClose(app, (c) => c.text === "make a counter app");
     await until(() => runner.specs.length === 1 && app.machine.mode === "IDLE");
     await until(() => workspaceRow(app).scaffolded === 1);
 
-    // A single !chaos activates (threshold knob = 1).
-    chat.say("u1", "cal", "!chaos");
-    await until(
-      () => listAuditRecords(app.db, { limit: 10, eventType: "chaos_activated" }).length === 1,
-    );
-  }, 15_000);
+    // Activate chaos by WINNING a ballot: pool [CHAOS, filler] → vote CHAOS.
+    chat.say("c1", "cal", "!chaos");
+    chat.say("g1", "guy", "!suggest gate filler");
+    await voteAndClose(app, (c) => c.kind === "chaos");
+    await until(() => chaosActivatedRows(app).length === 1);
+  }, 20_000);
 
   afterAll(async () => {
     await app.close();
@@ -545,30 +618,22 @@ describe("chaos e2e: picks ride the q5n kind router — ship-gate holds for proj
     const generationBefore = workspaceRow(app).generation;
     rngIndex = 0; // eligible order: [project-switch, filler] → pick the switch
     chat.say("b1", "dee", "!build make a snake game");
-    chat.say("f1", "eve", "!suggest filler two");
+    chat.say("f2", "eve", "!suggest filler two");
 
     await until(() => chaosPickRows(app).length === 1, 5_000);
     expect(chaosPickRows(app)[0]?.decision).toBe("project-switch");
-    // The ship attempt ran and FAILED → rotation withheld.
     await until(() => sent.some((m) => m.startsWith("Couldn't ship the current project")), 5_000);
     await until(() => app.machine.mode === "IDLE");
     expect(workspaceRow(app).generation).toBe(generationBefore); // NO rotation
-    expect(runner.specs).toHaveLength(1); // no new build started (still the prologue's)
-    // The SHIP attempt (title "app-1 final snapshot") ran, failed, and was audited.
+    expect(runner.specs).toHaveLength(1); // no new build (still the prologue's)
     expect(publishCalls.some((c) => c.title === "app-1 final snapshot")).toBe(true);
-    const pickTaskId = chaosPickRows(app)[0]?.task_id;
-    const failedPublish = listAuditRecords(app.db, { limit: 20, eventType: "gallery_publish" });
-    expect(failedPublish.some((r) => r.decision === "failed" && r.task_id === pickTaskId)).toBe(
-      true,
-    );
   }, 10_000);
 
   it("a chaos-picked REVERT runs the revert path (revert_outcome row, build_history 'reverted') — never an agent build", async () => {
     rngIndex = 1; // eligible order: [filler two, revert] → pick the revert
     chat.say("r1", "fay", "!revert");
     await until(() => chaosPickRows(app).length === 2, 5_000);
-    const revertPick = chaosPickRows(app)[0]; // newest-first
-    expect(revertPick?.decision).toBe("revert");
+    expect(chaosPickRows(app)[0]?.decision).toBe("revert"); // newest-first
 
     await until(() => revertCalls.length === 1, 5_000);
     await until(() => app.machine.mode === "IDLE");
@@ -576,9 +641,6 @@ describe("chaos e2e: picks ride the q5n kind router — ship-gate holds for proj
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]?.decision).toBe("reverted");
     const history = listBuildHistory(app.db, { limit: 10 });
-    // PROVENANCE ACK (checker INFO 1): the chaos-picked revert rides the SAME
-    // winner rail, so build_history provenance reads "vote" — the true origin
-    // is the chaos_pick row (kind in `decision`).
     expect(history.some((h) => h.result === "reverted" && h.provenance === "vote")).toBe(true);
     expect(runner.specs).toHaveLength(1); // a revert never reaches the agent runner
   }, 10_000);

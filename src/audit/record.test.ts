@@ -430,14 +430,15 @@ describe("audit record helpers (append-only ledger)", () => {
     db.close();
   });
 
-  it("recordChaosActivated inserts a chaos_activated row with the unique-chatter count (quick-rs3)", () => {
+  it("recordChaosActivated inserts a chaos_activated row for a democratic vote win (quick-260711-ly4)", () => {
     const db = openDb(":memory:");
-    recordChaosActivated(db, { votes: 3, streamMode: "IDLE" });
+    recordChaosActivated(db, { taskId: "chaos-task-1", streamMode: "IDLE" });
     const rows = listAuditRecords(db, { limit: 10, eventType: "chaos_activated" });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.source).toBe("chaos");
     expect(rows[0]?.decision).toBe("activated");
-    expect(rows[0]?.rationale).toBe("Chaos mode activated by 3 unique chatters");
+    expect(rows[0]?.rationale).toBe("Chaos mode activated by winning a democratic vote round");
+    expect(rows[0]?.task_id).toBe("chaos-task-1");
     expect(rows[0]?.stream_mode).toBe("IDLE");
     db.close();
   });

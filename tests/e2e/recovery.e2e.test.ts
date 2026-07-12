@@ -460,7 +460,6 @@ describe("EventSub disconnect → ready reconciliation (INFRA-02, D2-14)", () =>
         chaosOn() {},
         chaosOff() {},
         chaosPick() {},
-        chaosTallyProgress() {},
         chaosActivated() {},
         chaosModePicked() {},
         chaosPickRecheck() {},

@@ -498,10 +498,11 @@ body {
 }
 
 /*
- * Kind chip (quick-ur2, command layer C) — the NEW/TWEAK/SWAP/REVERT intent
- * label on vote rows, composed client-side from the closed CandidateKind enum.
- * Mirrors .provenance-chip: Secondary bg, muted text, small rounded box. NO new
- * accent color, NEVER red — it stays inside the neutral Secondary/muted budget.
+ * Kind chip (quick-ur2, command layer C; +CHAOS quick-260711-ly4) — the
+ * NEW/TWEAK/SWAP/REVERT/CHAOS intent label on vote rows, composed client-side
+ * from the closed CandidateKind enum. Mirrors .provenance-chip: Secondary bg,
+ * muted text, small rounded box. NO new accent color, NEVER red — every kind
+ * (CHAOS included) stays inside the neutral Secondary/muted budget.
  */
 .kind-chip {
   flex: none;

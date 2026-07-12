@@ -90,6 +90,7 @@
     suggestion: "TWEAK",
     swap: "SWAP",
     revert: "REVERT",
+    chaos: "CHAOS",
   };
 
   // --- tiny DOM helpers (textContent-only construction, from console.js) ---

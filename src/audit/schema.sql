@@ -13,8 +13,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
                                              --   quick-q5n: 'revert_outcome' — a chat-voted rollback resolved (reverted | nothing-to-revert | failed)
                                              --   quick-t8k: 'swap_activated' — a chat-voted portfolio swap activated an existing generation (from/to in rationale);
                                              --     'swap_failed' — a swap resolved without activating (unresolved | already-current | ship-failed in `decision`)
-                                             --   quick-rs3: 'chaos_activated' | 'chaos_expired' — the CHAT-activated timed chaos window's lifecycle
-                                             --     (distinct from 'chaos_toggled', the console switch); 'chaos_pick' rows from the chat-activated
+                                             --   quick-260711-ly4: 'chaos_activated' | 'chaos_expired' — the CHAT-VOTED timed chaos window's lifecycle
+                                             --     (distinct from 'chaos_toggled', the console switch). 'chaos_activated' fires when the server-composed
+                                             --     CHAOS ballot option WINS a normal vote round (decision 'activated', task_id = the winning CHAOS
+                                             --     candidate — a democratic win, never a threshold tally). 'chaos_pick' rows from the in-window
                                              --     vote-skip path carry the picked candidate's kind in `decision` (true-origin record — the
                                              --     build_history provenance for such picks reads 'vote' by same-winner-rail design)
                                              --   quick-260711-ly4: 'solo_pick' — the auto-cycle window ended with EXACTLY ONE pooled candidate, built

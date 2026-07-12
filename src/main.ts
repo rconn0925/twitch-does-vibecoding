@@ -353,8 +353,6 @@ const DEFAULT_SUGGEST_PHASE_SECONDS = 40;
 const DEFAULT_EARLY_CLOSE_POOL_SIZE = 5;
 /** VOTE_QUEUE_MAX amendment: pause new rounds when this many vote winners wait. */
 const DEFAULT_VOTE_QUEUE_MAX = 10;
-/** quick-rs3: unique chatters typing !chaos required to activate chaos mode. */
-const DEFAULT_CHAOS_ACTIVATION_VOTES = 3;
 /**
  * quick-t8k: global per-command cooldown for the tier-2 info commands
  * (!projects/!current/!repo/!help). One reply per command per window;
@@ -454,28 +452,25 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // swap activation.
   let reRootPreview: () => void = () => {};
 
-  // ── Chat-activated chaos mode controller (quick-rs3, RS3-01..RS3-05) ─────
-  // A timed, chat-voted vote-skip window — DISTINCT from the console CHAOS_MODE
-  // machine toggle below: this mode never transitions the machine (the suggest
-  // cycle keeps running; only the vote round is skipped at window close).
-  // State is IN-MEMORY ONLY, deliberately unpersisted — a process that crashes
-  // mid-chaos reboots into democratic mode, the safe default for a live show.
-  // Composed BEFORE the HALT_TRIGGERED handler below: the boot-restore path
-  // (a frozen round) force-transitions to HALTED during composition, and that
-  // handler clears chaos. The narration/audit callbacks close over the
-  // late-bound windowNarrator (silent-safe until the chat block assigns it).
-  const chaosActivationVotes = Math.max(
-    1,
-    Math.floor(envPositive(process.env.CHAOS_ACTIVATION_VOTES, DEFAULT_CHAOS_ACTIVATION_VOTES)),
-  );
+  // ── Chat-voted chaos mode controller (quick-260711-ly4, RS3-01..RS3-05) ──
+  // A timed vote-skip window opened when the server-composed CHAOS ballot option
+  // WINS a normal vote round — DISTINCT from the console CHAOS_MODE machine
+  // toggle below: this mode never transitions the machine (the suggest cycle
+  // keeps running; only the vote round is skipped at window close). State is
+  // IN-MEMORY ONLY, deliberately unpersisted — a process that crashes mid-chaos
+  // reboots into democratic mode, the safe default for a live show. Composed
+  // BEFORE the HALT_TRIGGERED handler below: the boot-restore path (a frozen
+  // round) force-transitions to HALTED during composition, and that handler
+  // clears chaos. onActivated narrates the chaos-wins beat through the
+  // late-bound windowNarrator (silent-safe until the chat block assigns it); the
+  // audit row is written in the drainVoteQueue chaos arm, where the winning
+  // candidate's task id is in scope.
   const chaosModeDurationMs =
     envPositive(process.env.CHAOS_MODE_DURATION_SECONDS, DEFAULT_CHAOS_MODE_DURATION_SECONDS) *
     1_000;
   const chaosMode = new ChaosModeController({
-    thresholdVotes: chaosActivationVotes,
     durationMs: chaosModeDurationMs,
-    onActivated: (votes) => {
-      recordChaosActivated(db, { votes, streamMode: machine.mode });
+    onActivated: () => {
       windowNarrator?.chaosActivated(chaosModeDurationMs);
     },
     onExpired: () => {
@@ -814,21 +809,13 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     },
   };
 
-  // ── Chat-activated chaos mode closures (quick-rs3, RS3-01..RS3-05) ───────
+  // ── Chat-voted chaos mode closures (quick-260711-ly4, RS3-01..RS3-05) ────
   // The ChaosModeController itself is composed EARLY (above the HALT handler —
-  // the boot-restore path can force HALTED mid-composition); the dispatch and
-  // pick closures live here where resubmit/pool/enqueueWinner are in scope.
-
-  // !chaos dispatch target (startTwitchChat's chaosVote seam). Narrates ONLY
-  // on a count INCREASE (T-rs3-03 — a repeat flood is an O(1) silent no-op);
-  // "duplicate"/"already-active" stay silent per D2-15.
-  const chaosVote = (chatterId: string): void => {
-    if (machine.mode === "HALTED") return; // no chaos accrual while halted (RS3-04)
-    const result = chaosMode.vote(chatterId);
-    if (result.kind === "counted") {
-      windowNarrator?.chaosTallyProgress(result.count, result.threshold);
-    }
-  };
+  // the boot-restore path can force HALTED mid-composition); the vote-skip pick
+  // closure lives here where resubmit/pool/enqueueWinner are in scope. The
+  // !chaos dispatch is now the shared submission path in twitch-chat.ts (a
+  // server-composed CHAOS candidate competing in the vote); the window opens via
+  // chaosMode.activate() in the drainVoteQueue chaos arm when it WINS.
 
   // The vote-skip pick closure (AutoCycleScheduler's chaosModePick dep). Runs
   // BEHIND the scheduler's eligibility check, so HALT parking and FREE REIGN
@@ -901,6 +888,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     if (pooled.length !== 1) return "empty"; // defensive — the scheduler only calls at size 1
     const solo = pooled[0];
     if (solo === undefined) return "empty";
+    // quick-260711-ly4: a LONE CHAOS candidate must NEVER auto-activate
+    // unopposed — chaos only ever opens by WINNING a real multi-option vote.
+    // Excluding it here makes a pool holding only the CHAOS option behave as
+    // empty: the window restarts (stillCollecting) until a real idea joins,
+    // then they compete in a normal round.
+    if (solo.candidate.kind === "chaos") return "empty";
     // Source ALLOWLIST parity with the chaos path (T-rs3-05): a pool candidate is
     // always chat/operator by construction, but only enqueue chat/operator so no
     // payment token can ever appear near this path (source scan stays clean). This
@@ -1288,9 +1281,13 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
           candidate,
         ),
       round,
-      // quick-rs3: !chaos routes the chatterId to the controller (no intake,
-      // no gate call — the command carries no buildable text by construction).
-      chaosVote,
+      // quick-260711-ly4: !chaos rides the shared submission path (a
+      // server-composed CHAOS candidate). This seam only reports whether a chaos
+      // window is ALREADY live, so a !chaos during the window is a silent no-op.
+      chaosActive: () => {
+        const s = chaosMode.snapshot();
+        return s !== null && s.endsAtMs > Date.now();
+      },
       // quick-t8k: tier-2 info commands (read-only, cooldown-gated, HALTED-silent).
       infoCommand,
       narrator,
@@ -1773,6 +1770,27 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       backToIdle();
     };
 
+    /**
+     * quick-260711-ly4 chaos winner: THE ONE DEVIATION from revert/swap. A
+     * CHAOS ballot option that WINS a vote round does NOT build and must NOT
+     * hold BUILD_IN_PROGRESS — it instantly flips on the 5-minute chaos window,
+     * then the auto-cycle keeps running (chaosModePick owns phase ends for the
+     * duration). Head removed FIRST (the runRevertWinner idiom — nothing else
+     * dequeues it). activate() opens the window (→ onActivated narrates the
+     * chaos-wins beat); a truthful "activated by vote win" audit row is written
+     * HERE, where the winning candidate's task id is in scope. NO state
+     * transition: the caller stays IDLE (deferred drain) or lets closeRound's
+     * own VOTING_ROUND→IDLE step run (synchronous close), so the democratic
+     * cadence continues uninterrupted.
+     */
+    const runChaosWinner = (head: QueuedTask): void => {
+      taskQueue.remove(head.id);
+      chaosMode.activate();
+      if (db.open) {
+        recordChaosActivated(db, { taskId: head.id, streamMode: machine.mode });
+      }
+    };
+
     // ── drainVoteQueue — the ONE vote-winner build starter (quick-t5k A1) ──
     // Every path a queued winner can start on funnels through this helper, and
     // it only EVER starts the FIFO queue head — never a caller-supplied task id
@@ -1797,6 +1815,17 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       if (chaos.enabled()) return false;
       const head = taskQueue.list().find(isVoteOrigin);
       if (!head) return false;
+      // quick-260711-ly4: a CHAOS winner NEVER builds — handle it BEFORE the
+      // BUILD_IN_PROGRESS prologue. It flips on the chaos window (activate) and
+      // leaves the machine where it is (VOTING_ROUND → closeRound's own
+      // VOTING_ROUND→IDLE step runs; IDLE → stays IDLE), so the auto-cycle keeps
+      // going. Then drain the NEXT queued winner immediately when already IDLE.
+      // Returns false: no build STARTED (callers ignore the return).
+      if (head.kind === "chaos") {
+        runChaosWinner(head);
+        if (machine.mode === "IDLE") drainVoteQueue();
+        return false;
+      }
       try {
         if (machine.mode === "VOTING_ROUND" || machine.mode === "IDLE") {
           // VOTING_ROUND → BUILD_IN_PROGRESS: the synchronous close path (as

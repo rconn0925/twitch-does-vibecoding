@@ -7,22 +7,25 @@
  * branch adapts the real EventSubWsListener behind this interface.
  *
  * Dispatch contract:
- *  - !suggest / !build / !swapbuild / !revert (quick-q5n, quick-t8k) → ONE
- *    shared path: derive the candidate text (command text for
- *    suggest/build/swapbuild, the fixed REVERT_REQUEST_TEXT for revert) and
- *    kind ("suggestion" / "project-switch" / "swap" / "revert"), then
- *    intake.check() (D2-11/D2-12, BEFORE any classifier call) →
- *    deps.submit(), which is submitCandidate pre-bound in main.ts — the ONLY
- *    intake path (COMP-01). The funnel itself is untouched. A swap's text is
- *    a project-name reference but chat-derived, so it is gate-screened like
- *    all tier-1 text (T-t8k-01).
+ *  - !suggest / !build / !swapbuild / !revert / !chaos (quick-q5n, quick-t8k,
+ *    quick-260711-ly4) → ONE shared path: derive the candidate text (command
+ *    text for suggest/build/swapbuild, the fixed REVERT_REQUEST_TEXT for revert,
+ *    the fixed CHAOS_CANDIDATE_TEXT for chaos) and kind ("suggestion" /
+ *    "project-switch" / "swap" / "revert" / "chaos"), then intake.check()
+ *    (D2-11/D2-12, BEFORE any classifier call) → deps.submit(), which is
+ *    submitCandidate pre-bound in main.ts — the ONLY intake path (COMP-01). The
+ *    funnel itself is untouched. A swap's text is a project-name reference but
+ *    chat-derived, so it is gate-screened like all tier-1 text (T-t8k-01).
  *  - !vote → round.recordVote(chatterId, option); invalid votes are ignored
  *    silently (D2-15 — no chat noise).
- *  - !chaos (quick-rs3) → deps.chaosVote?.(chatterId) and return — the !vote
- *    treatment. NO intake.check runs on this path: !chaos carries no buildable
- *    text (strict no-arg parse), so there is no gate call BY CONSTRUCTION and
- *    no suggest-cooldown is charged. Per-user rate limiting = the controller's
- *    unique-user dedupe + D2-15 silence on repeats.
+ *  - !chaos (quick-260711-ly4) rides the shared submission path above with a
+ *    fixed server-composed CHAOS candidate (kind "chaos") — winning that
+ *    candidate in a normal vote round is the ONLY chat path to the chaos window.
+ *    Two chaos-specific rules: (1) while a chaos window is ALREADY live
+ *    (deps.chaosActive) the command is a silent no-op — chaos is already
+ *    running; (2) intake refusals (cooldown / duplicate-when-one-is-pooled) are
+ *    SILENT for chaos, so a second !chaos while one is pooled coalesces to a
+ *    quiet no-op (the pool's identical-text dedupe caps it at one).
  *  - !projects / !current / !repo / !help / !commands (quick-t8k tier-2) →
  *    deps.infoCommand?.(kind) and return. READ-ONLY contract: no gate call,
  *    no vote, no state change, no intake state touched — the seam replies
@@ -48,7 +51,12 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { SubmitResult } from "../pipeline/submit.js";
 import type { CandidateKind, SuggestionCandidate } from "../shared/types.js";
-import { type InfoCommandKind, parseCommand, REVERT_REQUEST_TEXT } from "./command-parser.js";
+import {
+  CHAOS_CANDIDATE_TEXT,
+  type InfoCommandKind,
+  parseCommand,
+  REVERT_REQUEST_TEXT,
+} from "./command-parser.js";
 import type { FeedbackKind, Narrator } from "./narration.js";
 import type { SuggestIntake } from "./suggest-intake.js";
 
@@ -91,11 +99,13 @@ export interface TwitchChatDeps {
   submit: (candidate: SuggestionCandidate) => SubmitResult;
   round: { recordVote(id: string, option: number): boolean };
   /**
-   * quick-rs3 chat-activated chaos mode: !chaos routes the chatterId here
-   * (main.ts closes over the ChaosModeController). Optional — absent seam
-   * makes !chaos a silent no-op.
+   * quick-260711-ly4: is a chat-voted chaos window CURRENTLY live? When it
+   * returns true, !chaos is a silent no-op (chaos is already running, so there
+   * is nothing to submit). main.ts closes over the ChaosModeController snapshot.
+   * Optional — an absent seam means "never active", so !chaos always attempts to
+   * pool its CHAOS candidate.
    */
-  chaosVote?: (chatterId: string) => void;
+  chaosActive?: () => boolean;
   /**
    * quick-t8k tier-2 info commands: !projects/!current/!repo/!help route the
    * parsed InfoCommandKind here (main.ts closes over the narrator + a
@@ -147,19 +157,25 @@ export function startTwitchChat(deps: TwitchChatDeps): { stop(): void } {
         return;
       }
 
-      // !chaos (quick-rs3) — BEFORE the suggest/build/revert shared path: no
-      // text → no gate call, no cooldown charged; dedupe lives in the
-      // controller (T-rs3-03).
-      if (command.kind === "chaos") {
-        deps.chaosVote?.(chatterId);
+      // !chaos (quick-260711-ly4) — while a chaos window is ALREADY live, the
+      // command is a silent no-op: chaos is already running, so there is
+      // nothing to submit (mirrors the old already-active behavior). Otherwise
+      // it falls through to the shared submission path below with kind "chaos".
+      if (command.kind === "chaos" && deps.chaosActive?.()) {
         return;
       }
 
-      // !suggest / !build / !swapbuild / !revert — ONE shared path (quick-q5n,
-      // quick-t8k). The text is the command text for suggest/build/swapbuild
-      // and the FIXED server-composed REVERT_REQUEST_TEXT for revert (zero
+      // !suggest / !build / !swapbuild / !revert / !chaos — ONE shared path
+      // (quick-q5n, quick-t8k, quick-260711-ly4). The text is the command text
+      // for suggest/build/swapbuild, the FIXED server-composed REVERT_REQUEST_TEXT
+      // for revert, and the FIXED CHAOS_CANDIDATE_TEXT for chaos (both zero
       // chat-derived bytes, T-q5n-02).
-      const text = command.kind === "revert" ? REVERT_REQUEST_TEXT : command.text;
+      const text =
+        command.kind === "revert"
+          ? REVERT_REQUEST_TEXT
+          : command.kind === "chaos"
+            ? CHAOS_CANDIDATE_TEXT
+            : command.text;
       const kind: CandidateKind =
         command.kind === "suggest"
           ? "suggestion"
@@ -167,12 +183,20 @@ export function startTwitchChat(deps: TwitchChatDeps): { stop(): void } {
             ? "project-switch"
             : command.kind === "swapbuild"
               ? "swap"
-              : "revert";
+              : command.kind === "chaos"
+                ? "chaos"
+                : "revert";
 
       // Per-user limits run BEFORE classification (D2-11, closes T-01-11).
       const verdict = deps.intake.check(chatterId, text);
       if (!verdict.ok) {
-        deps.narrator.feedback(INTAKE_FEEDBACK[verdict.reason], chatterDisplayName);
+        // quick-260711-ly4: !chaos dedup/cooldown refusals are SILENT — a second
+        // !chaos while one is already pooled coalesces to a quiet no-op (the
+        // pool's identical-text dedupe caps CHAOS at one candidate). Every other
+        // tier-1 command still gets its coalesced cooldown/duplicate notice.
+        if (command.kind !== "chaos") {
+          deps.narrator.feedback(INTAKE_FEEDBACK[verdict.reason], chatterDisplayName);
+        }
         return;
       }
 

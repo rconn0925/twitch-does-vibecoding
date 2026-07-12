@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SubmitResult } from "../pipeline/submit.js";
 import type { SuggestionCandidate } from "../shared/types.js";
-import { REVERT_REQUEST_TEXT } from "./command-parser.js";
+import { CHAOS_CANDIDATE_TEXT, REVERT_REQUEST_TEXT } from "./command-parser.js";
 import type { FeedbackKind, Narrator } from "./narration.js";
 import type { IntakeVerdict, SuggestIntake } from "./suggest-intake.js";
 import {
@@ -104,8 +104,7 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     chaosOn: vi.fn(),
     chaosOff: vi.fn(),
     chaosPick: vi.fn(),
-    // Chat-activated chaos-mode beats (quick-rs3; unused by the chat listener).
-    chaosTallyProgress: vi.fn(),
+    // Chat-voted chaos-mode beats (quick-260711-ly4; unused by the chat listener).
     chaosActivated: vi.fn(),
     chaosModePicked: vi.fn(),
     chaosPickRecheck: vi.fn(),
@@ -409,41 +408,66 @@ describe("startTwitchChat — EventSub listener wiring (CHAT-01/D2-15/T-02-15)",
     });
   });
 
-  describe("!chaos dispatch seam (quick-rs3 — intake-free, gate-free by construction)", () => {
-    it("!chaos routes the chatterId to the chaosVote seam and NEVER touches intake or submit", () => {
+  describe("!chaos ballot candidate (quick-260711-ly4 — server-composed, rides the ONE funnel)", () => {
+    it("!chaos submits a fixed server-composed CHAOS candidate (kind 'chaos', CHAOS_CANDIDATE_TEXT, no chat text)", () => {
       const src = fakeSource();
-      const chaosVote = vi.fn();
-      const checkSpy = vi.fn(() => ({ ok: true }) as const);
-      const intake: SuggestIntake = {
-        check: checkSpy,
-        registerAccepted: vi.fn(),
-      };
-      const deps = makeDeps({ source: src.source, intake, chaosVote });
+      const intake = fakeIntake({ ok: true });
+      const deps = makeDeps({ source: src.source, intake });
       startTwitchChat(deps);
       src.emitMessage({ ...CHAT_EVENT, messageText: "!chaos" });
-      expect(chaosVote).toHaveBeenCalledExactlyOnceWith("42");
-      expect(checkSpy).not.toHaveBeenCalled(); // no gate call, no cooldown charged
+
+      expect(deps.submitted).toHaveLength(1);
+      const candidate = deps.submitted[0];
+      expect(candidate).toMatchObject({
+        source: "chat",
+        kind: "chaos",
+        text: CHAOS_CANDIDATE_TEXT,
+      });
+      // The fixed text is byte-identical regardless of who typed !chaos.
+      expect(candidate?.text).toBe(CHAOS_CANDIDATE_TEXT);
+      expect(intake.registered).toEqual([["42", candidate?.id]]);
+    });
+
+    it("!chaos while a chaos window is ALREADY live is a silent no-op (never submits, no feedback)", () => {
+      const src = fakeSource();
+      const narrator = fakeNarrator();
+      const deps = makeDeps({ source: src.source, narrator, chaosActive: () => true });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!chaos" });
       expect(deps.submitted).toHaveLength(0);
-      expect(deps.votes).toHaveLength(0);
+      expect(narrator.feedbackCalls).toEqual([]);
+    });
+
+    it("a second !chaos while one is pooled (intake 'duplicate') is SILENT — no feedback, no submit", () => {
+      const src = fakeSource();
+      const narrator = fakeNarrator();
+      const deps = makeDeps({
+        source: src.source,
+        narrator,
+        intake: fakeIntake({ ok: false, reason: "duplicate" }),
+      });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!chaos" });
+      expect(deps.submitted).toHaveLength(0);
+      // Unlike !suggest/!revert, chaos dedup refusals never post a chat notice.
+      expect(narrator.feedbackCalls).toEqual([]);
     });
 
     it("!chaos with trailing text is NOT a command — ignored silently (strict no-arg)", () => {
       const src = fakeSource();
-      const chaosVote = vi.fn();
-      const deps = makeDeps({ source: src.source, chaosVote });
+      const deps = makeDeps({ source: src.source });
       startTwitchChat(deps);
       src.emitMessage({ ...CHAT_EVENT, messageText: "!chaos please" });
-      expect(chaosVote).not.toHaveBeenCalled();
       expect(deps.submitted).toHaveLength(0);
     });
 
-    it("an absent chaosVote seam makes !chaos a no-op that never throws", () => {
+    it("an absent chaosActive seam treats chaos as never-live — !chaos still pools its candidate", () => {
       const src = fakeSource();
       const deps = makeDeps({ source: src.source });
       startTwitchChat(deps);
       expect(() => src.emitMessage({ ...CHAT_EVENT, messageText: "!chaos" })).not.toThrow();
-      expect(deps.submitted).toHaveLength(0);
-      expect(deps.votes).toHaveLength(0);
+      expect(deps.submitted).toHaveLength(1);
+      expect(deps.submitted[0]?.kind).toBe("chaos");
     });
   });
 

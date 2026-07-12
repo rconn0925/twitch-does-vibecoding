@@ -30,7 +30,13 @@
   // CandidateKind. The enum string is the ONLY thing on the wire; this fixed
   // lookup composes the human label. An unknown/missing kind yields undefined →
   // NO chip (fail closed).
-  const KIND_CHIP = { "project-switch": "NEW", suggestion: "TWEAK", swap: "SWAP", revert: "REVERT" };
+  const KIND_CHIP = {
+    "project-switch": "NEW",
+    suggestion: "TWEAK",
+    swap: "SWAP",
+    revert: "REVERT",
+    chaos: "CHAOS",
+  };
 
   /** Latest OverlayState from the ws push (full state every message). */
   let latest = null;

@@ -102,6 +102,22 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
     expect(sent[0]).not.toContain("Revert the last change to the current project");
   });
 
+  it("roundOpened renders a CHAOS candidate as [N] CHAOS — 5 min of mayhem (fixed label, quick-260711-ly4)", () => {
+    const { sent, sender } = capturingSender();
+    const narrator = createNarrator({ sender });
+    narrator.roundOpened(
+      snapshot({
+        candidates: [
+          roundCandidate(1, "add a dark theme", 0, "suggestion"),
+          roundCandidate(2, "CHAOS — 5 minutes of mayhem", 0, "chaos"),
+        ],
+      }),
+    );
+    expect(sent).toEqual([
+      "Voting is OPEN — !vote 1 or 2: [1] TWEAK: add a dark theme [2] CHAOS — 5 min of mayhem — 60s on the clock.",
+    ]);
+  });
+
   it("candidate titles truncate to 60 chars in chat messages", () => {
     const { sent, sender } = capturingSender();
     const narrator = createNarrator({ sender });
@@ -256,9 +272,8 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "chaosOn",
         "chaosOff",
         "chaosPick",
-        // Chat-activated chaos-mode beats (quick-rs3) — counts and titles at
-        // most; never a tally-shaped input.
-        "chaosTallyProgress",
+        // Chat-voted chaos-mode beats (quick-260711-ly4) — a formatted duration
+        // and titles at most; never a tally-shaped input.
         "chaosActivated",
         "chaosModePicked",
         "chaosPickRecheck",
@@ -489,19 +504,15 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       expect(sent[3]).not.toContain("z".repeat(60));
     });
 
-    it("chat-activated chaos-mode beats render verbatim (quick-rs3 — reviewed copy contract)", () => {
+    it("chat-voted chaos-mode beats render verbatim (quick-260711-ly4 — reviewed copy contract)", () => {
       const { sent, sender } = capturingSender();
       const n = createNarrator({ sender });
-      n.chaosTallyProgress(1, 3);
-      n.chaosTallyProgress(2, 3);
       n.chaosActivated(300_000);
       n.chaosModePicked("a counter app");
       n.chaosPickRecheck();
       n.chaosExpired();
       expect(sent).toEqual([
-        "Chaos votes: 1/3 — type !chaos to skip the voting.",
-        "Chaos votes: 2/3 — type !chaos to skip the voting.",
-        "CHAOS MODE ACTIVATED — no voting for 5:00: each round, one approved idea from the pool gets picked and built.",
+        "Chat voted CHAOS — 5:00 of mayhem! No voting: each round, one approved idea from the pool gets picked and built.",
         'Chaos picked: "a counter app" — no vote this round, straight to the build queue.',
         "The chaos pick needs a fresh safety check first — it may come back around.",
         "Chaos mode is over — voting is back.",
@@ -547,7 +558,6 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       n.chaosOn();
       n.chaosOff();
       n.chaosPick("a build");
-      n.chaosTallyProgress(1, 3);
       n.chaosActivated(300_000);
       n.chaosModePicked("a build");
       n.chaosPickRecheck();

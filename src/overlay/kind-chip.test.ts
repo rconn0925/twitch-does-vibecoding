@@ -22,6 +22,7 @@ const KIND_CHIP: Record<string, string> = {
   suggestion: "TWEAK",
   swap: "SWAP",
   revert: "REVERT",
+  chaos: "CHAOS",
 };
 
 /** The client's skip rule: label falsy → no chip. */
@@ -40,6 +41,7 @@ describe("kind chip mapping (quick-ur2)", () => {
       suggestion: "TWEAK",
       swap: "SWAP",
       revert: "REVERT",
+      chaos: "CHAOS",
     };
     for (const [kind, label] of Object.entries(expected)) {
       expect(chipLabelFor(kind)).toBe(label);
@@ -55,7 +57,7 @@ describe("kind chip mapping (quick-ur2)", () => {
     expect(Boolean(chipLabelFor("banana"))).toBe(false);
   });
 
-  it("overlay.js and queue.js inline the SAME four-entry KIND_CHIP mapping (no drift)", () => {
+  it("overlay.js and queue.js inline the SAME five-entry KIND_CHIP mapping (no drift)", () => {
     for (const file of ["overlay.js", "queue.js"]) {
       const src = readClient(file);
       expect(src, `${file} must define KIND_CHIP`).toContain("KIND_CHIP");
@@ -63,6 +65,7 @@ describe("kind chip mapping (quick-ur2)", () => {
       expect(src, `${file} suggestion → TWEAK`).toContain('suggestion: "TWEAK"');
       expect(src, `${file} swap → SWAP`).toContain('swap: "SWAP"');
       expect(src, `${file} revert → REVERT`).toContain('revert: "REVERT"');
+      expect(src, `${file} chaos → CHAOS`).toContain('chaos: "CHAOS"');
     }
   });
 

@@ -98,14 +98,12 @@ export interface Narrator extends BuildNarrator {
   /** A uniform-random chaos pick was made and queued (CHAOS-01). */
   chaosPick(title: string): void;
 
-  // ── Chat-activated chaos-mode beats (quick-rs3 — server-composed) ─────────
-  // Fixed templates; the only interpolations are counts, a formatted duration,
-  // and gate-approved titles through truncateTitle. Copy-separation (directive
+  // ── Chat-voted chaos-mode beats (quick-260711-ly4 — server-composed) ──────
+  // Fixed templates; the only interpolations are a formatted duration and
+  // gate-approved titles through truncateTitle. Copy-separation (directive
   // + D2 rules): no gambling-adjacent words (luck/odds/roll/gamble) and no
   // money words in any of these strings.
-  /** A NEW unique chatter advanced the !chaos tally (fires only on count INCREASE). */
-  chaosTallyProgress(count: number, threshold: number): void;
-  /** The threshold landed — chaos mode is live for durationMs. */
+  /** The CHAOS ballot option WON a vote round — chaos mode is now live for durationMs. */
   chaosActivated(durationMs: number): void;
   /** The vote-skip pick landed in the build queue (chat-activated path). */
   chaosModePicked(title: string): void;
@@ -281,6 +279,12 @@ export function createNarrator(deps: {
           // same display rule as NEW/TWEAK (truncateTitle, approved text only).
           if (entry.candidate.kind === "swap") {
             return `${option} SWAP TO: ${truncateTitle(entry.candidate.text)}`;
+          }
+          // quick-260711-ly4: the CHAOS ballot option renders a FIXED label
+          // (never the candidate text — both are server-composed anyway),
+          // mirroring the REVERT listing line.
+          if (entry.candidate.kind === "chaos") {
+            return `${option} CHAOS — 5 min of mayhem`;
           }
           return `${option} TWEAK: ${truncateTitle(entry.candidate.text)}`;
         })
@@ -502,17 +506,13 @@ export function createNarrator(deps: {
       );
     },
 
-    // ── Chat-activated chaos-mode beats (quick-rs3 — VERBATIM copy contract) ──
+    // ── Chat-voted chaos-mode beats (quick-260711-ly4 — VERBATIM copy contract) ──
     // Server-composed fixed templates only; candidate titles pass through
     // truncateTitle. No gambling-adjacent or money words (copy-separation).
 
-    chaosTallyProgress(count: number, threshold: number): void {
-      void deps.sender.send(`Chaos votes: ${count}/${threshold} — type !chaos to skip the voting.`);
-    },
-
     chaosActivated(durationMs: number): void {
       void deps.sender.send(
-        `CHAOS MODE ACTIVATED — no voting for ${formatMmss(durationMs)}: each round, one approved idea from the pool gets picked and built.`,
+        `Chat voted CHAOS — ${formatMmss(durationMs)} of mayhem! No voting: each round, one approved idea from the pool gets picked and built.`,
       );
     },
 

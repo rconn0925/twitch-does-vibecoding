@@ -35,7 +35,9 @@ const CandidateSchema = z.object({
   source: z.enum(["chat", "channel_points", "donation", "chaos", "operator"]),
   // quick-t8k: "swap" added — the !swapbuild name reference is chat-derived
   // and rides this SAME funnel (gate-before-pool holds for every kind).
-  kind: z.enum(["suggestion", "project-switch", "revert", "swap"]),
+  // quick-260711-ly4: "chaos" added — the server-composed CHAOS ballot option
+  // rides the SAME funnel (fixed benign text → approved → pooled, like revert).
+  kind: z.enum(["suggestion", "project-switch", "revert", "swap", "chaos"]),
   twitchUsername: z.string().nullable(),
   text: z.string().min(1).max(2000),
   submittedAtMs: z.number().int().nonnegative(),

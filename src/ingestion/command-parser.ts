@@ -58,13 +58,22 @@ const VoteCommand = z.object({
 });
 
 /**
- * quick-rs3 chat-activated chaos mode: `!chaos` — a threshold vote to skip the
- * voting rounds for a bounded window. STRICT no-arg match (RevertCommand idiom):
- * trailing text → null, so chaos can never carry chat-derived text (T-rs3-01).
+ * quick-260711-ly4 chat-voted CHAOS ballot option: `!chaos` — submits a single
+ * server-composed CHAOS candidate that competes in the normal vote round (like
+ * !revert/!swapbuild). STRICT no-arg match (RevertCommand idiom): trailing text
+ * → null, so chaos can never carry chat-derived text (T-rs3-01).
  */
 const ChaosCommand = z.object({
   kind: z.literal("chaos"),
 });
+
+/**
+ * The ONLY text a CHAOS candidate ever carries — server-composed, zero
+ * chat-derived bytes (mirrors REVERT_REQUEST_TEXT). Every viewer's !chaos
+ * produces this byte-identical text, so the pool's duplicate check naturally
+ * dedups to at most ONE pooled CHAOS candidate at a time (quick-260711-ly4).
+ */
+export const CHAOS_CANDIDATE_TEXT = "CHAOS — 5 minutes of mayhem";
 
 /**
  * quick-t8k tier-1 voted command: `!swapbuild <name>` — the portfolio-swap
@@ -147,8 +156,8 @@ export function parseCommand(messageText: string): ParsedCommand | null {
     return parsed.success ? parsed.data : null;
   }
 
-  // quick-rs3: !chaos — strict no-arg; "!chaos anything" is NOT a command
-  // (null), so chaos activation can never smuggle chat text anywhere.
+  // quick-260711-ly4: !chaos — strict no-arg; "!chaos anything" is NOT a command
+  // (null), so the CHAOS ballot candidate can never smuggle chat text anywhere.
   if (/^!chaos$/i.test(trimmed)) {
     const parsed = ChaosCommand.safeParse({ kind: "chaos" });
     return parsed.success ? parsed.data : null;

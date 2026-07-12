@@ -717,17 +717,21 @@ export function recordSoloPick(
   });
 }
 
-// ── quick-rs3: chat-activated chaos-mode lifecycle audit events (RS3-05) ─────
+// ── quick-260711-ly4: chat-voted chaos-mode lifecycle audit events (RS3-05) ──
 // One row per activation and one per natural expiry — the never-silent
 // doctrine. Both carry source "chaos" (the chance path, never a monetary
 // source — the ledger stays filterable by influence path). audit_log has no
 // CHECK constraints, so the new event_type values are schema-safe additions
 // (only schema.sql's descriptive comment is extended).
 
-/** One row per chat-activated chaos ACTIVATION: the unique-chatter count that tripped it. */
+/**
+ * One row per chat-voted chaos ACTIVATION: the CHAOS ballot option won a normal
+ * vote round (quick-260711-ly4). Truthfully a DEMOCRATIC win — never a threshold
+ * tally, never a random pick. `taskId` links the winning CHAOS candidate.
+ */
 export function recordChaosActivated(
   db: Database.Database,
-  args: { votes: number; streamMode: StreamMode },
+  args: { taskId: string; streamMode: StreamMode },
 ): void {
   insert(db, {
     createdAtMs: Date.now(),
@@ -737,9 +741,9 @@ export function recordChaosActivated(
     suggestionText: null,
     decision: "activated",
     category: null,
-    rationale: `Chaos mode activated by ${args.votes} unique chatters`,
+    rationale: "Chaos mode activated by winning a democratic vote round",
     streamMode: args.streamMode,
-    taskId: null,
+    taskId: args.taskId,
   });
 }
 

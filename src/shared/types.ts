@@ -45,8 +45,15 @@ export type CandidateSource =
  * Its text is a gate-screened project-NAME reference — chat-derived, so it
  * rides the ONE funnel like all tier-1 text; resolution against
  * project_repos.repo_name happens at drain time in the kind router.
+ *
+ * quick-260711-ly4: "chaos" is the chat-voted CHAOS ballot option (`!chaos`).
+ * A single server-composed CHAOS candidate (fixed CHAOS_CANDIDATE_TEXT, zero
+ * chat-derived bytes) competes in the normal vote round like revert/swap. When
+ * it WINS, the drain-time kind router activates the timed chaos window (5 min
+ * of random picks) INSTEAD of building — the one deviation from revert/swap
+ * (see main.ts drainVoteQueue). Winning is the ONLY chat path to chaos.
  */
-export type CandidateKind = "suggestion" | "project-switch" | "revert" | "swap";
+export type CandidateKind = "suggestion" | "project-switch" | "revert" | "swap" | "chaos";
 
 /** The normalized candidate shape every ingestion path (current or future) reduces to. */
 export interface SuggestionCandidate {

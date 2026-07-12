@@ -122,9 +122,10 @@ body {
 }
 
 /*
- * Kind chip (quick-ur2, command layer C) — NEW/TWEAK/SWAP/REVERT intent label
- * composed client-side from the closed CandidateKind enum. Secondary bg, muted
- * text, small rounded box (the .provenance-chip idiom). NO red, no new accent —
+ * Kind chip (quick-ur2, command layer C; +CHAOS quick-260711-ly4) —
+ * NEW/TWEAK/SWAP/REVERT/CHAOS intent label composed client-side from the closed
+ * CandidateKind enum. Secondary bg, muted text, small rounded box (the
+ * .provenance-chip idiom). NO red, no new accent — every kind (CHAOS included)
  * stays inside the neutral Secondary/muted budget.
  */
 .wc-chip {
