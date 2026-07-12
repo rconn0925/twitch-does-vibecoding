@@ -12,10 +12,19 @@ import { type PreviewServerHandle, startPreviewServer } from "./server.js";
  * server — the isolation contract is asserted, not the network.
  */
 
-function fakeProbe(reachable: boolean | (() => Promise<boolean>)): DevServerProbe {
-  return {
+function fakeProbe(
+  reachable: boolean | (() => Promise<boolean>),
+  appReady?: boolean | (() => Promise<boolean>),
+): DevServerProbe {
+  const probe: DevServerProbe = {
     reachable: typeof reachable === "function" ? reachable : async () => reachable,
   };
+  // Only attach appReady when explicitly supplied, so the default keeps
+  // exercising the reachable()-fallback path.
+  if (appReady !== undefined) {
+    probe.appReady = typeof appReady === "function" ? appReady : async () => appReady;
+  }
+  return probe;
 }
 
 describe("preview server (read-only, isolated surface)", () => {
@@ -59,6 +68,47 @@ describe("preview server (read-only, isolated surface)", () => {
     const res = await fetch(`http://127.0.0.1:${handle.port}/api/reachable`);
     const body = (await res.json()) as { reachable: boolean; url: string };
     expect(body.reachable).toBe(false);
+  });
+
+  it("prefers appReady() over reachable() when present (appReady true wins)", async () => {
+    // Directory-listing boot is the inverse: reachable(TCP)=true while the app
+    // isn't ready. Here appReady() true must win over reachable() false.
+    const handle = await start({ probe: fakeProbe(false, true) });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/reachable`);
+    const body = (await res.json()) as { reachable: boolean; url: string };
+    expect(body.reachable).toBe(true);
+  });
+
+  it("reports reachable:false for a directory-listing boot (appReady false, reachable true)", async () => {
+    const handle = await start({
+      probe: fakeProbe(true, false),
+      devServerUrl: "http://127.0.0.1:5555",
+    });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/reachable`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reachable: boolean; url: string };
+    expect(body).toEqual({ reachable: false, url: "http://127.0.0.1:5555" });
+  });
+
+  it("falls back to reachable() when the probe has no appReady()", async () => {
+    const handle = await start({ probe: fakeProbe(true) });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/reachable`);
+    const body = (await res.json()) as { reachable: boolean };
+    expect(body.reachable).toBe(true);
+  });
+
+  it("fails closed: a rejecting appReady() yields { reachable: false } at HTTP 200", async () => {
+    const handle = await start({
+      probe: fakeProbe(true, async () => {
+        throw new Error("appReady blew up");
+      }),
+      devServerUrl: "http://127.0.0.1:5555",
+    });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/reachable`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reachable: boolean; url: string };
+    // Body stays exactly { reachable, url } — no leaked error text (T-ofs-01).
+    expect(body).toEqual({ reachable: false, url: "http://127.0.0.1:5555" });
   });
 
   it("fails closed: a rejecting probe yields { reachable: false }, never a 500", async () => {
