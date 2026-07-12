@@ -516,16 +516,16 @@ export function createNarrator(deps: {
     // quick-0iu amendment D: the suggest-window beats invite BOTH new ideas
     // and tweaks to the app currently on screen (same rhythm + seconds
     // interpolation as before).
-    suggestionsOpen(seconds: number): void {
-      void deps.sender.send(
-        `Suggestions open — type !suggest — new idea or a tweak to what's on screen. ${seconds}s until voting.`,
-      );
+    // Ross 2026-07-11 (anti-spam): the on-screen SUGGESTIONS-OPEN banner is now
+    // the sole participation prompt. These auto-cycle beats fired every window
+    // and flooded chat, so they NO LONGER post to chat — kept as no-ops so the
+    // main.ts auto-cycle wiring stays intact.
+    suggestionsOpen(_seconds: number): void {
+      // intentionally silent — see note above
     },
 
-    stillCollecting(seconds: number): void {
-      void deps.sender.send(
-        `Still collecting suggestions — type !suggest — new idea or a tweak to what's on screen. Another ${seconds}s.`,
-      );
+    stillCollecting(_seconds: number): void {
+      // intentionally silent — see note above
     },
 
     buildQueueFull(): void {
@@ -646,7 +646,7 @@ export function createNarrator(deps: {
 
     infoHelp(): void {
       void deps.sender.send(
-        "Commands: !suggest <idea> | !build <idea> | !swapbuild <project name> | !vote 1-5 | !revert | !chaos | !projects | !current | !repo",
+        "How it works: chat decides what this AI builds, live. Pitch a change with !suggest <idea> or start a new app with !build <idea>, then !vote when a round opens — chat's top pick gets built on stream. The full command list is on the COMMANDS panel on screen.",
       );
     },
   };

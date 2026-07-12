@@ -543,22 +543,18 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
   });
 
   describe("auto-cycle suggestion-phase narration (quick-t5k D-01/D-02)", () => {
-    it("suggestionsOpen renders the fresh-window template with the seconds count", () => {
+    it("suggestionsOpen is silent — the on-screen banner is the prompt, not chat (anti-spam)", () => {
       const { sent, sender } = capturingSender();
       const narrator = createNarrator({ sender });
       narrator.suggestionsOpen(40);
-      expect(sent).toEqual([
-        "Suggestions open — type !suggest — new idea or a tweak to what's on screen. 40s until voting.",
-      ]);
+      expect(sent).toEqual([]);
     });
 
-    it("stillCollecting renders the pool-too-small restart template with the seconds count", () => {
+    it("stillCollecting is silent — no periodic chat spam (Ross 2026-07-11)", () => {
       const { sent, sender } = capturingSender();
       const narrator = createNarrator({ sender });
       narrator.stillCollecting(40);
-      expect(sent).toEqual([
-        "Still collecting suggestions — type !suggest — new idea or a tweak to what's on screen. Another 40s.",
-      ]);
+      expect(sent).toEqual([]);
     });
 
     it("buildQueueFull renders the queue-cap park template (VOTE_QUEUE_MAX amendment)", () => {
@@ -701,12 +697,12 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       ]);
     });
 
-    it("infoHelp is a FIXED-COPY command list — server-composed, zero interpolation", () => {
+    it("infoHelp EXPLAINS how to interact — server-composed fixed copy, zero interpolation", () => {
       const { sent, sender } = capturingSender();
       const n = createNarrator({ sender });
       n.infoHelp();
       expect(sent).toEqual([
-        "Commands: !suggest <idea> | !build <idea> | !swapbuild <project name> | !vote 1-5 | !revert | !chaos | !projects | !current | !repo",
+        "How it works: chat decides what this AI builds, live. Pitch a change with !suggest <idea> or start a new app with !build <idea>, then !vote when a round opens — chat's top pick gets built on stream. The full command list is on the COMMANDS panel on screen.",
       ]);
     });
 

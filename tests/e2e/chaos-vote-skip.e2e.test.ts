@@ -167,13 +167,6 @@ function workspaceRow(app: AppHandle): { generation: number; scaffolded: number 
     .get() as { generation: number; scaffolded: number };
 }
 
-function beginBeats(sent: string[]): { open: number; still: number } {
-  return {
-    open: sent.filter((m) => m.startsWith("Suggestions open")).length,
-    still: sent.filter((m) => m.startsWith("Still collecting")).length,
-  };
-}
-
 function setEnv(vars: Record<string, string>): () => void {
   const saved = new Map<string, string | undefined>();
   for (const [key, value] of Object.entries(vars)) {
@@ -280,12 +273,13 @@ describe("chaos e2e: 3 unique !chaos activate; window close SKIPS the vote; expi
     expect(app.pool.list()).toHaveLength(1);
   });
 
-  it("RE-ENTRANCY PIN: exactly ONE begin beat and ONE chaos_pick row for the picked window", () => {
-    // Boot opened one window (suggestionsOpen #1); the pick's follow-up phase
-    // opened exactly one more (suggestionsOpen #2) — even though the pick
-    // synchronously entered BUILD_IN_PROGRESS (STATE_CHANGED mid-hook). A
-    // double-begin bug would show a third begin beat and a second pick row.
-    expect(beginBeats(sent)).toEqual({ open: 2, still: 0 });
+  it("RE-ENTRANCY PIN: exactly ONE chaos_pick row for the picked window (no double-begin)", () => {
+    // The suggest-phase begin beats are silent now (anti-spam, Ross 2026-07-11),
+    // so re-entrancy is pinned on the downstream invariant instead: a
+    // double-began phase would close twice and emit a SECOND chaos_pick row.
+    // Exactly one row proves the #maybeBegin guard held — one begin, one pick,
+    // one timer per window — even though the pick synchronously entered
+    // BUILD_IN_PROGRESS (STATE_CHANGED mid-hook).
     expect(chaosPickRows(app)).toHaveLength(1);
   });
 
@@ -344,14 +338,13 @@ describe("chaos e2e: paid-source candidates are NEVER chaos-pickable; empty elig
     restoreEnv();
   });
 
-  it("an EMPTY pool at a chaos phase end restarts the window with the stillCollecting beat — no round, no pick", async () => {
-    // Relative count: only restarts that happen AFTER activation prove the
-    // chaos-owned "empty" branch (pre-activation democratic restarts look alike).
-    const beatsAtStart = sent.filter((m) => m.startsWith("Still collecting")).length;
-    await until(
-      () => sent.filter((m) => m.startsWith("Still collecting")).length >= beatsAtStart + 2,
-      5_000,
-    );
+  it("an EMPTY pool at chaos phase ends is safe: no pick, no round, no queue (window keeps cycling)", async () => {
+    // stillCollecting is silent now (anti-spam, Ross 2026-07-11), so we let
+    // several 0.3s chaos phase-ends fire against the empty pool by TIME rather
+    // than by counting restart beats, then assert the empty branch neither
+    // picked nor opened a round. Chaos stays active (30s) across these ends, so
+    // the window kept restarting throughout.
+    await sleep(1_500); // ~5 phase-ends at SUGGEST_PHASE_SECONDS=0.3
     expect(chaosPickRows(app)).toHaveLength(0);
     expect(sent.some((m) => m.startsWith("Voting is OPEN"))).toBe(false);
     expect(app.taskQueue.list()).toHaveLength(0);
@@ -359,12 +352,9 @@ describe("chaos e2e: paid-source candidates are NEVER chaos-pickable; empty elig
 
   it("a pool holding ONLY a paid-source candidate behaves as empty: the donation candidate is never picked", async () => {
     app.pool.add(candidate("paid-1", "a tipped idea", { source: "donation" }), approved);
-    // Let several chaos phase ends fire against the paid-only pool.
-    const beatsBefore = sent.filter((m) => m.startsWith("Still collecting")).length;
-    await until(
-      () => sent.filter((m) => m.startsWith("Still collecting")).length >= beatsBefore + 2,
-      5_000,
-    );
+    // Let several 0.3s chaos phase-ends fire against the paid-only pool (beats are
+    // silent now — anti-spam — so wait on TIME, not the stillCollecting beat).
+    await sleep(1_500); // ~5 phase-ends at SUGGEST_PHASE_SECONDS=0.3
     expect(chaosPickRows(app)).toHaveLength(0);
     expect(app.taskQueue.list()).toHaveLength(0);
     expect(app.pool.list().map((c) => c.candidate.id)).toContain("paid-1");

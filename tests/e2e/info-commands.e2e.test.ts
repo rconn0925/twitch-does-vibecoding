@@ -132,12 +132,14 @@ describe("info commands e2e: instant replies, per-command cooldown, post-gate da
     expect(reply).toBe("Current project repo: https://github.com/TwitchVibecodes/snake-game");
   });
 
-  it("!commands replies with the fixed help copy (alias of !help)", async () => {
+  it("!commands replies with the how-to-interact help copy (alias of !help)", async () => {
     chat.say("5", "asker5", "!commands");
-    const reply = await until(() => sent.find((m) => m.startsWith("Commands:")));
-    expect(reply).toContain("!swapbuild");
-    expect(reply).toContain("!projects");
-    expect(reply).toContain("!vote 1-5");
+    const reply = await until(() => sent.find((m) => m.startsWith("How it works:")));
+    // Explains the interaction model + points to the on-screen list (Ross 2026-07-12).
+    expect(reply).toContain("!suggest");
+    expect(reply).toContain("!build");
+    expect(reply).toContain("!vote");
+    expect(reply).toContain("COMMANDS panel");
   });
 
   it("ZERO funnel contact: info commands never reached the classifier, pool, or queue", () => {
