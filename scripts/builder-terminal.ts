@@ -50,7 +50,10 @@ const AMBER = `${ESC}[38;5;214m`;
 const MUTED = `${ESC}[38;5;246m`;
 /** Soft green for the tool-call marker (claude-code style) — not red (D2-18). */
 const TOOL_GREEN = `${ESC}[38;5;114m`;
-const CLEAR_SCREEN = `${ESC}[2J${ESC}[H`;
+// [2J erases the viewport, [3J erases the SCROLLBACK too, [H homes the cursor —
+// so a repaint (new build / reconnect-to-idle) leaves a truly blank terminal on
+// THE AI scene, never old lines lingering in scrollback (Ross 2026-07-12).
+const CLEAR_SCREEN = `${ESC}[2J${ESC}[3J${ESC}[H`;
 const HIDE_CURSOR = `${ESC}[?25l`;
 const SHOW_CURSOR = `${ESC}[?25h`;
 
