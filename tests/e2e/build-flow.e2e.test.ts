@@ -262,6 +262,8 @@ describe("build-flow e2e (gallery publish wiring) — done-only, failure-isolate
   } {
     const calls: PublishInput[] = [];
     const publisher: GalleryPublisher = {
+      revertLast: () =>
+        Promise.resolve({ status: "failed", commitHash: null, detail: "unused in this suite" }),
       publishNow(input) {
         calls.push(input);
         return result

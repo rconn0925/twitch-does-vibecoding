@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at_ms   INTEGER NOT NULL,          -- Date.now(); indexed for the purge job
   event_type      TEXT NOT NULL,             -- 'gate_decision' | 'veto' | 'halt' | 'review_resolved' | 'review_expired' | 'submission_refused' | 'round_opened' | 'round_closed' | 'pool_dropped'
                                              --   Phase 3 (D3-13): 'pipeline_stage' | 'comp02_decision' | 'build_refused' | 'build_retry' | 'build_skip' | 'sandbox_teardown'
+                                             --   quick-q5n: 'revert_outcome' — a chat-voted rollback resolved (reverted | nothing-to-revert | failed)
   source          TEXT NOT NULL,             -- 'chat' | 'channel_points' | 'donation' | 'chaos' | 'operator' | 'orchestrator' | 'console' | 'hotkey'
   twitch_username TEXT,                      -- nullable: absent for operator-console-originated events
   suggestion_text TEXT,                      -- nullable: absent for pure veto/halt events with no candidate
@@ -133,6 +134,8 @@ CREATE INDEX IF NOT EXISTS idx_control_windows_status ON control_windows(status)
 --                mode-inferred (T-05-03 mis-attribution mitigation).
 --   result     = the honest terminal outcome: 'built' | 'refused' | 'failed'
 --                (done->built, 1:1 with the pipeline's terminal stage; T-05-02).
+--                quick-q5n adds 'reverted': a chat-voted rollback of the last
+--                mirror commit (no agent build ran; no CHECK constraint, no migration).
 --   created_at_ms is the completion timestamp; the STREAM-NIGHT grouping key is
 --   derived on READ from it (D-02) — no session/day column exists BY DESIGN.
 -- Append-only: no UPDATE/DELETE path exists at the application layer (T-05-01).
@@ -141,7 +144,7 @@ CREATE TABLE IF NOT EXISTS build_history (
   task_id       TEXT NOT NULL,                    -- links to the completed QueuedTask
   title         TEXT NOT NULL,                    -- gate-APPROVED task.text ONLY (D-03)
   provenance    TEXT NOT NULL,                    -- 'vote' | 'donation' | 'channel_points' | 'chaos'
-  result        TEXT NOT NULL,                    -- 'built' | 'refused' | 'failed'
+  result        TEXT NOT NULL,                    -- 'built' | 'refused' | 'failed' | 'reverted' (quick-q5n)
   created_at_ms INTEGER NOT NULL                  -- Date.now() at completion; night grouping derived on read (D-02)
 );
 CREATE INDEX IF NOT EXISTS idx_build_history_created_at ON build_history(created_at_ms);
