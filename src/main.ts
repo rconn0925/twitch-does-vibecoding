@@ -1661,6 +1661,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       },
       on: (event, handler) => controlWindow.on(event, handler),
     },
+    // quick-rs3 chat-chaos badge source: the controller's {endsAtMs}|null
+    // snapshot + CHAOS_MODE_CHANGED beats. The server re-narrows defensively.
+    chaosMode: {
+      snapshot: () => chaosMode.snapshot(),
+      on: (event, handler) => chaosMode.on(event, handler),
+    },
     // quick-t5k A2: the suggestion-phase guidance countdown source. The server
     // re-narrows to suggestPhase:{endsAtMs} — the enabled flag stays private.
     autoCycle: {

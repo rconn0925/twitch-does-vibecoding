@@ -168,20 +168,45 @@
   // "expired"/"revoked" text, no red, ever (T-04-14). The countdown ticks
   // client-side from the absolute endsAtMs (the server never streams timer
   // frames), resynced on every push, exactly like the vote countdown.
+  // Three-state priority (quick-rs3): FREE REIGN (paid window, unchanged) >
+  // CHAOS MODE (chat-activated timed window, slate-50 white dot — NEVER
+  // violet, which stays exclusively paid-control per D2-18) > DEMOCRATIC MODE.
+  // Chaos expiry/server-null collapses to DEMOCRATIC silently — no "expired"
+  // text, no red, ever (the T-04-14 rule extended to the chaos badge).
   function renderBanner() {
     banner.replaceChildren();
     const cw = latest?.controlWindow ?? null;
     banner.hidden = false;
     if (!cw) {
+      const chaos = latest?.chaosMode ?? null;
+      // The client-side clock can pass endsAtMs before the server's expiry
+      // push lands — the > check keeps the badge honest in that gap.
+      if (chaos && chaos.endsAtMs > Date.now()) {
+        // Class hygiene: each branch removes the other branches' classes.
+        banner.classList.remove("banner-democratic");
+        banner.classList.add("banner-chaos");
+        banner.appendChild(el("span", "banner-dot"));
+        banner.appendChild(el("span", "banner-label", "CHAOS MODE"));
+        const chaosRemaining = chaos.endsAtMs - Date.now();
+        const chaosCountdown = el("span", "banner-countdown", formatRemaining(chaosRemaining));
+        // Amber for the final 10 seconds — the free-reign pattern, never red.
+        if (chaosRemaining <= FINAL_COUNTDOWN_MS) {
+          chaosCountdown.classList.add("countdown-final");
+        }
+        banner.appendChild(chaosCountdown);
+        return;
+      }
       // Persistent mode badge (Ross, 2026-07-11): the banner never collapses —
       // no active window means the show is in its default chat-voted mode.
       // Fixed copy only; the free-reign no-expiry/no-red rules (T-04-14) hold.
+      banner.classList.remove("banner-chaos");
       banner.classList.add("banner-democratic");
       banner.appendChild(el("span", "banner-dot"));
       banner.appendChild(el("span", "banner-label", "DEMOCRATIC MODE"));
       return;
     }
     banner.classList.remove("banner-democratic");
+    banner.classList.remove("banner-chaos");
 
     banner.appendChild(el("span", "banner-dot"));
     banner.appendChild(el("span", "banner-label", "FREE REIGN"));
@@ -504,6 +529,13 @@
     // Keep the banner countdown honest between pushes while a window is active
     // (it ticks even after the pill flips to BUILDING — banner independence).
     if (latest?.controlWindow) {
+      renderBanner();
+    }
+    // Keep the CHAOS MODE m:ss countdown honest between pushes (quick-rs3).
+    // When the client clock passes endsAtMs before the server's expiry push
+    // lands, renderBanner's `endsAtMs > Date.now()` branch check already falls
+    // through to DEMOCRATIC — honest without red or "expired" copy.
+    if (latest?.chaosMode) {
       renderBanner();
     }
   }, 1000);

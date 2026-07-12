@@ -7,6 +7,7 @@ import { WebSocketServer } from "ws";
 import {
   AUTO_CYCLE_CHANGED,
   BUILDER_FEED_CHANGED,
+  CHAOS_MODE_CHANGED,
   POOL_CHANGED,
   ROUND_CLOSED,
   ROUND_OPENED,
@@ -123,6 +124,16 @@ export interface OverlayState {
    */
   queue: string[];
   /**
+   * The CHAT-activated timed chaos window (quick-rs3), or null when chaos is
+   * not live. Server-composed, narrowed to EXACTLY {endsAtMs} regardless of
+   * source richness (the suggestPhase/T-04-13 idiom): tally counts, thresholds
+   * and chatter ids are chat/console detail that never cross the broadcast
+   * wire (T-rs3-04). The client ticks the m:ss countdown itself from the
+   * absolute deadline; expiry/server-null collapses the badge to DEMOCRATIC
+   * silently — no "expired" text, no red, ever.
+   */
+  chaosMode: { endsAtMs: number } | null;
+  /**
    * The builder-view feed (quick-x7d, the /builder page). SAFETY CONTRACT:
    * every line is orchestrator-authored fixed copy (stage captions, the
    * "Writing/Editing <path>" verbs) or COMP-02-APPROVED path/snippet content,
@@ -197,6 +208,31 @@ export interface OverlayControlWindowSource {
  * exists, and the banner simply stays absent (controlWindow === null).
  */
 const NULL_CONTROL_WINDOW_SOURCE: OverlayControlWindowSource = {
+  snapshot: () => null,
+  on: () => {},
+};
+
+/**
+ * The chat-chaos sliver the overlay needs (quick-rs3, mirrors
+ * OverlayControlWindowSource): a point-in-time snapshot plus a
+ * CHAOS_MODE_CHANGED subscription. snapshot() returns {endsAtMs} while the
+ * chat-activated chaos window is live, or null otherwise. The server
+ * re-projects the snapshot down to exactly {endsAtMs} regardless
+ * (defence-in-depth), so even a richer source could never push tally/chatter
+ * detail onto the wire.
+ */
+export interface OverlayChaosModeSource {
+  snapshot(): { endsAtMs: number } | null;
+  on(event: string, handler: (...args: unknown[]) => void): void;
+}
+
+/**
+ * A no-op chat-chaos source: chaos never live, no lifecycle events. Mirrors
+ * NULL_CONTROL_WINDOW_SOURCE — the composition root can wire the overlay
+ * without the controller and the badge simply stays DEMOCRATIC
+ * (chaosMode === null).
+ */
+const NULL_CHAOS_MODE_SOURCE: OverlayChaosModeSource = {
   snapshot: () => null,
   on: () => {},
 };
@@ -283,6 +319,8 @@ export interface OverlayServerDeps {
   build?: OverlayBuildSource;
   /** Optional until Phase 4 wires the window engine; defaults to no window active. */
   controlWindow?: OverlayControlWindowSource;
+  /** Optional (quick-rs3 chat-activated chaos); defaults to chaos never live. */
+  chaosMode?: OverlayChaosModeSource;
   /** Optional until quick-t5k wires the scheduler; defaults to no phase active. */
   autoCycle?: OverlayAutoCycleSource;
   /** Optional (quick-v4e what's-coming page); defaults to an empty pool. */
@@ -337,6 +375,7 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   const { machine, round, taskQueue, logger } = deps;
   const build = deps.build ?? NULL_BUILD_SOURCE;
   const controlWindow = deps.controlWindow ?? NULL_CONTROL_WINDOW_SOURCE;
+  const chaosModeSource = deps.chaosMode ?? NULL_CHAOS_MODE_SOURCE;
   const autoCycle = deps.autoCycle ?? NULL_AUTO_CYCLE_SOURCE;
   const poolSource = deps.pool ?? NULL_POOL_SOURCE;
   const feedSource = deps.builderFeed ?? NULL_BUILDER_FEED_SOURCE;
@@ -368,12 +407,17 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
     // Explicit narrowing (quick-t5k A2): only the phase deadline crosses the
     // wire — never the scheduler's enabled flag or any richer field.
     const ac = autoCycle.snapshot();
+    // Explicit narrowing (quick-rs3, the T-04-13 idiom): only the chaos
+    // window's absolute deadline crosses the wire — tally counts, thresholds
+    // and chatter ids are chat/console detail that never reach the broadcast.
+    const cm = chaosModeSource.snapshot();
     return {
       pill: PILL_BY_MODE[machine.mode],
       round: round.snapshot(),
       buildStatus: build.snapshot(),
       controlWindow:
         cw === null ? null : { donorDisplayName: cw.donorDisplayName, endsAtMs: cw.endsAtMs },
+      chaosMode: cm === null ? null : { endsAtMs: cm.endsAtMs },
       suggestPhase:
         ac.phase === "suggest" && ac.phaseEndsAtMs !== null ? { endsAtMs: ac.phaseEndsAtMs } : null,
       nextUp: taskQueue
@@ -491,6 +535,14 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
       pushState();
     });
   }
+
+  // Chat-chaos lifecycle beats (activation / expiry / halt-clear) are
+  // low-frequency show beats (quick-rs3) → push IMMEDIATELY, exactly like the
+  // window events above, never through the vote-tally debounce. A null
+  // snapshot collapses the badge to DEMOCRATIC silently on the client.
+  chaosModeSource.on(CHAOS_MODE_CHANGED, () => {
+    pushState();
+  });
 
   // Auto-cycle phase transitions are lifecycle beats (a handful per cycle) →
   // push IMMEDIATELY, exactly like ROUND_OPENED — never the vote-tally
