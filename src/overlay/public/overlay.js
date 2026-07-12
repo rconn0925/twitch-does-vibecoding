@@ -228,6 +228,13 @@
       countdown.classList.add("countdown-final");
     }
     banner.appendChild(countdown);
+
+    // quick-ur2 T5: a fixed muted usage hint telling the donor HOW to spend
+    // their window. FREE-REIGN-only: the DEMOCRATIC and CHAOS branches above
+    // both return before reaching here, so this appends solely while a control
+    // window is active. Fixed, orchestrator-authored copy — NO amount, NO
+    // donation-message text ever rides here (T-04-12/13 hold).
+    banner.appendChild(el("span", "banner-hint", "!build or !suggest — straight to the queue"));
   }
 
   // --- vote panel (lower-left; visible while a round is open or the winner beat runs) ---
