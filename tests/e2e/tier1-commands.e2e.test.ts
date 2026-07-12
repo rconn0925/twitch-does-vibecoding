@@ -739,3 +739,134 @@ describe("tier-1 e2e: chaos pick only ever selects kind 'suggestion' from a mixe
     await until(() => app.machine.mode === "IDLE");
   });
 });
+
+// ── 8. free-reign donor privilege: in-window !suggest aliases !build ────────
+// (quick-260711-raz) During an ACTIVE window, !suggest routes through the SAME
+// funnel as !build (interceptor → gate classify → queue) under the SAME D-11
+// open-slot check (`controlWindow.snapshot() !== null`, NO identity logic —
+// the "donorfan" idiom of block 6). Pool and vote are skipped; the compliance
+// gate is NEVER skipped. The interceptor consumes the message before
+// startTwitchChat's parser/intake path, so in-window submissions touch ZERO
+// intake state (no suggestion cooldown, no per-user pooled cap) — asserted
+// explicitly below, not just implied.
+
+describe("tier-1 e2e: in-window !suggest aliases !build — same funnel, intake exempt, outside-window byte-compatible", () => {
+  const chat = fakeChatSource();
+  const donation = fakeDonationSource();
+  const { sent, sink } = capturingSink();
+  let app: AppHandle;
+  const seq: string[] = [];
+
+  beforeAll(async () => {
+    app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: (c) => {
+        seq.push(`classify:${c.text}`);
+        return c.text.includes("banword")
+          ? ({
+              decision: "rejected",
+              category: "harassment",
+              rationale: "test: banned term",
+            } as const)
+          : approved;
+      },
+      chatSource: chat.source,
+      chatSink: sink,
+      donationSource: donation.source,
+      // deliberately NO build engine (block-6 idiom): the window instruction
+      // queues (narrated honestly) and the pool path needs no orchestrator.
+    });
+    app.pool.on(POOL_CHANGED, () => {
+      seq.push("pool");
+    });
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it("(a) INSIDE a window: !suggest goes straight to the queue POST-GATE — pool untouched, classify ran, queued beat", async () => {
+    donation.emitTip(tip());
+    expect(app.controlWindow.snapshot()).not.toBeNull();
+
+    // Chatter "windowfan" is NOT the tip's donor ("Alice") — D-11 open slot.
+    chat.say("20", "windowfan", "!suggest add a dark mode");
+    await until(() => app.taskQueue.list().length === 1);
+    expect(app.taskQueue.list()[0]?.text).toBe("add a dark mode");
+    expect(app.pool.list()).toHaveLength(0);
+    // Gate NEVER skipped: the text was classified on its way to the queue.
+    expect(seq).toContain("classify:add a dark mode");
+    // CR-03 honesty: no build engine composed → the "queued" beat, never "building".
+    await until(() => sent.some((m) => m.includes("Queued up @windowfan's pick")));
+  });
+
+  it("(b) gate-rejected in-window !suggest: narrated denial, nothing queued/pooled, window still open (D-12)", async () => {
+    chat.say("21", "rejector", "!suggest banword idea");
+    await until(() => sent.some((m) => m.includes("Can't build that one, @rejector")));
+    expect(seq).toContain("classify:banword idea");
+    expect(app.taskQueue.list()).toHaveLength(1); // unchanged
+    expect(app.pool.list()).toHaveLength(0);
+    expect(app.controlWindow.snapshot()).not.toBeNull(); // window NOT consumed
+  });
+
+  it("a plain non-command message during a window falls through to the normal handler (silently ignored, D2-15)", async () => {
+    const beatsBefore = sent.length;
+    chat.say("22", "lurker", "hello everyone, great stream");
+    await sleep(50);
+    expect(app.taskQueue.list()).toHaveLength(1);
+    expect(app.pool.list()).toHaveLength(0);
+    expect(sent.length).toBe(beatsBefore); // no narration, no refusal
+  });
+
+  it("(c) intake exemption is REAL: after the window closes, the SAME chatter's !suggest pools with no cooldown/cap refusal", async () => {
+    app.controlWindow.revoke();
+    expect(app.controlWindow.snapshot()).toBeNull();
+
+    // Same chatterId "20" that submitted in-window. Had the in-window !suggest
+    // consumed intake state, the 60s default cooldown (and the per-user pooled
+    // cap) would refuse this immediately with the "easy there" beat.
+    chat.say("20", "windowfan", "!suggest fresh idea");
+    await until(() => app.pool.list().length === 1);
+    const pooled = app.pool.list()[0];
+    expect(pooled?.candidate.text).toBe("fresh idea");
+    expect(pooled?.candidate.source).toBe("chat");
+    expect(pooled?.candidate.kind).toBe("suggestion");
+    // No cooldown / per-user-cap refusal beat was ever sent.
+    expect(sent.some((m) => m.includes("@windowfan easy there"))).toBe(false);
+
+    // Audit provenance: the IN-WINDOW candidate's gate row carries the WINDOW
+    // trigger source ("donation"), the post-window one carries "chat".
+    const rows = listAuditRecords(app.db, { limit: 20, eventType: "gate_decision" });
+    const inWindow = rows.find((r) => r.suggestion_text === "add a dark mode");
+    const postWindow = rows.find((r) => r.suggestion_text === "fresh idea");
+    expect(inWindow?.source).toBe("donation");
+    expect(postWindow?.source).toBe("chat");
+  });
+
+  it("(d) OUTSIDE a window: !suggest is byte-compatible — pools source 'chat' kind 'suggestion', queue does not grow", async () => {
+    chat.say("23", "viewer9", "!suggest normal idea");
+    await until(() => app.pool.list().length === 2);
+    const pooled = app.pool.list().find((p) => p.candidate.text === "normal idea");
+    expect(pooled?.candidate.source).toBe("chat");
+    expect(pooled?.candidate.kind).toBe("suggestion");
+    expect(app.taskQueue.list()).toHaveLength(1); // still just the window task
+    // Gate-before-pool held on the normal path too (single funnel).
+    const classifyIdx = seq.indexOf("classify:normal idea");
+    const poolIdx = seq.lastIndexOf("pool");
+    expect(classifyIdx).toBeGreaterThanOrEqual(0);
+    expect(poolIdx).toBeGreaterThan(classifyIdx);
+  });
+
+  it("(e) open-slot parity (D-11): in a fresh window, a chatter who is NOT the donor gets the same !suggest funnel", async () => {
+    donation.emitTip(tip({ username: "bob", displayName: "Bob", tipId: "tip-2" }));
+    expect(app.controlWindow.snapshot()).not.toBeNull();
+
+    // "strangerfan" ≠ donor "Bob" — same treatment as block 6's "donorfan".
+    chat.say("24", "strangerfan", "!suggest parity idea");
+    await until(() => app.taskQueue.list().length === 2);
+    expect(app.taskQueue.list().some((t) => t.text === "parity idea")).toBe(true);
+    expect(app.pool.list()).toHaveLength(2); // pool untouched by the window path
+    app.controlWindow.revoke();
+  });
+});
