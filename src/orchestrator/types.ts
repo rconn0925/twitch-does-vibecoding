@@ -175,7 +175,22 @@ export interface SandboxAdapter {
  * fake that resolves deterministically.
  */
 export interface DevServerProbe {
+  /**
+   * Pure TCP process-up check: is 127.0.0.1:<port> answering a socket connect?
+   * MUST stay content-blind — the dev-server-supervisor depends on this exact
+   * "is the process listening?" semantics, so its meaning never changes.
+   */
   reachable(): Promise<boolean>;
+  /**
+   * quick-ofs content-aware readiness the PREVIEW surface uses. A bounded, timed
+   * HTTP GET of the dev server's own body: false when the body is a bare
+   * python http.server "Directory listing for /" page (no real app built yet)
+   * or on ANY failure (refused / timeout / non-200 / parse) — fail-closed so a
+   * directory listing can never render as "LIVE" on the broadcast. OPTIONAL so
+   * TCP-only fakes and the console-path default that implement only reachable()
+   * stay valid; /api/reachable falls back to reachable() when it is absent.
+   */
+  appReady?(): Promise<boolean>;
 }
 
 /**
