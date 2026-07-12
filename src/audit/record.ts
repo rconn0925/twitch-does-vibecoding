@@ -622,6 +622,45 @@ export function recordRevertOutcome(
 }
 
 /**
+ * One row per chat-voted swap OUTCOME (quick-t8k): the kind router's swap arm
+ * resolved activated / unresolved / already-current / ship-failed. Status
+ * "activated" writes the `swap_activated` event with the from/to generations
+ * + repo slug in the rationale (all internally-generated/post-gate values);
+ * the three failure statuses write `swap_failed` with the status in
+ * `decision` and a SERVER-COMPOSED detail in the rationale — never chat text
+ * (the recordRevertOutcome doctrine). audit_log has no CHECK constraints, so
+ * both new event_type values are schema-safe additions.
+ */
+export function recordSwapOutcome(
+  db: Database.Database,
+  args: {
+    taskId: string;
+    fromGeneration: number;
+    toGeneration: number | null;
+    repoName: string | null;
+    status: "activated" | "unresolved" | "already-current" | "ship-failed";
+    detail: string | null;
+    streamMode: StreamMode;
+  },
+): void {
+  const activated = args.status === "activated";
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: activated ? "swap_activated" : "swap_failed",
+    source: "operator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: args.status,
+    category: null,
+    rationale: activated
+      ? `Swap activated: generation ${args.fromGeneration} -> ${args.toGeneration} (${args.repoName ?? "unknown repo"})`
+      : args.detail,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
+/**
  * One row per chaos PICK (CHAOS-01): a uniform-random selection from the
  * filtered pool. quick-rs3: optional `kind` (written to the `decision` column)
  * records the picked candidate's kind for the chat-activated vote-skip path —

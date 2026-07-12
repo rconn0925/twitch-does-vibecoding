@@ -40,8 +40,13 @@ export type CandidateSource =
  * intent, and "revert" is the chat-voted undo-last-change intent (`!revert` /
  * `!undo`). A revert candidate carries ONLY the fixed server-composed
  * REVERT_REQUEST_TEXT (command-parser.ts) — never chat-derived free text.
+ *
+ * quick-t8k: "swap" is the chat-voted portfolio swap (`!swapbuild <name>`).
+ * Its text is a gate-screened project-NAME reference — chat-derived, so it
+ * rides the ONE funnel like all tier-1 text; resolution against
+ * project_repos.repo_name happens at drain time in the kind router.
  */
-export type CandidateKind = "suggestion" | "project-switch" | "revert";
+export type CandidateKind = "suggestion" | "project-switch" | "revert" | "swap";
 
 /** The normalized candidate shape every ingestion path (current or future) reduces to. */
 export interface SuggestionCandidate {

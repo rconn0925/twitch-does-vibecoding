@@ -67,6 +67,17 @@ const ChaosCommand = z.object({
 });
 
 /**
+ * quick-t8k tier-1 voted command: `!swapbuild <name>` — the portfolio-swap
+ * intent. The name is a project reference but still chat-derived text, so it
+ * mirrors SuggestCommand's funnel-bound 2000-char cap and is gate-screened
+ * before pooling like every other tier-1 command.
+ */
+const SwapbuildCommand = z.object({
+  kind: z.literal("swapbuild"),
+  text: z.string().min(1).max(2000),
+});
+
+/**
  * quick-t8k tier-2 instant info commands: !projects / !current / !repo /
  * !help (!commands aliases to help). STRICT no-arg (RevertCommand idiom) —
  * trailing text → null. Read-only: dispatch calls an optional seam and
@@ -86,6 +97,7 @@ export type ParsedCommand =
   | { kind: "build"; text: string }
   | { kind: "revert" }
   | { kind: "chaos" }
+  | { kind: "swapbuild"; text: string }
   | { kind: "info"; info: InfoCommandKind };
 
 /**
@@ -113,6 +125,18 @@ export function parseCommand(messageText: string): ParsedCommand | null {
   const buildMatch = /^!build\s+(.+)$/i.exec(trimmed);
   if (buildMatch?.[1]) {
     const parsed = BuildCommand.safeParse({ kind: "build", text: buildMatch[1] });
+    return parsed.success ? parsed.data : null;
+  }
+
+  // quick-t8k: !swapbuild <name> — quoted AND unquoted names both parse; ONE
+  // pair of surrounding double quotes is stripped, then re-trimmed (an empty
+  // quoted name → null). The text stays funnel-bound (min 1 / max 2000).
+  const swapMatch = /^!swapbuild\s+(.+)$/i.exec(trimmed);
+  if (swapMatch?.[1]) {
+    let text = swapMatch[1].trim();
+    const quoted = /^"([\s\S]*)"$/.exec(text);
+    if (quoted) text = (quoted[1] ?? "").trim();
+    const parsed = SwapbuildCommand.safeParse({ kind: "swapbuild", text });
     return parsed.success ? parsed.data : null;
   }
 

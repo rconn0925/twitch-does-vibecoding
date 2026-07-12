@@ -229,8 +229,8 @@ describe("swap e2e: winner ships current (confirmed), activates existing generat
     await app.close();
   });
 
-  it("an approved chat swap got the pooled-swap confirmation beat", () => {
-    expect(sent.some((m) => m.includes("@ann PROJECT SWAP request is in"))).toBe(true);
+  it("an approved chat swap got the pooled-swap confirmation beat (coalesced flush)", async () => {
+    await until(() => sent.some((m) => m.includes("@ann PROJECT SWAP request is in")));
   });
 
   it("the swap candidate pooled as kind 'swap' through the ONE funnel (gate_decision row exists)", () => {

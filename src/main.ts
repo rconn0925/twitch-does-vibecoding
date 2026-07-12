@@ -16,6 +16,7 @@ import {
   recordGalleryPublish,
   recordPoolDropped,
   recordRevertOutcome,
+  recordSwapOutcome,
   recordWorkspaceReset,
 } from "./audit/record.js";
 import { ChaosModeController } from "./chaos/mode.js";
@@ -267,6 +268,59 @@ function envPositive(raw: string | undefined, fallback: number): number {
 }
 
 /**
+ * quick-t8k swap-name normalization: the sanitizeRepoName transform MINUS the
+ * dated fallback — lowercase, non-[a-z0-9] runs → "-", trim hyphens, cap 80.
+ * An all-symbol name normalizes to "" (unresolvable), never a dated slug.
+ * Pure + exported for the resolution-precedence tests.
+ */
+export function normalizeSwapName(text: string): string {
+  let slug = text
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "-")
+    .replaceAll(/^-+|-+$/g, "");
+  if (slug.length > 80) {
+    slug = slug.slice(0, 80).replaceAll(/-+$/g, "");
+  }
+  return slug;
+}
+
+/** One project_repos row as the swap resolver consumes it. */
+export interface SwapTargetRow {
+  generation: number;
+  repo_name: string;
+}
+
+/**
+ * quick-t8k swap resolution over ALL project_repos rows. Deterministic
+ * precedence: exact > prefix > substring (case-insensitive against
+ * repo_name). Within the winning tier, prefer NON-current matches (swapping
+ * away is the intent — checker INFO b); ties break to the HIGHEST generation
+ * (most recent wins). Returns the current-generation row ONLY when it is the
+ * exclusive match at the winning tier (the caller narrates the honest
+ * already-current line), and null when nothing matches. Pure + exported.
+ */
+export function resolveSwapTarget(
+  rows: SwapTargetRow[],
+  needle: string,
+  currentGeneration: number,
+): SwapTargetRow | null {
+  if (needle.length === 0) return null;
+  const tiers: Array<(name: string) => boolean> = [
+    (name) => name === needle,
+    (name) => name.startsWith(needle),
+    (name) => name.includes(needle),
+  ];
+  for (const matchesTier of tiers) {
+    const hits = rows.filter((row) => matchesTier(row.repo_name.toLowerCase()));
+    if (hits.length === 0) continue;
+    const nonCurrent = hits.filter((row) => row.generation !== currentGeneration);
+    const pool = nonCurrent.length > 0 ? nonCurrent : hits;
+    return pool.reduce((best, row) => (row.generation > best.generation ? row : best));
+  }
+  return null;
+}
+
+/**
  * D2-13 bounded pool, re-capped at 5 (quick-l2a user amendment): the pool, the
  * early-close threshold, and the vote-option draw all align at 5 by default —
  * a full pool becomes exactly one full vote round. Kept as SEPARATE knobs
@@ -391,6 +445,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // engine exists → the task sits queued (the pre-04 degraded behavior).
   let driveWindowBuild: ((taskId: string) => boolean) | null = null;
   let driveChaosBuild: ((taskId: string) => boolean) | null = null;
+  // quick-t8k late-bound preview re-root seam (the windowNarrator idiom): the
+  // default is a SILENT no-op until the preview dev-server supervisor composes
+  // (only when a method-bearing sandbox adapter exists). Invoked at every
+  // generation change — console new-project, project-switch rotation, and
+  // swap activation.
+  let reRootPreview: () => void = () => {};
 
   // ── Chat-activated chaos mode controller (quick-rs3, RS3-01..RS3-05) ─────
   // A timed, chat-voted vote-skip window — DISTINCT from the console CHAOS_MODE
@@ -982,6 +1042,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         // until a round opens). Approved plain suggestions stay silent (D2-15).
         if (candidate.kind === "project-switch") narrator.feedback("pooled-build", viewer);
         else if (candidate.kind === "revert") narrator.feedback("pooled-revert", viewer);
+        else if (candidate.kind === "swap") narrator.feedback("pooled-swap", viewer);
       }
       return result;
     };
@@ -1498,6 +1559,149 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       }
     };
 
+    /**
+     * quick-t8k swap winner: the no-build portfolio-swap arm. Head removed
+     * FIRST (the runRevertWinner idiom), the target resolved over ALL
+     * project_repos rows, then the LOCKED confirmed-push gate (mirror of
+     * shipThenRotate ii–iv): activateExisting runs ONLY after publishNow
+     * resolves published|no-changes. Every failure branch is amber-narrated,
+     * audited (recordSwapOutcome), and returns the machine to IDLE (guarded)
+     * — never a dead round, never a silent activation.
+     */
+    const runSwapWinner = async (head: QueuedTask): Promise<void> => {
+      taskQueue.remove(head.id);
+      const current = workspace.generation();
+
+      // (b) Resolve the gate-approved name reference against the durable
+      // per-project routing table. Prepared read-only SELECT; normalized
+      // in-memory matching only — chat text never reaches exec/SQL (T-t8k-01).
+      const rows = db
+        .prepare("SELECT generation, repo_name FROM project_repos")
+        .all() as SwapTargetRow[];
+      const target = resolveSwapTarget(rows, normalizeSwapName(head.text), current);
+      const backToIdle = (): void => {
+        try {
+          // Guarded (finalize()'s idiom): a halt that landed mid-swap leaves
+          // the machine HALTED — never fight the kill switch.
+          if (machine.mode === "BUILD_IN_PROGRESS") machine.transition("IDLE");
+        } catch (err) {
+          logger.error({ err }, "failed to return to IDLE after a swap winner");
+        }
+      };
+      if (target === null) {
+        windowNarrator?.swapUnresolved();
+        if (db.open) {
+          recordSwapOutcome(db, {
+            taskId: head.id,
+            fromGeneration: current,
+            toGeneration: null,
+            repoName: null,
+            status: "unresolved",
+            detail: "no project matched the requested name",
+            streamMode: machine.mode,
+          });
+        }
+        backToIdle();
+        return;
+      }
+      if (target.generation === current) {
+        // Resolution ran over ALL rows, so "current" is detected honestly —
+        // then rejected with its OWN line, never a misleading not-found
+        // (checker INFO b).
+        windowNarrator?.swapAlreadyCurrent();
+        if (db.open) {
+          recordSwapOutcome(db, {
+            taskId: head.id,
+            fromGeneration: current,
+            toGeneration: target.generation,
+            repoName: target.repo_name,
+            status: "already-current",
+            detail: "requested project is already on screen",
+            streamMode: machine.mode,
+          });
+        }
+        backToIdle();
+        return;
+      }
+
+      // (c) Ship gate — mirror of shipThenRotate ii–iv (LOCKED): an ACTIVE
+      // project requires a CONFIRMABLE push before the pointer may move. No
+      // publisher = unconfirmable = ship failure (audited HERE). An
+      // unscaffolded fresh generation has nothing to ship — abandoned in
+      // place (archive-by-construction), proceed.
+      if (workspace.scaffolded()) {
+        let shipped: { status: "published" | "no-changes" | "failed" } | null = null;
+        if (galleryPublisher) {
+          const result = await galleryPublisher.publishNow({
+            generation: current,
+            title: `app-${current} final snapshot`,
+            taskId: head.id,
+          });
+          shipped = result;
+          if (db.open) {
+            recordGalleryPublish(db, {
+              taskId: head.id,
+              generation: current,
+              status: result.status,
+              commitHash: result.commitHash,
+              detail: result.detail,
+              streamMode: machine.mode,
+            });
+          }
+        }
+        if (!shipped || (shipped.status !== "published" && shipped.status !== "no-changes")) {
+          windowNarrator?.swapShipFailed();
+          if (!galleryPublisher && db.open) {
+            recordGalleryPublish(db, {
+              taskId: head.id,
+              generation: current,
+              status: "failed",
+              commitHash: null,
+              detail:
+                "gallery publisher not configured — cannot confirm a push, swap activation withheld",
+              streamMode: machine.mode,
+            });
+          }
+          if (db.open) {
+            recordSwapOutcome(db, {
+              taskId: head.id,
+              fromGeneration: current,
+              toGeneration: target.generation,
+              repoName: target.repo_name,
+              status: "ship-failed",
+              detail: "final publish did not confirm — swap activation withheld",
+              streamMode: machine.mode,
+            });
+          }
+          logger.error(
+            { taskId: head.id, generation: current, target: target.generation },
+            "swap ship failed — activation withheld, current project stays active (locked decision)",
+          );
+          backToIdle();
+          return;
+        }
+      }
+
+      // (d) Activate: validated pointer-only move; repo binding REUSED (the
+      // target generation's project_repos row routes future publishes through
+      // continueRepo — no new repo is ever created for a swap).
+      workspace.activateExisting(target.generation);
+      if (db.open) {
+        recordSwapOutcome(db, {
+          taskId: head.id,
+          fromGeneration: current,
+          toGeneration: target.generation,
+          repoName: target.repo_name,
+          status: "activated",
+          detail: null,
+          streamMode: machine.mode,
+        });
+      }
+      windowNarrator?.swapActivated(target.repo_name);
+      reRootPreview();
+      backToIdle();
+    };
+
     // ── drainVoteQueue — the ONE vote-winner build starter (quick-t5k A1) ──
     // Every path a queued winner can start on funnels through this helper, and
     // it only EVER starts the FIFO queue head — never a caller-supplied task id
@@ -1550,6 +1754,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
             break;
           case "revert":
             await runRevertWinner(head);
+            break;
+          case "swap":
+            // quick-t8k: portfolio swap — ship-gated activate-existing, no build.
+            await runSwapWinner(head);
             break;
           default:
             // "suggestion" — unchanged. HIST-01: a round winner's provenance

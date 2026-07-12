@@ -7,13 +7,15 @@
  * branch adapts the real EventSubWsListener behind this interface.
  *
  * Dispatch contract:
- *  - !suggest / !build / !revert (quick-q5n) → ONE shared path: derive the
- *    candidate text (command text for suggest/build, the fixed
- *    REVERT_REQUEST_TEXT for revert) and kind ("suggestion" /
- *    "project-switch" / "revert"), then intake.check() (D2-11/D2-12, BEFORE
- *    any classifier call) → deps.submit(), which is submitCandidate pre-bound
- *    in main.ts — the ONLY intake path (COMP-01). The funnel itself is
- *    untouched.
+ *  - !suggest / !build / !swapbuild / !revert (quick-q5n, quick-t8k) → ONE
+ *    shared path: derive the candidate text (command text for
+ *    suggest/build/swapbuild, the fixed REVERT_REQUEST_TEXT for revert) and
+ *    kind ("suggestion" / "project-switch" / "swap" / "revert"), then
+ *    intake.check() (D2-11/D2-12, BEFORE any classifier call) →
+ *    deps.submit(), which is submitCandidate pre-bound in main.ts — the ONLY
+ *    intake path (COMP-01). The funnel itself is untouched. A swap's text is
+ *    a project-name reference but chat-derived, so it is gate-screened like
+ *    all tier-1 text (T-t8k-01).
  *  - !vote → round.recordVote(chatterId, option); invalid votes are ignored
  *    silently (D2-15 — no chat noise).
  *  - !chaos (quick-rs3) → deps.chaosVote?.(chatterId) and return — the !vote
@@ -153,16 +155,19 @@ export function startTwitchChat(deps: TwitchChatDeps): { stop(): void } {
         return;
       }
 
-      // !suggest / !build / !revert — ONE shared path (quick-q5n). The text is
-      // the command text for suggest/build and the FIXED server-composed
-      // REVERT_REQUEST_TEXT for revert (zero chat-derived bytes, T-q5n-02).
+      // !suggest / !build / !swapbuild / !revert — ONE shared path (quick-q5n,
+      // quick-t8k). The text is the command text for suggest/build/swapbuild
+      // and the FIXED server-composed REVERT_REQUEST_TEXT for revert (zero
+      // chat-derived bytes, T-q5n-02).
       const text = command.kind === "revert" ? REVERT_REQUEST_TEXT : command.text;
       const kind: CandidateKind =
         command.kind === "suggest"
           ? "suggestion"
           : command.kind === "build"
             ? "project-switch"
-            : "revert";
+            : command.kind === "swapbuild"
+              ? "swap"
+              : "revert";
 
       // Per-user limits run BEFORE classification (D2-11, closes T-01-11).
       const verdict = deps.intake.check(chatterId, text);

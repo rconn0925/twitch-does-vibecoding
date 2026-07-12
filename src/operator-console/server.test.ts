@@ -392,6 +392,10 @@ function fakeWorkspaceSeam(): WorkspaceView & { newProject: ReturnType<typeof vi
     markBuilt: () => {
       scaffolded = true;
     },
+    activateExisting: (target: number) => {
+      generation = target;
+      scaffolded = true;
+    },
     newProject,
   };
 }

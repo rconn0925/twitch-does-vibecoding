@@ -32,7 +32,9 @@ export type FeedbackKind =
   // routing verbs are invisible until a round opens, so their pooling is
   // confirmed (a plain approved !suggest stays silent per D2-15).
   | "pooled-build"
-  | "pooled-revert";
+  | "pooled-revert"
+  // quick-t8k: same treatment for an approved chat !swapbuild.
+  | "pooled-swap";
 
 /**
  * The narrator implements the round/feedback beats AND the build-pipeline beats
@@ -140,6 +142,20 @@ export interface Narrator extends BuildNarrator {
   /** The pre-rotation ship failed — staying on the current project (never a silent rotate). */
   newProjectShipFailed(): void;
 
+  // ── Swap beats (quick-t8k) ────────────────────────────────────────────────
+  // Server-composed; the resolved project_repos.repo_name slug is the ONLY
+  // dynamic token. Failure lines are AMBER-TIER (D2-18): matter-of-fact
+  // regroup wording, never ERROR/red/alarm vocabulary. Copy stays clear of
+  // the copy-separation scan vocabularies (no chance words, no money words).
+  /** The SWAP winner landed: transition line + landed line (at most two sends). */
+  swapActivated(name: string): void;
+  /** The pre-activation ship failed — staying on the current project (amber). */
+  swapShipFailed(): void;
+  /** No project matched the requested name at drain time (amber). */
+  swapUnresolved(): void;
+  /** The swap named the project ALREADY on screen — its own honest line (amber). */
+  swapAlreadyCurrent(): void;
+
   // ── Tier-2 info replies (quick-t8k) ──────────────────────────────────────
   // Instant read-only replies through the SAME single rate-budgeted sender
   // (D2-08). The ONLY dynamic tokens are project_repos.repo_name slugs and
@@ -210,6 +226,8 @@ export function createNarrator(deps: {
         return `@${displayName} NEW PROJECT idea is in — it competes in the next vote.`;
       case "pooled-revert":
         return `@${displayName} revert request is in — vote for it next round.`;
+      case "pooled-swap":
+        return `@${displayName} PROJECT SWAP request is in — it competes in the next vote.`;
     }
   }
 
@@ -248,6 +266,11 @@ export function createNarrator(deps: {
           }
           if (entry.candidate.kind === "revert") {
             return `${option} REVERT the last change`;
+          }
+          // quick-t8k: swap options render the gate-approved name reference —
+          // same display rule as NEW/TWEAK (truncateTitle, approved text only).
+          if (entry.candidate.kind === "swap") {
+            return `${option} SWAP TO: ${truncateTitle(entry.candidate.text)}`;
           }
           return `${option} TWEAK: ${truncateTitle(entry.candidate.text)}`;
         })
@@ -538,6 +561,34 @@ export function createNarrator(deps: {
     newProjectShipFailed(): void {
       void deps.sender.send(
         "Couldn't ship the current project to the gallery just now — staying on it for the moment. We'll take the new-project switch again another round.",
+      );
+    },
+
+    // ── Swap beats (quick-t8k) ──────────────────────────────────────────────
+    // The repo slug is the only dynamic token; failure lines are amber-tier.
+
+    swapActivated(name: string): void {
+      void deps.sender.send("Swap approved — bringing an earlier project back up…");
+      void deps.sender.send(
+        `SWAP complete — "${name}" is live on screen again. Tweak it with !suggest.`,
+      );
+    },
+
+    swapShipFailed(): void {
+      void deps.sender.send(
+        "Couldn't wrap up the current project for the gallery just now — staying on it. We'll take the swap again another round.",
+      );
+    },
+
+    swapUnresolved(): void {
+      void deps.sender.send(
+        "Couldn't find that project by name — try !projects for the list. Next round is coming right up.",
+      );
+    },
+
+    swapAlreadyCurrent(): void {
+      void deps.sender.send(
+        "That's the project already on screen — nothing to swap. Keep the tweaks coming with !suggest.",
       );
     },
 
