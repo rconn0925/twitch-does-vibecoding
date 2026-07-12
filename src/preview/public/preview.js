@@ -61,6 +61,21 @@
   let visible = document.getElementById("app-frame");
   let buffer = document.getElementById("app-frame-buffer");
 
+  // Cache-busting counter. OBS/CEF caches the app-under-construction's page by
+  // its URL, and a JS-initiated iframe navigation to the SAME fixed dev-server
+  // URL (127.0.0.1:5555) is served from that cache — so a NEW build published
+  // on the same URL would keep rendering the PREVIOUS app on stream even though
+  // the server now serves fresh content (OBS "refresh (no cache)" only bypasses
+  // cache for THIS document, not the JS-driven iframe load). A unique query
+  // param per load forces CEF to refetch, so the frame always shows what the
+  // dev server serves right now. http.server ignores the query and still serves
+  // the directory's index.html.
+  let cacheBust = 0;
+  function frameUrl(url) {
+    const sep = url.indexOf("?") === -1 ? "?" : "&";
+    return `${url}${sep}_cb=${++cacheBust}`;
+  }
+
   function swapFrames() {
     visible.classList.add("app-frame-buffer");
     visible.setAttribute("aria-hidden", "true");
@@ -86,8 +101,9 @@
       swapFrames();
     };
     buffer.src = "about:blank";
+    const target = frameUrl(url);
     window.setTimeout(() => {
-      buffer.src = url;
+      buffer.src = target;
     }, 0);
   }
 
@@ -113,6 +129,7 @@
 
   let currentUrl = null;
   let hasBeenReachable = false;
+  let wasReachable = false;
   let refreshTimer = null;
 
   function startRefreshLoop() {
@@ -131,15 +148,25 @@
   function applyReachability(reachable, url) {
     if (reachable) {
       const urlChanged = url && url !== currentUrl;
-      if (!hasBeenReachable || urlChanged) {
-        // First contact (or the dev server relaunched on a new URL): frame it.
+      // A false→true transition means the dev server (re)appeared — the
+      // orchestrator re-roots it at each generation change (new project,
+      // project switch, swap), and a fresh build lands its files behind the
+      // SAME fixed URL. Force a reload on that transition so the just-finished
+      // build shows immediately, instead of waiting for (or being stranded by)
+      // the cached frame. Paired with frameUrl()'s cache-bust so the refetch
+      // actually returns the new app, never the stale cached one.
+      const relaunched = !wasReachable;
+      if (!hasBeenReachable || urlChanged || relaunched) {
+        // First contact, a new dev-server URL, or a relaunch: (re)frame it.
         currentUrl = url || currentUrl;
         if (currentUrl) loadIntoBuffer(currentUrl);
       }
       hasBeenReachable = true;
+      wasReachable = true;
       showLive();
       startRefreshLoop();
     } else {
+      wasReachable = false;
       stopRefreshLoop();
       // Local-only state selection: never been up → starting up; was up before
       // → between builds. No orchestrator input, ever.
