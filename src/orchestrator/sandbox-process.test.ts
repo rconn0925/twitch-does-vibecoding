@@ -458,7 +458,7 @@ describe("createSandboxAdapter — preview dev-server lifecycle (quick-t8k, exec
       "--",
       "sh",
       "-lc",
-      "mkdir -p /home/builder/projects/app-3 && cd /home/builder/projects/app-3 && nohup python3 -m http.server 5555 >/dev/null 2>&1 &",
+      "mkdir -p /home/builder/projects/app-3 && cd /home/builder/projects/app-3 && nohup python3 -m http.server 5555 >/dev/null 2>&1 & sleep 2",
     ]);
   });
 

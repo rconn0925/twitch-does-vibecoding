@@ -42,7 +42,7 @@ export interface DevServerSupervisorDeps {
   /** The existing preview-manager TCP probe (fail-closed: resolves false, never rejects). */
   probeReachable: () => Promise<boolean>;
   logger: DevServerSupervisorLogger;
-  /** Post-start settle before the first probe; default ~1500ms, inject 0 in tests. */
+  /** Post-start settle before the first probe; default 4000ms (cold WSL distro boot takes seconds — live-fire finding 2026-07-11), inject 0 in tests. */
   settleMs?: number;
 }
 
@@ -51,7 +51,7 @@ export interface DevServerSupervisor {
   reroot(): Promise<void>;
 }
 
-const DEFAULT_SETTLE_MS = 1_500;
+const DEFAULT_SETTLE_MS = 4_000;
 
 export function createDevServerSupervisor(deps: DevServerSupervisorDeps): DevServerSupervisor {
   const { adapter, port, workspaceDir, probeReachable, logger } = deps;

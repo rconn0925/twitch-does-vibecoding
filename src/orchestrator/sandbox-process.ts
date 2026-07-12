@@ -283,7 +283,11 @@ export function createSandboxAdapter(deps: SandboxAdapterDeps = {}): SandboxAdap
         "--",
         "sh",
         "-lc",
-        `mkdir -p ${dir} && cd ${dir} && nohup python3 -m http.server ${port} >/dev/null 2>&1 &`,
+        // Trailing sleep keeps the launching wsl session alive through the bind —
+        // on a COLD distro boot the instant-exit session races python's startup
+        // and the nohup'd child can be reaped with the session (live-fire finding,
+        // 2026-07-11: probes failed at boot until the session outlived the bind).
+        `mkdir -p ${dir} && cd ${dir} && nohup python3 -m http.server ${port} >/dev/null 2>&1 & sleep 2`,
       ]);
     },
     /**
