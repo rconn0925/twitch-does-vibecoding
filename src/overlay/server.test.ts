@@ -5,6 +5,7 @@ import WebSocket from "ws";
 import {
   AUTO_CYCLE_CHANGED,
   BUILDER_FEED_CHANGED,
+  CHAOS_MODE_CHANGED,
   POOL_CHANGED,
   ROUND_CLOSED,
   ROUND_OPENED,
@@ -267,6 +268,41 @@ function richFeedLine(kind: string, text: string): RichFeedLine {
   return { kind, text, secret: "donor", rationale: "x" };
 }
 
+/**
+ * Minimal chat-chaos source (quick-rs3, mirrors makeFakeControlWindow's
+ * rich-snapshot trick): snapshot() may carry MORE than {endsAtMs} — tally
+ * counts and chatter ids are chat/console detail that must NEVER reach the
+ * broadcast wire — proving the server narrows down to exactly {endsAtMs}
+ * (the T-04-13 idiom). setChaos() mutates then emits CHAOS_MODE_CHANGED.
+ */
+interface RichChaosSnapshot {
+  endsAtMs: number;
+  // Console/chat detail that must NEVER reach the public wire:
+  tallyCount: number;
+  chatterIds: string[];
+}
+
+interface FakeChaosMode {
+  snapshot(): RichChaosSnapshot | null;
+  on(event: string, handler: (...args: unknown[]) => void): void;
+  setChaos(next: RichChaosSnapshot | null): void;
+}
+
+function makeFakeChaosMode(initial: RichChaosSnapshot | null = null): FakeChaosMode {
+  const emitter = new EventEmitter();
+  let current = initial;
+  return {
+    snapshot: () => current,
+    on: (event, handler) => {
+      emitter.on(event, handler);
+    },
+    setChaos: (next) => {
+      current = next;
+      emitter.emit(CHAOS_MODE_CHANGED);
+    },
+  };
+}
+
 function richPoolItem(overrides: Partial<RichPoolItem["candidate"]> = {}): RichPoolItem {
   return {
     candidate: {
@@ -341,6 +377,7 @@ describe("overlay server (read-only broadcast surface)", () => {
       autoCycle?: FakeAutoCycle;
       pool?: FakePool;
       builderFeed?: FakeBuilderFeed;
+      chaosMode?: FakeChaosMode;
       queueDisplayMax?: number;
       nextUpTexts?: string[];
       debounceMs?: number;
@@ -365,6 +402,7 @@ describe("overlay server (read-only broadcast surface)", () => {
       taskQueue,
       port: 0,
       ...(opts.builderFeed !== undefined ? { builderFeed: opts.builderFeed } : {}),
+      ...(opts.chaosMode !== undefined ? { chaosMode: opts.chaosMode } : {}),
       ...(opts.queueDisplayMax !== undefined ? { queueDisplayMax: opts.queueDisplayMax } : {}),
       ...(opts.debounceMs !== undefined ? { debounceMs: opts.debounceMs } : {}),
     });
@@ -842,6 +880,61 @@ describe("overlay server (read-only broadcast surface)", () => {
     await flushIo();
     expect(messages).toHaveLength(2);
     expect(messages[1]?.pool).toEqual([{ text: "build a drum machine", username: "viewer9" }]);
+  });
+
+  // ── quick-rs3: chat-activated chaos mode on the wire ─────────────────────
+
+  it("chaosMode is null on HTTP and ws when no source is wired (absent dep defaults safely)", async () => {
+    const { handle } = await start();
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.chaosMode).toBeNull();
+
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.chaosMode).toBeNull();
+  });
+
+  it("chaosMode is narrowed to EXACTLY {endsAtMs} from a richer source — tally counts/chatter ids never cross the wire", async () => {
+    const chaosMode = makeFakeChaosMode({
+      endsAtMs: 900_000,
+      tallyCount: 2,
+      chatterIds: ["u1", "u2"],
+    });
+    const { handle } = await start({ chaosMode });
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.chaosMode).toEqual({ endsAtMs: 900_000 });
+    expect(Object.keys(httpState.chaosMode ?? {})).toEqual(["endsAtMs"]);
+    const raw = JSON.stringify(httpState);
+    for (const forbidden of ["tallyCount", "chatterIds", "u1"]) {
+      expect(raw, `"${forbidden}" must never reach the broadcast wire`).not.toContain(forbidden);
+    }
+
+    // The ws connect push carries the same narrowed projection.
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.chaosMode).toEqual({ endsAtMs: 900_000 });
+  });
+
+  it("CHAOS_MODE_CHANGED triggers an IMMEDIATE push (never the tally debounce), and null collapses it", async () => {
+    const chaosMode = makeFakeChaosMode();
+    const { handle } = await start({ chaosMode });
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.chaosMode).toBeNull();
+
+    // No fake timers, no debounce advance: the push must land on its own.
+    chaosMode.setChaos({ endsAtMs: 42_000, tallyCount: 3, chatterIds: ["a", "b", "c"] });
+    await until(() => messages.length >= 2, "immediate CHAOS_MODE_CHANGED push");
+    expect(messages[1]?.chaosMode).toEqual({ endsAtMs: 42_000 });
+
+    // Expiry/halt-clear pushes null — the badge collapses to DEMOCRATIC silently.
+    chaosMode.setChaos(null);
+    await until(() => messages.length >= 3, "immediate null push");
+    await flushIo();
+    expect(messages[2]?.chaosMode).toBeNull();
   });
 
   it("queue carries the FULL FIFO queue capped at 10 while nextUp stays capped at 3 (quick-v4e)", async () => {
