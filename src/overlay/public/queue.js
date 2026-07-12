@@ -79,10 +79,13 @@
       queuePanel.appendChild(el("div", "wc-empty", "queue is empty"));
       return;
     }
-    queue.slice(0, QUEUE_SHOW).forEach((text, index) => {
+    // quick-ur2: queue entries are now {text, kind} objects (was bare strings) —
+    // read item.text here so the page stays green after the wire-shape widen;
+    // the kind chip itself is added in a later task.
+    queue.slice(0, QUEUE_SHOW).forEach((item, index) => {
       const row = el("div", "wc-row");
       row.appendChild(el("span", "wc-pos", String(index + 1)));
-      row.appendChild(el("span", "wc-text", truncate(text, TEXT_MAX)));
+      row.appendChild(el("span", "wc-text", truncate(item.text, TEXT_MAX)));
       queuePanel.appendChild(row);
     });
     if (queue.length > QUEUE_SHOW) {

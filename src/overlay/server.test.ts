@@ -14,7 +14,7 @@ import {
   WINDOW_OPENED,
   WINDOW_REVOKED,
 } from "../shared/events.js";
-import type { BuildStatusView, RoundSnapshot } from "../shared/types.js";
+import type { BuildStatusView, CandidateKind, RoundSnapshot } from "../shared/types.js";
 import { StreamModeMachine } from "../state-machine/stream-mode.js";
 import {
   BUILD_STAGE_CHANGED,
@@ -198,7 +198,7 @@ interface RichPoolItem {
   candidate: {
     id: string;
     source: "chat";
-    kind: string;
+    kind: CandidateKind;
     twitchUsername: string | null;
     text: string;
     submittedAtMs: number;
@@ -303,6 +303,33 @@ function makeFakeChaosMode(initial: RichChaosSnapshot | null = null): FakeChaosM
   };
 }
 
+/**
+ * A DELIBERATELY-RICH queue item (quick-ur2, mirrors RichPoolItem): the real
+ * TaskQueue.list() returns QueuedTask items that carry vote provenance (ids,
+ * originating round) alongside {text, kind}. The extra keys below must NEVER
+ * reach the public wire — the server projects each item down to exactly
+ * {text, kind} (T-v4e-01 defence-in-depth applied to the queue).
+ */
+interface RichQueueItem {
+  text: string;
+  kind: CandidateKind;
+  // Vote provenance that must NEVER reach the public wire:
+  id: string;
+  winnerOfRoundId: number;
+  votes: number;
+}
+
+function richQueueItem(overrides: Partial<RichQueueItem> = {}): RichQueueItem {
+  return {
+    text: "build a drum machine",
+    kind: "suggestion",
+    id: "q1",
+    winnerOfRoundId: 7,
+    votes: 42,
+    ...overrides,
+  };
+}
+
 function richPoolItem(overrides: Partial<RichPoolItem["candidate"]> = {}): RichPoolItem {
   return {
     candidate: {
@@ -380,6 +407,7 @@ describe("overlay server (read-only broadcast surface)", () => {
       chaosMode?: FakeChaosMode;
       queueDisplayMax?: number;
       nextUpTexts?: string[];
+      richQueueItems?: RichQueueItem[];
       debounceMs?: number;
     } = {},
   ) {
@@ -389,8 +417,13 @@ describe("overlay server (read-only broadcast surface)", () => {
     const controlWindow = opts.controlWindow ?? makeFakeControlWindow();
     const autoCycle = opts.autoCycle ?? makeFakeAutoCycle();
     const pool = opts.pool ?? makeFakePool();
+    // quick-ur2: queue items now carry a CandidateKind. richQueueItems (when
+    // supplied) proves the wire narrows away any extra provenance keys — the
+    // T-v4e-01 defence-in-depth idiom applied to the queue projection.
     const taskQueue = {
-      list: () => (opts.nextUpTexts ?? []).map((text) => ({ text })),
+      list: () =>
+        opts.richQueueItems ??
+        (opts.nextUpTexts ?? []).map((text) => ({ text, kind: "suggestion" as const })),
     };
     const handle = await startOverlayServer({
       machine,
@@ -854,8 +887,12 @@ describe("overlay server (read-only broadcast surface)", () => {
 
     const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
     const state = (await res.json()) as OverlayState;
-    expect(state.pool).toEqual([{ text: "build a drum machine", username: "viewer9" }]);
-    expect(Object.keys(state.pool[0] ?? {}).sort()).toEqual(["text", "username"]);
+    expect(state.pool).toEqual([
+      { text: "build a drum machine", username: "viewer9", kind: "suggestion" },
+    ]);
+    expect(Object.keys(state.pool[0] ?? {}).sort()).toEqual(["kind", "text", "username"]);
+    // kind is the closed CandidateKind enum only (quick-ur2).
+    expect(["suggestion", "project-switch", "revert", "swap"]).toContain(state.pool[0]?.kind);
 
     // Assert against the raw serialized JSON of the NEW fields only — `round`
     // still carries GateResult per the known STATE.md residual this task is
@@ -887,7 +924,9 @@ describe("overlay server (read-only broadcast surface)", () => {
     await until(() => messages.length >= 2, "immediate POOL_CHANGED push");
     await flushIo();
     expect(messages).toHaveLength(2);
-    expect(messages[1]?.pool).toEqual([{ text: "build a drum machine", username: "viewer9" }]);
+    expect(messages[1]?.pool).toEqual([
+      { text: "build a drum machine", username: "viewer9", kind: "suggestion" },
+    ]);
   });
 
   // ── quick-rs3: chat-activated chaos mode on the wire ─────────────────────
@@ -950,9 +989,35 @@ describe("overlay server (read-only broadcast surface)", () => {
     const { handle } = await start({ nextUpTexts: texts });
     const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
     const state = (await res.json()) as OverlayState;
-    expect(state.queue).toEqual(["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10"]);
-    // The main overlay strip is unchanged.
+    // quick-ur2: queue entries are {text, kind} objects (was bare strings).
+    expect(state.queue).toEqual(
+      ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10"].map((text) => ({
+        text,
+        kind: "suggestion",
+      })),
+    );
+    // The main overlay strip is unchanged — still bare texts, string[].
     expect(state.nextUp).toEqual(["t1", "t2", "t3"]);
+  });
+
+  it("queue projects {text,kind} ONLY — a rich queue source leaks no vote provenance (quick-ur2, T-v4e-01 idiom)", async () => {
+    const { handle } = await start({
+      richQueueItems: [
+        richQueueItem({ text: "build a drum machine", kind: "project-switch", id: "queue-secret" }),
+      ],
+    });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const state = (await res.json()) as OverlayState;
+    expect(state.queue).toEqual([{ text: "build a drum machine", kind: "project-switch" }]);
+    expect(Object.keys(state.queue[0] ?? {}).sort()).toEqual(["kind", "text"]);
+    // kind is the closed CandidateKind enum only.
+    expect(["suggestion", "project-switch", "revert", "swap"]).toContain(state.queue[0]?.kind);
+
+    // The vote-provenance keys never reach the wire.
+    const raw = JSON.stringify(state.queue);
+    for (const forbidden of ["queue-secret", "winnerOfRoundId", "votes"]) {
+      expect(raw, `"${forbidden}" must never reach the queue wire field`).not.toContain(forbidden);
+    }
   });
 
   it("GET /queue serves the what's-coming page; a DNS-rebound GET /queue 403s (CR-02)", async () => {
