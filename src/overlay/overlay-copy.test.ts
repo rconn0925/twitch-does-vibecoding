@@ -19,12 +19,15 @@ function readOverlayJs(): string {
 }
 
 describe("overlay fixed copy (quick-ur2)", () => {
-  it("T4: the suggestions phase hint is the shortened one-line copy (no mid-word truncation)", () => {
+  it("the suggestions phase hint is the vague, one-line participation nudge", () => {
     const src = readOverlayJs();
-    // The exact new string — short enough to fit one line in the 900px banner.
-    expect(src).toContain("type !suggest — an idea or a tweak");
-    // The old copy that truncated mid-word at 1080p must be gone.
+    // Vague copy (Ross 2026-07-11): nudges participation without naming a single
+    // command; short enough to fit one line in the 900px banner.
+    expect(src).toContain("type a command to jump in");
+    // The old suggest-only copies (both the truncating original and the ur2
+    // interim) must be gone.
     expect(src).not.toContain("new idea or a tweak to what's on screen");
+    expect(src).not.toContain("type !suggest — an idea or a tweak");
   });
 
   it("T5: the FREE REIGN usage hint exists exactly once and is scoped to the control-window branch", () => {

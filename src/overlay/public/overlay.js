@@ -85,7 +85,12 @@
   // CandidateKind. The enum string is the ONLY thing on the wire; this fixed
   // lookup composes the human label. An unknown/missing kind yields undefined →
   // NO chip (fail closed) — we never build a chip for an unrecognized kind.
-  const KIND_CHIP = { "project-switch": "NEW", suggestion: "TWEAK", swap: "SWAP", revert: "REVERT" };
+  const KIND_CHIP = {
+    "project-switch": "NEW",
+    suggestion: "TWEAK",
+    swap: "SWAP",
+    revert: "REVERT",
+  };
 
   // --- tiny DOM helpers (textContent-only construction, from console.js) ---
 
@@ -337,10 +342,11 @@
     if (sp) {
       phaseBanner.hidden = false;
       phaseBanner.appendChild(el("span", "phase-title", "SUGGESTIONS OPEN"));
-      // quick-ur2 T4: shortened so the 24px hint fits ONE line inside the
-      // 900px phase banner at 1080p (the old copy truncated mid-word). Fixed,
-      // orchestrator-authored copy — never chat-derived.
-      phaseBanner.appendChild(el("span", "phase-hint", "type !suggest — an idea or a tweak"));
+      // Ross 2026-07-11: kept deliberately VAGUE — chat has many commands now
+      // (see the on-screen COMMANDS panel), so the banner nudges participation
+      // without advertising a single command. Fixed copy — never chat-derived;
+      // still one line inside the 900px banner at 1080p.
+      phaseBanner.appendChild(el("span", "phase-hint", "type a command to jump in"));
       const remaining = sp.endsAtMs - Date.now();
       const countdown = el("span", "phase-countdown", formatRemaining(remaining));
       if (remaining <= FINAL_COUNTDOWN_MS) {
