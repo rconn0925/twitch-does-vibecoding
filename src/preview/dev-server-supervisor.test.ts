@@ -8,7 +8,8 @@ import { createDevServerSupervisor } from "./dev-server-supervisor.js";
  * is stop → start(workspaceDir()) → settle → probe → ONE retry → fail-open.
  * reroot() NEVER rejects and NEVER throws into any caller — a supervisor
  * failure can only ever log loudly (the preview page's standing-by state
- * covers the broadcast surface). No wsl --terminate is EVER involved.
+ * covers the broadcast surface). The wsl distro-terminate teardown is NEVER
+ * involved (that is the halt path's tool).
  */
 
 function fakeLogger() {
@@ -127,7 +128,7 @@ describe("createDevServerSupervisor — reroot cycle", () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
-  it("NEVER calls terminate() — wsl --terminate is the halt path's tool, not the supervisor's", async () => {
+  it("NEVER calls terminate() — the distro teardown is the halt path's tool, not the supervisor's", async () => {
     const { adapter, events } = fakeAdapter();
     const supervisor = createDevServerSupervisor({
       adapter,
@@ -165,7 +166,7 @@ describe("createDevServerSupervisor — reroot cycle", () => {
 
   it("overlapping reroots serialize strictly one-after-another (the publisher chain idiom)", async () => {
     const events: string[] = [];
-    let releaseFirstStart: (() => void) | null = null;
+    const gate: { release: (() => void) | null } = { release: null };
     const adapter: SandboxAdapter = {
       spawn: () => ({}) as never,
       terminate: async () => {},
@@ -174,10 +175,10 @@ describe("createDevServerSupervisor — reroot cycle", () => {
       },
       async startPreviewDevServer() {
         events.push("start");
-        if (releaseFirstStart === null) {
+        if (gate.release === null) {
           // FIRST start blocks until released — the second reroot must wait.
           await new Promise<void>((resolve) => {
-            releaseFirstStart = resolve;
+            gate.release = resolve;
           });
         }
       },
@@ -196,7 +197,7 @@ describe("createDevServerSupervisor — reroot cycle", () => {
     await sleep(20);
     // The second reroot has NOT begun while the first start is in flight.
     expect(events).toEqual(["stop", "start"]);
-    releaseFirstStart?.();
+    gate.release?.();
     await first;
     await second;
     expect(events).toEqual(["stop", "start", "stop", "start"]);

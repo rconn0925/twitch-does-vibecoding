@@ -153,7 +153,6 @@ describe("info commands e2e: instant replies, per-command cooldown, post-gate da
       expect(message).not.toContain("<script>");
     }
   });
-
 });
 
 describe("info commands e2e: silent while HALTED (fresh per-command windows)", () => {

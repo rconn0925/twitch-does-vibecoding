@@ -217,7 +217,9 @@ describe("activateExisting — validating, non-destructive pointer move (quick-t
 
   it("rejection messages are descriptive (exceeds top_generation names both numbers)", () => {
     const { db, ws } = seeded();
-    expect(() => ws.activateExisting(9)).toThrow("activateExisting: target 9 exceeds top_generation 3");
+    expect(() => ws.activateExisting(9)).toThrow(
+      "activateExisting: target 9 exceeds top_generation 3",
+    );
     db.close();
   });
 });

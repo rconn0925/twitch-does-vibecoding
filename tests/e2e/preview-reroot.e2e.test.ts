@@ -87,7 +87,11 @@ function recordingPublisher() {
       publishCalls.push(input);
       const status: PublishResult["status"] =
         failFinalSnapshot && input.title.includes("final snapshot") ? "failed" : "published";
-      return Promise.resolve({ status, commitHash: status === "published" ? "hash" : null, detail: "ok" });
+      return Promise.resolve({
+        status,
+        commitHash: status === "published" ? "hash" : null,
+        detail: "ok",
+      });
     },
     revertLast() {
       return Promise.resolve({ status: "failed", commitHash: null, detail: "unused" });
@@ -150,9 +154,9 @@ async function until<T>(fn: () => Promise<T | undefined> | T | undefined, timeou
 }
 
 function workspaceGeneration(app: AppHandle): number {
-  const row = app.db
-    .prepare("SELECT generation FROM workspace_state WHERE id = 1")
-    .get() as { generation: number };
+  const row = app.db.prepare("SELECT generation FROM workspace_state WHERE id = 1").get() as {
+    generation: number;
+  };
   return row.generation;
 }
 

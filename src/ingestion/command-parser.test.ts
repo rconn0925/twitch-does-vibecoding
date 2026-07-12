@@ -168,7 +168,7 @@ describe("parseCommand — !swapbuild (quick-t8k tier-1 portfolio-swap intent)",
     });
   });
 
-  it('parses a quoted name, stripping ONE pair of surrounding double quotes', () => {
+  it("parses a quoted name, stripping ONE pair of surrounding double quotes", () => {
     expect(parseCommand('!swapbuild "snake game"')).toEqual({
       kind: "swapbuild",
       text: "snake game",

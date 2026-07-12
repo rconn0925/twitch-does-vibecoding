@@ -150,6 +150,23 @@ export interface SandboxAdapter {
    * finalizes as before.
    */
   workspaceHasCommittableFiles?(dir: string): Promise<boolean>;
+  /**
+   * quick-t8k preview ownership: start the in-distro preview dev server
+   * (`python3 -m http.server <port>`, detached) rooted at `dir`. Both args are
+   * INTERNALLY derived — `dir` from workspace.dir() (integer-generation path)
+   * and `port` from resolvePreviewDevServerPort — never chat text. REJECTS on
+   * wsl exec failure (the supervisor catches — fail-open, never the app).
+   * OPTIONAL (ensureWorkspaceDir precedent): existing test fakes need no change.
+   */
+  startPreviewDevServer?(dir: string, port: number): Promise<void>;
+  /**
+   * quick-t8k preview ownership: stop ONLY the exact-port preview server via
+   * an END-ANCHORED `pkill -f 'http\.server <port>$'` — port 5555 can never
+   * match a hypothetical 55555, and `wsl --terminate` (the halt path's tool)
+   * is NEVER involved. `|| true` makes a no-match exit success by
+   * construction. OPTIONAL like startPreviewDevServer.
+   */
+  stopPreviewDevServer?(port: number): Promise<void>;
 }
 
 /**

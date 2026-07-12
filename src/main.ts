@@ -36,6 +36,7 @@ import {
 } from "./control-window/duration.js";
 import { type HistoryServerHandle, startHistoryServer } from "./history/server.js";
 import { type ChatMessageSink, createChatSender } from "./ingestion/chat-sender.js";
+import type { InfoCommandKind } from "./ingestion/command-parser.js";
 import {
   connectStreamElements,
   type DonationEventSource,
@@ -63,7 +64,6 @@ import {
   startConsoleServer,
   type TwitchConnectionStatus,
 } from "./operator-console/server.js";
-import type { InfoCommandKind } from "./ingestion/command-parser.js";
 import {
   createGalleryPublisher,
   createProjectRepoStore,
@@ -86,6 +86,7 @@ import { submitDuringWindow } from "./pipeline/paid-window.js";
 import { enqueueWinner } from "./pipeline/round.js";
 import { type SubmitResult, submitCandidate } from "./pipeline/submit.js";
 import { collectBroadcastSafetyWarnings } from "./preflight.js";
+import { createDevServerSupervisor } from "./preview/dev-server-supervisor.js";
 import { createPreviewManager, resolvePreviewDevServerPort } from "./preview/preview-manager.js";
 import { type PreviewServerHandle, startPreviewServer } from "./preview/server.js";
 import { CandidatePool } from "./queue/pool.js";
@@ -1312,9 +1313,20 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       on: (event, handler) => autoCycle.on(event, handler),
     },
     donationsStatus: () => donationsStatus,
-    // quick-0iu: the streamer's "New project" workspace-rotation seam — the
-    // SAME WorkspaceView instance the build session consumes below.
-    workspace,
+    // quick-0iu: the streamer's "New project" workspace-rotation seam — a
+    // THIN wrapper (spread + one override) over the SAME WorkspaceView the
+    // build session consumes below: the console rotation also re-roots the
+    // preview dev server (quick-t8k). The build session keeps the UNWRAPPED
+    // instance; reRootPreview is late-bound (no-op until the supervisor
+    // composes in the orchestrator block).
+    workspace: {
+      ...workspace,
+      newProject: (): number => {
+        const generation = workspace.newProject();
+        reRootPreview();
+        return generation;
+      },
+    },
     logger,
   });
   logger.info(
@@ -1444,7 +1456,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       if (galleryPublisher) {
         windowNarrator?.newProjectShipping(head.text);
         // Server-composed title (deliberate): if this generation somehow never
-        // published before, scaffoldRepo names the repo from this title, so
+        // published before, the publisher names the new repo from this title, so
         // the slug degrades to a sane `app-N-final-snapshot`; on the normal
         // continue path it is just the commit message.
         const result = await galleryPublisher.publishNow({
@@ -1476,6 +1488,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
             initiator: "chat-vote",
           });
         }
+        // quick-t8k: a rotation is a generation change — re-root the preview
+        // dev server at the fresh dir (fire-and-forget; supervisor fail-opens).
+        reRootPreview();
         await buildSession.startBuild(head, "vote");
         return;
       }
@@ -1899,6 +1914,33 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       "app-under-construction preview listening at http://127.0.0.1:%d — add as OBS browser source",
       preview.port,
     );
+
+    // quick-t8k: the orchestrator OWNS the in-distro preview dev server. The
+    // supervisor stops+starts it via the EXISTING sandbox adapter exec seam
+    // (end-anchored pkill by port — never wsl --terminate) and health-checks
+    // through the SAME probe the preview page uses. Every failure path
+    // fail-opens to the standing-by state — a supervisor error can never
+    // crash the app. Deliberately NOT torn down in close(): leaving the
+    // server serving across host restarts is availability by design (the
+    // 260711 outage was the server DYING, not living too long).
+    const settleRaw = Number.parseInt(process.env.PREVIEW_DEV_SERVER_SETTLE_MS ?? "", 10);
+    const devServerSupervisor = createDevServerSupervisor({
+      adapter: opts.sandboxAdapter,
+      port: previewManager.port,
+      workspaceDir: () => workspace.dir(),
+      probeReachable: () => (opts.devServerProbe ?? previewManager).reachable(),
+      logger,
+      // Test knob: PREVIEW_DEV_SERVER_SETTLE_MS=0 makes reroot cycles
+      // deterministic-fast in e2e; unset/invalid → the supervisor default.
+      ...(Number.isFinite(settleRaw) && settleRaw >= 0 ? { settleMs: settleRaw } : {}),
+    });
+    // The late-bound seam declared above — swap activation (runSwapWinner),
+    // project-switch rotation (shipThenRotate), and the console new-project
+    // wrapper all fire it. fire-and-forget: reroot() never rejects.
+    reRootPreview = () => void devServerSupervisor.reroot();
+    // Boot start: root the preview server at the ACTIVE generation dir with
+    // zero manual steps (OPERATIONS.md §11 retires the manual launch).
+    void devServerSupervisor.reroot();
   }
 
   // Public OBS overlay (PRES-01) — a physically separate read-only surface,

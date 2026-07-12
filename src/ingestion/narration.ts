@@ -599,7 +599,9 @@ export function createNarrator(deps: {
 
     infoProjects(entries: Array<{ name: string; url: string }>): void {
       if (entries.length === 0) {
-        void deps.sender.send("No projects shipped yet — the first finished build starts the list.");
+        void deps.sender.send(
+          "No projects shipped yet — the first finished build starts the list.",
+        );
         return;
       }
       const parts = entries.map((e) => `${e.name} — ${e.url}`);

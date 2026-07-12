@@ -577,9 +577,7 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         const narrator = createNarrator({ sender, coalesceMs: 3_000 });
         narrator.feedback("pooled-swap", "alice");
         vi.advanceTimersByTime(3_000);
-        expect(sent).toEqual([
-          "@alice PROJECT SWAP request is in — it competes in the next vote.",
-        ]);
+        expect(sent).toEqual(["@alice PROJECT SWAP request is in — it competes in the next vote."]);
       } finally {
         vi.useRealTimers();
       }

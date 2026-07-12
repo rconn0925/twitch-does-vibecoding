@@ -1,8 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { pino } from "pino";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { listAuditRecords } from "../../src/audit/record.js";
 import { openDb } from "../../src/audit/db.js";
+import { listAuditRecords } from "../../src/audit/record.js";
 import type { ChatMessageSink } from "../../src/ingestion/chat-sender.js";
 import type { DonationEventSource, TipEvent } from "../../src/ingestion/donation-source.js";
 import type { ChatEventSource, ChatMessageEvent } from "../../src/ingestion/twitch-chat.js";
@@ -423,9 +423,7 @@ describe("swap e2e: unresolvable name and already-current target are honest ambe
     expect(pub.publishCalls).toHaveLength(0);
     expect(workspaceRow(app)).toMatchObject({ generation: 3 });
     const rows = listAuditRecords(app.db, { limit: 10, eventType: "swap_failed" });
-    expect(rows.some((r) => r.task_id === winnerId && r.decision === "already-current")).toBe(
-      true,
-    );
+    expect(rows.some((r) => r.task_id === winnerId && r.decision === "already-current")).toBe(true);
   });
 
   it("the loop is never dead-rounded: a fresh round can open after both failures", async () => {
