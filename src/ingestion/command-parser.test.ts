@@ -160,6 +160,47 @@ describe("parseCommand — no !fork command ships (quick-q5n scope gate)", () =>
   });
 });
 
+describe("parseCommand — tier-2 info commands (quick-t8k: instant, read-only)", () => {
+  it("parses the four bare info commands to kind 'info' with the right InfoCommandKind", () => {
+    expect(parseCommand("!projects")).toEqual({ kind: "info", info: "projects" });
+    expect(parseCommand("!current")).toEqual({ kind: "info", info: "current" });
+    expect(parseCommand("!repo")).toEqual({ kind: "info", info: "repo" });
+    expect(parseCommand("!help")).toEqual({ kind: "info", info: "help" });
+  });
+
+  it("!commands aliases to help", () => {
+    expect(parseCommand("!commands")).toEqual({ kind: "info", info: "help" });
+  });
+
+  it("is case-insensitive on the command word", () => {
+    expect(parseCommand("!PROJECTS")).toEqual({ kind: "info", info: "projects" });
+    expect(parseCommand("!Current")).toEqual({ kind: "info", info: "current" });
+    expect(parseCommand("!REPO")).toEqual({ kind: "info", info: "repo" });
+    expect(parseCommand("!Help")).toEqual({ kind: "info", info: "help" });
+    expect(parseCommand("!COMMANDS")).toEqual({ kind: "info", info: "help" });
+  });
+
+  it("trims surrounding whitespace on the message", () => {
+    expect(parseCommand("   !projects   ")).toEqual({ kind: "info", info: "projects" });
+  });
+
+  it("rejects trailing args — strict no-arg per the RevertCommand idiom", () => {
+    expect(parseCommand("!projects list")).toBeNull();
+    expect(parseCommand("!current one")).toBeNull();
+    expect(parseCommand("!repo url")).toBeNull();
+    expect(parseCommand("!help me")).toBeNull();
+    expect(parseCommand("!commands all")).toBeNull();
+  });
+
+  it("leaves every existing command parsing byte-identically", () => {
+    expect(parseCommand("!suggest a game")).toEqual({ kind: "suggest", text: "a game" });
+    expect(parseCommand("!vote 3")).toEqual({ kind: "vote", option: 3 });
+    expect(parseCommand("!build a thing")).toEqual({ kind: "build", text: "a thing" });
+    expect(parseCommand("!revert")).toEqual({ kind: "revert" });
+    expect(parseCommand("!chaos")).toEqual({ kind: "chaos" });
+  });
+});
+
 describe("parseCommand — non-commands and hostile input", () => {
   it("returns null for plain chat, other commands, and empty string", () => {
     expect(parseCommand("hello")).toBeNull();

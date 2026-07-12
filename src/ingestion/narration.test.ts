@@ -558,6 +558,93 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
     });
   });
 
+  describe("tier-2 info replies (quick-t8k — post-gate repo slugs/links ONLY)", () => {
+    const entry = (name: string) => ({
+      name,
+      url: `https://github.com/TwitchVibecodes/${name}`,
+    });
+
+    it("infoProjects lists slug — link pairs in the order given, one message", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.infoProjects([entry("snake-game"), entry("dark-theme")]);
+      expect(sent).toEqual([
+        "Projects so far: snake-game — https://github.com/TwitchVibecodes/snake-game | dark-theme — https://github.com/TwitchVibecodes/dark-theme",
+      ]);
+    });
+
+    it("infoProjects with an empty table sends the fixed no-projects line", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.infoProjects([]);
+      expect(sent).toEqual(["No projects shipped yet — the first finished build starts the list."]);
+    });
+
+    it("infoProjects greedy-packs to Twitch's 500-char cap with a (+N more) tail", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      const entries = Array.from({ length: 12 }, (_, i) =>
+        entry(`project-number-${i}-with-a-fairly-long-slug-name`),
+      );
+      n.infoProjects(entries);
+      expect(sent).toHaveLength(1);
+      const message = sent[0] ?? "";
+      expect(message.length).toBeLessThanOrEqual(500);
+      expect(message).toMatch(/\(\+\d+ more\)$/);
+      // The first (most recent) entry always makes the cut.
+      expect(message).toContain("project-number-0-with-a-fairly-long-slug-name");
+    });
+
+    it("infoCurrent names the active project's repo; null gets the fixed not-shipped line", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.infoCurrent(entry("snake-game"));
+      n.infoCurrent(null);
+      expect(sent).toEqual([
+        "On screen now: snake-game — https://github.com/TwitchVibecodes/snake-game",
+        "The current project hasn't shipped yet — its page appears after the first finished build.",
+      ]);
+    });
+
+    it("infoRepo replies with just the current link; null gets the same not-shipped fallback", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.infoRepo("https://github.com/TwitchVibecodes/snake-game");
+      n.infoRepo(null);
+      expect(sent).toEqual([
+        "Current project repo: https://github.com/TwitchVibecodes/snake-game",
+        "The current project hasn't shipped yet — its page appears after the first finished build.",
+      ]);
+    });
+
+    it("infoHelp is a FIXED-COPY command list — server-composed, zero interpolation", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.infoHelp();
+      expect(sent).toEqual([
+        "Commands: !suggest <idea> | !build <idea> | !swapbuild <project name> | !vote 1-5 | !revert | !chaos | !projects | !current | !repo",
+      ]);
+    });
+
+    it("info copy stays clear of the copy-separation vocabularies (no chance words, no money words)", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.infoProjects([entry("snake-game")]);
+      n.infoProjects([]);
+      n.infoCurrent(entry("snake-game"));
+      n.infoCurrent(null);
+      n.infoRepo("https://github.com/TwitchVibecodes/snake-game");
+      n.infoRepo(null);
+      n.infoHelp();
+      const CHANCE = /\b(chance|luck|odds|roll|lottery|gamble)\b/i;
+      const MONEY = /\b(money|tip|donation|points|pay)\b/i;
+      for (const message of sent) {
+        expect(message, `info copy mentions chance: "${message}"`).not.toMatch(CHANCE);
+        expect(message, `info copy mentions money: "${message}"`).not.toMatch(MONEY);
+      }
+    });
+  });
+
   describe("feedback burst coalescing (D2-07, fake timers)", () => {
     beforeEach(() => {
       vi.useFakeTimers();
