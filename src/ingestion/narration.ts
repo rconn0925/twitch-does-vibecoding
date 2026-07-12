@@ -342,15 +342,19 @@ export function createNarrator(deps: {
     // strings: paid copy carries no chance/luck/odds/random/roll words; chaos copy
     // carries no money/tip/donation/points/pay words.
 
+    // quick-260711-raz (donor privilege): both !build and !suggest work during
+    // a window (the interceptor in main.ts aliases them into the SAME funnel),
+    // so the open beats announce both. Server-composed template strings only —
+    // the donor/user name stays the sole interpolated chat-derived value.
     windowOpenedDonation(donor: string, amount: string, durationMs: number): void {
       void deps.sender.send(
-        `@${donor} tipped ${amount} and takes the wheel — free reign for ${formatMmss(durationMs)}! Type !build <your instruction> to use it.`,
+        `@${donor} tipped ${amount} and takes the wheel — free reign for ${formatMmss(durationMs)}! Type !build or !suggest <your instruction> — it goes straight to the build queue.`,
       );
     },
 
     windowOpenedChannelPoints(user: string, reward: string, durationMs: number): void {
       void deps.sender.send(
-        `@${user} redeemed ${reward} — direct control for ${formatMmss(durationMs)}! Type !build <your instruction> to use it.`,
+        `@${user} redeemed ${reward} — direct control for ${formatMmss(durationMs)}! Type !build or !suggest <your instruction> — it goes straight to the build queue.`,
       );
     },
 

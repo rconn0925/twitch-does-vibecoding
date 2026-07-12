@@ -893,15 +893,27 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     };
 
     // (5b) D-11 open-window routing: while a control window is ACTIVE, ANY
-    // chatter's `!build <text>` routes through the ONE funnel
-    // (controlWindow.submitInstruction → submitDuringWindow → gate → queue) —
-    // there is NO donor-identity gate (an open sponsored slot) and NO direct
-    // enqueue here (single-funnel invariant, T-04-23). Parsed like !suggest;
-    // outside a window it is silently ignored (no chat noise, D2-15). This is
-    // wired as a THIN wrapper over the existing chatSource so main.ts adds no
-    // second EventSub subscription — the interceptor delegates every non-!build
-    // message to startTwitchChat's own handler.
+    // chatter's `!build <text>` OR `!suggest <text>` routes through the ONE
+    // funnel (controlWindow.submitInstruction → submitDuringWindow → gate →
+    // queue) — there is NO donor-identity gate (an open sponsored slot) and NO
+    // direct enqueue here (single-funnel invariant, T-04-23).
+    //
+    // quick-260711-raz (donor privilege directive): !suggest and !build are
+    // ALIASES during a window — both consumed by this interceptor under the
+    // exact same `controlWindow.snapshot() !== null` check, so NO intake state
+    // (suggestion cooldown / per-user pooled cap) is ever touched in-window:
+    // the message never reaches startTwitchChat's parser → intake.check path.
+    // The compliance gate is NEVER skipped (submitDuringWindow classifies every
+    // byte). Outside a window both commands fall through to the normal parser →
+    // intake → classify → pool path unchanged. This is wired as a THIN wrapper
+    // over the existing chatSource so main.ts adds no second EventSub
+    // subscription — the interceptor delegates every non-matching message to
+    // startTwitchChat's own handler.
     const BUILD_COMMAND = /^!build\s+(.+)$/i;
+    // Same regex shape as command-parser.ts's !suggest match — the two must
+    // agree so an in-window !suggest is consumed by the interceptor iff the
+    // parser would have accepted it outside one.
+    const SUGGEST_COMMAND = /^!suggest\s+(.+)$/i;
     const routeWindowInstruction = async (displayName: string, text: string): Promise<void> => {
       const candidate: SuggestionCandidate = {
         id: randomUUID(),
@@ -940,13 +952,16 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       ...chatSource,
       onChannelChatMessage: (bId, uId, handler) =>
         chatSource.onChannelChatMessage(bId, uId, (event) => {
-          const match = BUILD_COMMAND.exec(event.messageText.trim());
+          const trimmed = event.messageText.trim();
+          const match = BUILD_COMMAND.exec(trimmed) ?? SUGGEST_COMMAND.exec(trimmed);
           if (match?.[1]) {
             // Inside an active window (D-11): the window funnel consumes the
-            // token — byte-identical to the pre-q5n behavior (safety
-            // invariant #4). Outside a window (quick-q5n): fall through to
-            // the parser → intake → classify → pool path, where !build is a
-            // kind-tagged project-switch candidate for the next vote.
+            // token — !build byte-identical to the pre-q5n behavior (safety
+            // invariant #4), !suggest an alias of it (quick-260711-raz).
+            // Outside a window: fall through to the parser → intake →
+            // classify → pool path, where !build is a kind-tagged
+            // project-switch candidate and !suggest a plain suggestion for
+            // the next vote.
             if (controlWindow.snapshot() !== null) {
               void routeWindowInstruction(event.chatterDisplayName, match[1]);
               return;
