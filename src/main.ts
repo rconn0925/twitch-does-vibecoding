@@ -9,6 +9,8 @@ import { purgeOldAuditRecords } from "./audit/purge.js";
 import {
   recordAutoCycleToggled,
   recordBuildHistory,
+  recordChaosActivated,
+  recordChaosExpired,
   recordChaosPick,
   recordChaosToggled,
   recordGalleryPublish,
@@ -16,6 +18,7 @@ import {
   recordRevertOutcome,
   recordWorkspaceReset,
 } from "./audit/record.js";
+import { ChaosModeController } from "./chaos/mode.js";
 import { pickChaos } from "./chaos/selector.js";
 import { CATEGORY_META, isLegalCategory } from "./compliance/categories.js";
 import type { ClassifierTransport } from "./compliance/classifier.js";
@@ -292,6 +295,10 @@ const DEFAULT_SUGGEST_PHASE_SECONDS = 40;
 const DEFAULT_EARLY_CLOSE_POOL_SIZE = 5;
 /** VOTE_QUEUE_MAX amendment: pause new rounds when this many vote winners wait. */
 const DEFAULT_VOTE_QUEUE_MAX = 10;
+/** quick-rs3: unique chatters typing !chaos required to activate chaos mode. */
+const DEFAULT_CHAOS_ACTIVATION_VOTES = 3;
+/** quick-rs3: how long an activated chaos window lasts before auto-revert. */
+const DEFAULT_CHAOS_MODE_DURATION_SECONDS = 300;
 
 /**
  * Wires the Walking Skeleton: audit db -> state machine -> operator console.
@@ -377,6 +384,39 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   let driveWindowBuild: ((taskId: string) => boolean) | null = null;
   let driveChaosBuild: ((taskId: string) => boolean) | null = null;
 
+  // ── Chat-activated chaos mode controller (quick-rs3, RS3-01..RS3-05) ─────
+  // A timed, chat-voted vote-skip window — DISTINCT from the console CHAOS_MODE
+  // machine toggle below: this mode never transitions the machine (the suggest
+  // cycle keeps running; only the vote round is skipped at window close).
+  // State is IN-MEMORY ONLY, deliberately unpersisted — a process that crashes
+  // mid-chaos reboots into democratic mode, the safe default for a live show.
+  // Composed BEFORE the HALT_TRIGGERED handler below: the boot-restore path
+  // (a frozen round) force-transitions to HALTED during composition, and that
+  // handler clears chaos. The narration/audit callbacks close over the
+  // late-bound windowNarrator (silent-safe until the chat block assigns it).
+  const chaosActivationVotes = Math.max(
+    1,
+    Math.floor(envPositive(process.env.CHAOS_ACTIVATION_VOTES, DEFAULT_CHAOS_ACTIVATION_VOTES)),
+  );
+  const chaosModeDurationMs =
+    envPositive(process.env.CHAOS_MODE_DURATION_SECONDS, DEFAULT_CHAOS_MODE_DURATION_SECONDS) *
+    1_000;
+  const chaosMode = new ChaosModeController({
+    thresholdVotes: chaosActivationVotes,
+    durationMs: chaosModeDurationMs,
+    onActivated: (votes) => {
+      recordChaosActivated(db, { votes, streamMode: machine.mode });
+      windowNarrator?.chaosActivated(chaosModeDurationMs);
+    },
+    onExpired: () => {
+      // db.open guard mirrors auditIfOpen (WR-05 shutdown drain) — the unref'd
+      // expiry timer must never write against a closed db.
+      if (db.open) recordChaosExpired(db, { streamMode: machine.mode });
+      windowNarrator?.chaosExpired();
+    },
+    logger,
+  });
+
   machine.on(HALT_TRIGGERED, (...args) => {
     const ctx = args[0] as HaltContext;
     logger.warn(
@@ -391,6 +431,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       const building = orchestrator?.snapshot();
       if (building) buildNarrator?.buildVetoed(building.title);
     }
+    // quick-rs3 (RS3-04): chaos never survives a halt — tally AND active
+    // window die here; recovery restores DEMOCRATIC mode. (chaosMode is
+    // composed just above, so even the boot-restore forced HALT is safe.)
+    chaosMode.clear();
   });
 
   // Compliance-gate deps: injected fake in tests; live plan-billed Sonnet
@@ -664,6 +708,15 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // quick-q5n: a chaos "random build" must be a buildable prompt — routing
       // verbs (project-switch/revert) are vote-only, so filter them out here
       // (selector.ts untouched, preserving the paid↔chaos source-scan invariant).
+      //
+      // TWO-CALL-SITE DOCTRINE (quick-rs3): THIS console-toggle site KEEPS the
+      // kind === "suggestion" filter because its picks bypass the kind router
+      // (submitChaosPick → driveChaosBuild → raw startBuild — a routing verb
+      // here would reach the build agent as prompt text). The chat-activated
+      // site (chaosModePick below) has NO kind filter because its picks route
+      // through drainVoteQueue's kind router, where every kind executes
+      // correctly. Rule: kind-filter exactly when the consumer is the raw
+      // build agent; no filter when the consumer is the kind router.
       const picked = pickChaos(
         pool.list().filter((c) => c.candidate.kind === "suggestion"),
         opts.chaosRng,
@@ -689,6 +742,76 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       }
       return result;
     },
+  };
+
+  // ── Chat-activated chaos mode closures (quick-rs3, RS3-01..RS3-05) ───────
+  // The ChaosModeController itself is composed EARLY (above the HALT handler —
+  // the boot-restore path can force HALTED mid-composition); the dispatch and
+  // pick closures live here where resubmit/pool/enqueueWinner are in scope.
+
+  // !chaos dispatch target (startTwitchChat's chaosVote seam). Narrates ONLY
+  // on a count INCREASE (T-rs3-03 — a repeat flood is an O(1) silent no-op);
+  // "duplicate"/"already-active" stay silent per D2-15.
+  const chaosVote = (chatterId: string): void => {
+    if (machine.mode === "HALTED") return; // no chaos accrual while halted (RS3-04)
+    const result = chaosMode.vote(chatterId);
+    if (result.kind === "counted") {
+      windowNarrator?.chaosTallyProgress(result.count, result.threshold);
+    }
+  };
+
+  // The vote-skip pick closure (AutoCycleScheduler's chaosModePick dep). Runs
+  // BEHIND the scheduler's eligibility check, so HALT parking and FREE REIGN
+  // precedence come free. Returns:
+  //   null    — chaos window not live (or halted) → democratic phase end;
+  //   "empty" — chaos owns the phase end, nothing eligible → window restarts;
+  //   "picked"— one pooled candidate entered the queue via the SAME sanctioned
+  //             winner funnel a voted win uses (enqueueWinner → onWinnerQueued
+  //             → drainVoteQueue's kind router) — zero new routing code.
+  const chaosModePick = (): "picked" | "empty" | null => {
+    const chaosSnapshot = chaosMode.snapshot();
+    if (chaosSnapshot === null || chaosSnapshot.endsAtMs <= Date.now()) return null;
+    if (machine.mode === "HALTED") return null; // belt-and-braces — enqueueWinner also refuses
+    // PAYMENT↔CHANCE ALLOWLIST (T-rs3-05): written as an ALLOWLIST (chat |
+    // operator) so no payment token ever needs to appear near the chaos path —
+    // a paid-source candidate can never be chaos-picked, and the
+    // paid-chaos-separation source scan stays structurally green.
+    const eligible = pool
+      .list()
+      .filter((c) => c.candidate.source === "chat" || c.candidate.source === "operator");
+    // NO kind filter here — see the two-call-site doctrine at chaos.pick()
+    // above: these picks ride drainVoteQueue's kind router, where a
+    // project-switch ships-then-rotates gated on confirmed publish and a
+    // revert reverts. Randomness stays injectable (opts.chaosRng, CHAOS-01).
+    const picked = pickChaos(eligible, opts.chaosRng);
+    if (picked === null) return "empty"; // chaos owns the phase end; window restarts
+    const outcome = enqueueWinner(
+      { taskQueue, db, mode: () => machine.mode, resubmit, logger },
+      picked,
+    );
+    if (outcome.queued) {
+      pool.remove(picked.candidate.id);
+      recordChaosPick(db, {
+        taskId: picked.candidate.id,
+        title: picked.candidate.text,
+        kind: picked.candidate.kind,
+        streamMode: machine.mode,
+      });
+      windowNarrator?.chaosModePicked(picked.candidate.text);
+      // PROVENANCE ACK (checker INFO 1 — NOT a T-05-03 mis-attribution, do not
+      // "fix"): a chaos-picked suggestion's build_history provenance reads
+      // "vote" because drainVoteQueue's default arm hardcodes
+      // startBuild(head, "vote") — inherent to riding the SAME winner rail a
+      // voted win rides. The TRUE origin is the chaos_pick audit row above
+      // (candidate id + kind in `decision`).
+      onWinnerQueued?.(picked.candidate.id);
+    } else if (outcome.reason === "stale-reclassified") {
+      // Pitfall 3 / D2-05: a stale pick re-entered the full gate via resubmit —
+      // narrated, never a silent re-roll.
+      windowNarrator?.chaosPickRecheck();
+    }
+    // outcome "halted" → nothing: the halt itself is already narrated.
+    return "picked";
   };
 
   // ── Auto-cycle scheduler (quick-t5k D-01..D-04, A1) ─────────────────────
@@ -730,6 +853,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     },
     isChaosOn: () => chaos.enabled(),
     isVoteQueueFull,
+    // quick-rs3: the chat-activated vote-skip hook — consulted at phase end
+    // AFTER the eligibility check above (FREE REIGN > CHAOS, HALT parks all).
+    chaosModePick,
     // quick-l2a pool-full early close: the pool sliver + threshold. The pool
     // is approved-only by construction (CandidatePool.add throws, COMP-01);
     // the scheduler funnels the close through its own #onPhaseEnd, so the
@@ -751,6 +877,15 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     onToggled: (enabled) => recordAutoCycleToggled(db, { enabled, streamMode: machine.mode }),
     logger,
   });
+  // Resume the cadence when a control window fully closes (quick-rs3 Rule-3
+  // fix, pre-existing stall): ControlWindow.revoke()/#expire() transition
+  // FREE_REIGN_WINDOW→IDLE BEFORE nulling their #window, so the scheduler's
+  // STATE_CHANGED resume check still sees a live window at that instant and
+  // stays parked (a revoked window's endsAtMs is still in the future). These
+  // events fire AFTER the window is cleared; start() is idempotent (the
+  // "already in a phase" guard + full eligibility re-check make it a safe poke).
+  controlWindow.on(WINDOW_CLOSED, () => autoCycle.start());
+  controlWindow.on(WINDOW_REVOKED, () => autoCycle.start());
 
   // ── Chat pipeline composition (plan 02-04) ─────────────────────────────
   // Runs whenever a chatSource/chatSink pair exists — injected fakes and the
@@ -984,6 +1119,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
           candidate,
         ),
       round,
+      // quick-rs3: !chaos routes the chatterId to the controller (no intake,
+      // no gate call — the command carries no buildable text by construction).
+      chaosVote,
       narrator,
       reconcile,
       logger,
@@ -1323,6 +1461,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       if (machine.mode === "BUILD_IN_PROGRESS") return false;
       const liveWindow = controlWindow.snapshot();
       if (liveWindow !== null && liveWindow.endsAtMs > Date.now()) return false;
+      // NOTE (quick-rs3): this guard refers to the OLD console CHAOS_MODE
+      // machine toggle and stays untouched — chat-activated chaos never
+      // transitions the machine (the suggest cycle keeps running), so its
+      // picks DRAIN THROUGH here like any voted winner; the two systems
+      // cannot interfere.
       if (chaos.enabled()) return false;
       const head = taskQueue.list().find(isVoteOrigin);
       if (!head) return false;
@@ -1603,6 +1746,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // Same WR-05 symmetry: a pending suggest-phase timer must never fire
       // startRound against a closed db.
       autoCycle.dispose();
+      // quick-rs3: cancel the chaos expiry timer BEFORE db.close() (the
+      // onExpired hook writes an audit row — WR-05 symmetry).
+      chaosMode.dispose();
       // Cancel the window expiry + 30s-left timers BEFORE db.close() (WR-05
       // symmetry): a pending window timer must never fire against a closed db.
       clearWindowThirtyBeat();

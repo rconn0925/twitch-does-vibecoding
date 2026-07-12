@@ -99,6 +99,17 @@ export interface AutoCycleDeps {
    * even though all three default to 5). Only meaningful when `pool` is wired.
    */
   earlyCloseSize?: number;
+  /**
+   * quick-rs3 chat-activated chaos-mode vote-skip hook (main.ts's pick
+   * closure). Consulted at phase end AFTER the eligibility re-check passes:
+   *  - "picked": chaos owned the phase end and enqueued one pooled candidate —
+   *    skip startRound, open a fresh window;
+   *  - "empty":  chaos owned the phase end but nothing was eligible — restart
+   *    the window with the stillCollecting beat (nothing was consumed);
+   *  - null (or absent dep): chaos does not own this phase end → proceed to
+   *    startRound, byte-identical to today.
+   */
+  chaosModePick?: () => "picked" | "empty" | null;
   /** Suggestion-window length (SUGGEST_PHASE_SECONDS, default 40s). */
   suggestPhaseMs: number;
   /** AUTO_ROUND_ENABLED boot state (only the exact string "false" disables). */
@@ -271,6 +282,31 @@ export class AutoCycleScheduler {
       !(this.#deps.isVoteQueueFull?.() ?? false);
     if (!eligible) {
       this.#emitChanged(); // parked — overlay clears the countdown
+      return;
+    }
+    // quick-rs3 chat-activated chaos: while its window is live the vote round
+    // is SKIPPED — the pick hook owns this phase end (it runs AFTER the
+    // eligibility check above, so halt/window/old-chaos/queue-full parking
+    // still govern, and FREE REIGN keeps outranking CHAOS).
+    //
+    // RE-ENTRANCY (checker BLOCKER — why #maybeBegin, NEVER #beginSuggestPhase):
+    // the pick closure can synchronously enter BUILD_IN_PROGRESS
+    // (enqueueWinner → onWinnerQueued → drainVoteQueue → machine.transition),
+    // which emits STATE_CHANGED synchronously; this scheduler's STATE_CHANGED
+    // handler sees #phaseEndsAtMs === null && #timer === null (both true
+    // inside #onPhaseEnd) and may ALREADY have begun the next phase before
+    // control returns here. #maybeBegin's first-line "already in a phase"
+    // guard absorbs that re-entrant begin idempotently — one phase, one beat,
+    // one timer. A direct #beginSuggestPhase call would overwrite
+    // #phaseEndsAtMs, double-narrate, and orphan the first timer (steady-state
+    // 2x picks/beats per window). The democratic path below needs no such care
+    // only because startRound makes round.snapshot() non-null before the
+    // handler runs. Beat choice: "picked" → "fresh" (the pick consumed the
+    // window); "empty" → "restart"/stillCollecting (nothing consumed —
+    // consistent with the democratic pool-too-small restart; INFO 2 decision).
+    const chaosOutcome = this.#deps.chaosModePick?.() ?? null;
+    if (chaosOutcome !== null) {
+      this.#maybeBegin(chaosOutcome === "picked" ? "fresh" : "restart");
       return;
     }
     try {

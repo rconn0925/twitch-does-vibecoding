@@ -141,7 +141,11 @@ async function until<T>(fn: () => Promise<T | undefined> | T | undefined, timeou
   }
 }
 
-function candidate(id: string, text: string, over: Partial<SuggestionCandidate> = {}): SuggestionCandidate {
+function candidate(
+  id: string,
+  text: string,
+  over: Partial<SuggestionCandidate> = {},
+): SuggestionCandidate {
   return {
     id,
     source: "chat",
@@ -260,11 +264,7 @@ describe("chaos e2e: 3 unique !chaos activate; window close SKIPS the vote; expi
     const rows = listAuditRecords(app.db, { limit: 10, eventType: "chaos_activated" });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.rationale).toBe("Chaos mode activated by 3 unique chatters");
-    expect(
-      sent.some((m) =>
-        m.startsWith("CHAOS MODE ACTIVATED — no voting for 0:03"),
-      ),
-    ).toBe(true);
+    expect(sent.some((m) => m.startsWith("CHAOS MODE ACTIVATED — no voting for 0:03"))).toBe(true);
   });
 
   it("vote-skip: NO vote round opened; ONE pooled candidate was picked, enqueued and built via the winner rail", () => {
@@ -468,8 +468,9 @@ describe("chaos e2e: a live free-reign window defers picks; HALT clears tally AN
     // a fresh !chaos vote gets a FRESH 1/3 tally beat (not "already-active"
     // silence, not a resumed count): both the window AND the tally died.
     chat.say("u1", "ann", "!chaos"); // same chatter as the pre-halt tally
-    await until(() =>
-      sent.filter((m) => m === "Chaos votes: 1/3 — type !chaos to skip the voting.").length >= 2,
+    await until(
+      () =>
+        sent.filter((m) => m === "Chaos votes: 1/3 — type !chaos to skip the voting.").length >= 2,
     );
 
     // And the next phase end with a 2-candidate pool opens a NORMAL vote round.
@@ -567,9 +568,9 @@ describe("chaos e2e: picks ride the q5n kind router — ship-gate holds for proj
     expect(publishCalls.some((c) => c.title === "app-1 final snapshot")).toBe(true);
     const pickTaskId = chaosPickRows(app)[0]?.task_id;
     const failedPublish = listAuditRecords(app.db, { limit: 20, eventType: "gallery_publish" });
-    expect(
-      failedPublish.some((r) => r.decision === "failed" && r.task_id === pickTaskId),
-    ).toBe(true);
+    expect(failedPublish.some((r) => r.decision === "failed" && r.task_id === pickTaskId)).toBe(
+      true,
+    );
   }, 10_000);
 
   it("a chaos-picked REVERT runs the revert path (revert_outcome row, build_history 'reverted') — never an agent build", async () => {

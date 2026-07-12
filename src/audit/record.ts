@@ -674,10 +674,7 @@ export function recordChaosActivated(
 }
 
 /** One row per chat-activated chaos NATURAL EXPIRY (auto-revert to democratic mode). */
-export function recordChaosExpired(
-  db: Database.Database,
-  args: { streamMode: StreamMode },
-): void {
+export function recordChaosExpired(db: Database.Database, args: { streamMode: StreamMode }): void {
   insert(db, {
     createdAtMs: Date.now(),
     eventType: "chaos_expired",
