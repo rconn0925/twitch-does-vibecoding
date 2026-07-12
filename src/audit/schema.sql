@@ -11,6 +11,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
   event_type      TEXT NOT NULL,             -- 'gate_decision' | 'veto' | 'halt' | 'review_resolved' | 'review_expired' | 'submission_refused' | 'round_opened' | 'round_closed' | 'pool_dropped'
                                              --   Phase 3 (D3-13): 'pipeline_stage' | 'comp02_decision' | 'build_refused' | 'build_retry' | 'build_skip' | 'sandbox_teardown'
                                              --   quick-q5n: 'revert_outcome' — a chat-voted rollback resolved (reverted | nothing-to-revert | failed)
+                                             --   quick-rs3: 'chaos_activated' | 'chaos_expired' — the CHAT-activated timed chaos window's lifecycle
+                                             --     (distinct from 'chaos_toggled', the console switch); 'chaos_pick' rows from the chat-activated
+                                             --     vote-skip path carry the picked candidate's kind in `decision` (true-origin record — the
+                                             --     build_history provenance for such picks reads 'vote' by same-winner-rail design)
   source          TEXT NOT NULL,             -- 'chat' | 'channel_points' | 'donation' | 'chaos' | 'operator' | 'orchestrator' | 'console' | 'hotkey'
   twitch_username TEXT,                      -- nullable: absent for operator-console-originated events
   suggestion_text TEXT,                      -- nullable: absent for pure veto/halt events with no candidate

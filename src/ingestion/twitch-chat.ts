@@ -16,6 +16,11 @@
  *    untouched.
  *  - !vote → round.recordVote(chatterId, option); invalid votes are ignored
  *    silently (D2-15 — no chat noise).
+ *  - !chaos (quick-rs3) → deps.chaosVote?.(chatterId) and return — the !vote
+ *    treatment. NO intake.check runs on this path: !chaos carries no buildable
+ *    text (strict no-arg parse), so there is no gate call BY CONSTRUCTION and
+ *    no suggest-cooldown is charged. Per-user rate limiting = the controller's
+ *    unique-user dedupe + D2-15 silence on repeats.
  *
  * Funnel decision (quick-q5n): !revert's FIXED server-composed text still
  * passes classify(). CandidatePool.add and toQueuedTask structurally require
@@ -78,6 +83,12 @@ export interface TwitchChatDeps {
   /** submitCandidate pre-bound with its deps in main.ts — the ONLY intake path (COMP-01). */
   submit: (candidate: SuggestionCandidate) => SubmitResult;
   round: { recordVote(id: string, option: number): boolean };
+  /**
+   * quick-rs3 chat-activated chaos mode: !chaos routes the chatterId here
+   * (main.ts closes over the ChaosModeController). Optional — absent seam
+   * makes !chaos a silent no-op.
+   */
+  chaosVote?: (chatterId: string) => void;
   narrator: Narrator;
   /** D2-14 reconciliation, run on every EventSub (re)connect. */
   reconcile: () => void;
@@ -111,6 +122,14 @@ export function startTwitchChat(deps: TwitchChatDeps): { stop(): void } {
       if (command.kind === "vote") {
         // Return value deliberately ignored: invalid votes are silent (D2-15).
         deps.round.recordVote(chatterId, command.option);
+        return;
+      }
+
+      // !chaos (quick-rs3) — BEFORE the suggest/build/revert shared path: no
+      // text → no gate call, no cooldown charged; dedupe lives in the
+      // controller (T-rs3-03).
+      if (command.kind === "chaos") {
+        deps.chaosVote?.(chatterId);
         return;
       }
 

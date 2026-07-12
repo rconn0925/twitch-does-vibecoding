@@ -3,6 +3,7 @@ import type {
   BuildHistoryRow,
   BuildProvenance,
   BuildResult,
+  CandidateKind,
   GateCategory,
   GateDecision,
   PipelineStage,
@@ -620,10 +621,17 @@ export function recordRevertOutcome(
   });
 }
 
-/** One row per chaos PICK (CHAOS-01): a uniform-random selection from the filtered pool. */
+/**
+ * One row per chaos PICK (CHAOS-01): a uniform-random selection from the
+ * filtered pool. quick-rs3: optional `kind` (written to the `decision` column)
+ * records the picked candidate's kind for the chat-activated vote-skip path —
+ * this row is the TRUE-origin record for a chaos-picked winner, whose
+ * build_history provenance reads "vote" by design (same-winner-rail directive).
+ * The old console-toggle call site omits it → rows byte-identical to before.
+ */
 export function recordChaosPick(
   db: Database.Database,
-  args: { taskId: string; title: string; streamMode: StreamMode },
+  args: { taskId: string; title: string; kind?: CandidateKind; streamMode: StreamMode },
 ): void {
   insert(db, {
     createdAtMs: Date.now(),
@@ -631,11 +639,56 @@ export function recordChaosPick(
     source: "chaos",
     twitchUsername: null,
     suggestionText: args.title,
-    decision: null,
+    decision: args.kind ?? null,
     category: null,
     rationale: "Uniform-random pick from the gate-filtered pool (CHAOS-01)",
     streamMode: args.streamMode,
     taskId: args.taskId,
+  });
+}
+
+// ── quick-rs3: chat-activated chaos-mode lifecycle audit events (RS3-05) ─────
+// One row per activation and one per natural expiry — the never-silent
+// doctrine. Both carry source "chaos" (the chance path, never a monetary
+// source — the ledger stays filterable by influence path). audit_log has no
+// CHECK constraints, so the new event_type values are schema-safe additions
+// (only schema.sql's descriptive comment is extended).
+
+/** One row per chat-activated chaos ACTIVATION: the unique-chatter count that tripped it. */
+export function recordChaosActivated(
+  db: Database.Database,
+  args: { votes: number; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "chaos_activated",
+    source: "chaos",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: "activated",
+    category: null,
+    rationale: `Chaos mode activated by ${args.votes} unique chatters`,
+    streamMode: args.streamMode,
+    taskId: null,
+  });
+}
+
+/** One row per chat-activated chaos NATURAL EXPIRY (auto-revert to democratic mode). */
+export function recordChaosExpired(
+  db: Database.Database,
+  args: { streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "chaos_expired",
+    source: "chaos",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: "Chaos mode expired — democratic mode restored",
+    streamMode: args.streamMode,
+    taskId: null,
   });
 }
 

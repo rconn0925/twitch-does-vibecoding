@@ -57,12 +57,22 @@ const VoteCommand = z.object({
   option: z.number().int().min(1).max(5),
 });
 
+/**
+ * quick-rs3 chat-activated chaos mode: `!chaos` — a threshold vote to skip the
+ * voting rounds for a bounded window. STRICT no-arg match (RevertCommand idiom):
+ * trailing text → null, so chaos can never carry chat-derived text (T-rs3-01).
+ */
+const ChaosCommand = z.object({
+  kind: z.literal("chaos"),
+});
+
 /** Discriminated result of parsing a chat message as a command. No fork command exists (quick-q5n scope gate). */
 export type ParsedCommand =
   | { kind: "suggest"; text: string }
   | { kind: "vote"; option: number }
   | { kind: "build"; text: string }
-  | { kind: "revert" };
+  | { kind: "revert" }
+  | { kind: "chaos" };
 
 /**
  * Parse a raw chat message into a typed command, or null when the message
@@ -96,6 +106,13 @@ export function parseCommand(messageText: string): ParsedCommand | null {
   // command (null), so revert candidates can never carry chat-derived text.
   if (/^!(revert|undo)$/i.test(trimmed)) {
     const parsed = RevertCommand.safeParse({ kind: "revert" });
+    return parsed.success ? parsed.data : null;
+  }
+
+  // quick-rs3: !chaos — strict no-arg; "!chaos anything" is NOT a command
+  // (null), so chaos activation can never smuggle chat text anywhere.
+  if (/^!chaos$/i.test(trimmed)) {
+    const parsed = ChaosCommand.safeParse({ kind: "chaos" });
     return parsed.success ? parsed.data : null;
   }
 

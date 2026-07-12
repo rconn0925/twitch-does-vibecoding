@@ -96,6 +96,22 @@ export interface Narrator extends BuildNarrator {
   /** A uniform-random chaos pick was made and queued (CHAOS-01). */
   chaosPick(title: string): void;
 
+  // ── Chat-activated chaos-mode beats (quick-rs3 — server-composed) ─────────
+  // Fixed templates; the only interpolations are counts, a formatted duration,
+  // and gate-approved titles through truncateTitle. Copy-separation (directive
+  // + D2 rules): no gambling-adjacent words (luck/odds/roll/gamble) and no
+  // money words in any of these strings.
+  /** A NEW unique chatter advanced the !chaos tally (fires only on count INCREASE). */
+  chaosTallyProgress(count: number, threshold: number): void;
+  /** The threshold landed — chaos mode is live for durationMs. */
+  chaosActivated(durationMs: number): void;
+  /** The vote-skip pick landed in the build queue (chat-activated path). */
+  chaosModePicked(title: string): void;
+  /** The pick went stale and re-entered the full gate (D2-05 — never a silent re-roll). */
+  chaosPickRecheck(): void;
+  /** The chaos window reached its full duration — democratic voting resumes. */
+  chaosExpired(): void;
+
   // ── Auto-cycle suggestion-phase beats (quick-t5k D-01/D-02) ──────────────
   // Low-frequency transition beats, one message per phase begin — the phase
   // countdown itself lives on the overlay (A2), never in chat.
@@ -426,6 +442,36 @@ export function createNarrator(deps: {
       void deps.sender.send(
         `Chaos pick: "${truncateTitle(title)}" — no vote needed, building it now.`,
       );
+    },
+
+    // ── Chat-activated chaos-mode beats (quick-rs3 — VERBATIM copy contract) ──
+    // Server-composed fixed templates only; candidate titles pass through
+    // truncateTitle. No gambling-adjacent or money words (copy-separation).
+
+    chaosTallyProgress(count: number, threshold: number): void {
+      void deps.sender.send(`Chaos votes: ${count}/${threshold} — type !chaos to skip the voting.`);
+    },
+
+    chaosActivated(durationMs: number): void {
+      void deps.sender.send(
+        `CHAOS MODE ACTIVATED — no voting for ${formatMmss(durationMs)}: each round, one approved idea from the pool gets picked and built.`,
+      );
+    },
+
+    chaosModePicked(title: string): void {
+      void deps.sender.send(
+        `Chaos picked: "${truncateTitle(title)}" — no vote this round, straight to the build queue.`,
+      );
+    },
+
+    chaosPickRecheck(): void {
+      void deps.sender.send(
+        "The chaos pick needs a fresh safety check first — it may come back around.",
+      );
+    },
+
+    chaosExpired(): void {
+      void deps.sender.send("Chaos mode is over — voting is back.");
     },
 
     // ── Auto-cycle suggestion-phase beats (quick-t5k D-01/D-02) ──────────────
