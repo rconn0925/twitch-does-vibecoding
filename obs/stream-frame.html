@@ -58,15 +58,25 @@
   #b-bl{left:510px;top:994px}
   #b-lbl{left:524px;top:724px}
 
-  /* ---- ZONE C · TWITCH CHAT  rect 1512,150,360,882 ----------------------
-     Right edge at 1872 (48px canvas margin); full-height chat. Full 4-tick
-     border to match the other sections. Bottom ticks sit in the old NEXT UP
-     band — fine here: this scene runs the overlay with ?nextup=off.        */
-  #c-tl{left:1512px;top:150px}
-  #c-tr{left:1856px;top:150px}
-  #c-bl{left:1512px;top:1016px}
-  #c-br{left:1856px;top:1016px}
-  #c-lbl{left:1526px;top:164px}
+  /* ---- ZONE C · TWITCH CHAT  rect 1432,625,440,400 ----------------------
+     Shrunk + moved to the LOWER right so the COMMANDS card (Zone E) stacks
+     above it in the right column (Ross 2026-07-11). Right edge 1872, width
+     matched to Zone E. Bottom ticks sit in the old NEXT UP band — fine here:
+     this scene runs the overlay with ?nextup=off.                          */
+  #c-tl{left:1432px;top:625px}
+  #c-tr{left:1856px;top:625px}
+  #c-bl{left:1432px;top:1009px}
+  #c-br{left:1856px;top:1009px}
+  #c-lbl{left:1446px;top:639px}
+
+  /* ---- ZONE E · COMMANDS  rect 1432,150,440,462 -------------------------
+     The static /commands reference card, stacked ABOVE chat in the right
+     column (Ross 2026-07-11). Same right edge (1872) + width as Zone C.     */
+  #e-tl{left:1432px;top:150px}
+  #e-tr{left:1856px;top:150px}
+  #e-bl{left:1432px;top:596px}
+  #e-br{left:1856px;top:596px}
+  #e-lbl{left:1446px;top:164px}
 
   /* ---- ZONE D · WHAT'S COMING / QUEUE  rect 48,150,440,420 -------------
      Narrowed 550→440 (left rail ends x=488; centered preview starts 510).
@@ -87,6 +97,11 @@
   <div class="t tl" id="b-tl"></div><div class="t tr" id="b-tr"></div>
   <div class="t bl" id="b-bl"></div>
   <div class="lbl" id="b-lbl">THE AI</div>
+
+  <!-- Commands reference card (stacked above chat) -->
+  <div class="t tl" id="e-tl"></div><div class="t tr" id="e-tr"></div>
+  <div class="t bl" id="e-bl"></div><div class="t br" id="e-br"></div>
+  <div class="lbl" id="e-lbl">COMMANDS</div>
 
   <!-- Twitch chat -->
   <div class="t tl" id="c-tl"></div><div class="t tr" id="c-tr"></div>
