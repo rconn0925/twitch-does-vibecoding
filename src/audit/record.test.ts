@@ -20,6 +20,7 @@ import {
   recordReviewResolution,
   recordRoundClosed,
   recordRoundOpened,
+  recordSwapOutcome,
   recordVeto,
   recordWindowDenied,
   recordWindowExpired,
@@ -321,6 +322,73 @@ describe("audit record helpers (append-only ledger)", () => {
       expect(row.source).toBe("operator");
       expect(row.suggestion_text).toBeNull();
     }
+    db.close();
+  });
+
+  it("recordSwapOutcome 'activated' writes a swap_activated row with from/to generations + repo in the rationale (quick-t8k)", () => {
+    const db = openDb(":memory:");
+    recordSwapOutcome(db, {
+      taskId: "task-s1",
+      fromGeneration: 3,
+      toGeneration: 1,
+      repoName: "snake-game",
+      detail: null,
+      status: "activated",
+      streamMode: "BUILD_IN_PROGRESS",
+    });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "swap_activated" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.decision).toBe("activated");
+    expect(rows[0]?.task_id).toBe("task-s1");
+    expect(rows[0]?.rationale).toContain("3");
+    expect(rows[0]?.rationale).toContain("1");
+    expect(rows[0]?.rationale).toContain("snake-game");
+    expect(rows[0]?.source).toBe("operator");
+    expect(rows[0]?.suggestion_text).toBeNull();
+    db.close();
+  });
+
+  it("recordSwapOutcome failure statuses write swap_failed rows with the status in decision (quick-t8k)", () => {
+    const db = openDb(":memory:");
+    recordSwapOutcome(db, {
+      taskId: "task-s2",
+      fromGeneration: 3,
+      toGeneration: null,
+      repoName: null,
+      status: "unresolved",
+      detail: "no project matched the requested name",
+      streamMode: "BUILD_IN_PROGRESS",
+    });
+    recordSwapOutcome(db, {
+      taskId: "task-s3",
+      fromGeneration: 3,
+      toGeneration: 3,
+      repoName: "counter-app",
+      status: "already-current",
+      detail: "requested project is already on screen",
+      streamMode: "BUILD_IN_PROGRESS",
+    });
+    recordSwapOutcome(db, {
+      taskId: "task-s4",
+      fromGeneration: 3,
+      toGeneration: 1,
+      repoName: "snake-game",
+      status: "ship-failed",
+      detail: "final publish did not confirm",
+      streamMode: "BUILD_IN_PROGRESS",
+    });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "swap_failed" });
+    expect(rows).toHaveLength(3);
+    // newest-first
+    expect(rows.map((r) => r.decision)).toEqual(["ship-failed", "already-current", "unresolved"]);
+    expect(rows.map((r) => r.task_id)).toEqual(["task-s4", "task-s3", "task-s2"]);
+    expect(rows[2]?.rationale).toBe("no project matched the requested name");
+    for (const row of rows) {
+      expect(row.source).toBe("operator");
+      expect(row.suggestion_text).toBeNull();
+    }
+    // No swap_activated row was written for any failure.
+    expect(listAuditRecords(db, { limit: 10, eventType: "swap_activated" })).toHaveLength(0);
     db.close();
   });
 

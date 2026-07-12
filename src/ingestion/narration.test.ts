@@ -281,6 +281,11 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "infoCurrent",
         "infoRepo",
         "infoHelp",
+        // Swap beats (quick-t8k) — the resolved repo slug at most; never a tally.
+        "swapActivated",
+        "swapShipFailed",
+        "swapUnresolved",
+        "swapAlreadyCurrent",
       ].sort(),
     );
   });
@@ -561,6 +566,81 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       const narrator = createNarrator({ sender });
       narrator.buildQueueFull();
       expect(sent).toEqual(["Build queue full — pausing new rounds until it drains."]);
+    });
+  });
+
+  describe("swap narration (quick-t8k — server-composed, amber-tier failures D2-18)", () => {
+    it("pooled-swap feedback renders the @-line confirmation (coalesced)", () => {
+      vi.useFakeTimers();
+      try {
+        const { sent, sender } = capturingSender();
+        const narrator = createNarrator({ sender, coalesceMs: 3_000 });
+        narrator.feedback("pooled-swap", "alice");
+        vi.advanceTimersByTime(3_000);
+        expect(sent).toEqual([
+          "@alice PROJECT SWAP request is in — it competes in the next vote.",
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("roundOpened renders a swap candidate as [N] SWAP TO: <text> (gate-approved text)", () => {
+      const { sent, sender } = capturingSender();
+      const narrator = createNarrator({ sender });
+      narrator.roundOpened(
+        snapshot({
+          candidates: [
+            roundCandidate(1, "snake game", 0, "swap"),
+            roundCandidate(2, "add a dark theme", 0, "suggestion"),
+          ],
+        }),
+      );
+      expect(sent).toEqual([
+        "Voting is OPEN — !vote 1 or 2: [1] SWAP TO: snake game [2] TWEAK: add a dark theme — 60s on the clock.",
+      ]);
+    });
+
+    it("swapActivated sends at most two lines — a transition line and a landed line with the repo slug", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.swapActivated("snake-game");
+      expect(sent).toEqual([
+        "Swap approved — bringing an earlier project back up…",
+        'SWAP complete — "snake-game" is live on screen again. Tweak it with !suggest.',
+      ]);
+    });
+
+    it("failure beats render verbatim: ship-failed / unresolved / already-current (distinct honest lines)", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.swapShipFailed();
+      n.swapUnresolved();
+      n.swapAlreadyCurrent();
+      expect(sent).toEqual([
+        "Couldn't wrap up the current project for the gallery just now — staying on it. We'll take the swap again another round.",
+        "Couldn't find that project by name — try !projects for the list. Next round is coming right up.",
+        "That's the project already on screen — nothing to swap. Keep the tweaks coming with !suggest.",
+      ]);
+      // already-current is its OWN honest line, never the misleading not-found copy.
+      expect(sent[2]).not.toContain("Couldn't find");
+    });
+
+    it("swap copy is amber-tier and scan-clean: no red/alarm words, no chance words, no money words", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.swapActivated("snake-game");
+      n.swapShipFailed();
+      n.swapUnresolved();
+      n.swapAlreadyCurrent();
+      const RED = /error|alarm|crash|panic|fatal|broken/i;
+      const CHANCE = /\b(chance|luck|odds|roll|lottery|gamble)\b/i;
+      const MONEY = /\b(money|tip|donation|points|pay)\b/i;
+      for (const message of sent) {
+        expect(message, `swap copy sounds alarming: "${message}"`).not.toMatch(RED);
+        expect(message, `swap copy mentions chance: "${message}"`).not.toMatch(CHANCE);
+        expect(message, `swap copy mentions money: "${message}"`).not.toMatch(MONEY);
+      }
     });
   });
 

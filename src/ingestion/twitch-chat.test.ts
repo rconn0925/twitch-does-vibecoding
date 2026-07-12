@@ -124,6 +124,11 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     infoCurrent: vi.fn(),
     infoRepo: vi.fn(),
     infoHelp: vi.fn(),
+    // Swap beats (quick-t8k; unused by the chat listener).
+    swapActivated: vi.fn(),
+    swapShipFailed: vi.fn(),
+    swapUnresolved: vi.fn(),
+    swapAlreadyCurrent: vi.fn(),
   };
 }
 
@@ -347,6 +352,48 @@ describe("startTwitchChat — EventSub listener wiring (CHAT-01/D2-15/T-02-15)",
       src.emitMessage({ ...CHAT_EVENT, messageText: "!build a game" });
       expect(deps.submitted).toHaveLength(0);
       expect(narrator.feedbackCalls).toEqual([["duplicate", "viewer1", undefined]]);
+    });
+
+    it("!swapbuild builds a kind 'swap' candidate carrying the (gate-bound) name text", () => {
+      const src = fakeSource();
+      const intake = fakeIntake({ ok: true });
+      const deps = makeDeps({ source: src.source, intake });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: '!swapbuild "snake game"' });
+
+      expect(deps.submitted).toHaveLength(1);
+      expect(deps.submitted[0]).toMatchObject({
+        source: "chat",
+        kind: "swap",
+        twitchUsername: "viewer1",
+        text: "snake game",
+      });
+      expect(intake.registered).toEqual([["42", deps.submitted[0]?.id]]);
+    });
+
+    it("!swapbuild runs intake.check BEFORE submit — the ONE funnel, gate-before-pool ordering", () => {
+      const src = fakeSource();
+      const sequence: string[] = [];
+      const intake: SuggestIntake = {
+        check: (chatterId, text) => {
+          sequence.push(`intake:${chatterId}:${text}`);
+          return { ok: true };
+        },
+        registerAccepted: () => {
+          sequence.push("register");
+        },
+      };
+      const deps = makeDeps({
+        source: src.source,
+        intake,
+        submit: (candidate) => {
+          sequence.push(`submit:${candidate.kind}:${candidate.text}`);
+          return { accepted: true, id: candidate.id };
+        },
+      });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!swapbuild snake" });
+      expect(sequence).toEqual(["intake:42:snake", "submit:swap:snake", "register"]);
     });
 
     it("!revert with trailing text is NOT a command — ignored silently (strict no-arg)", () => {

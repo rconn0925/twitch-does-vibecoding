@@ -160,6 +160,54 @@ describe("parseCommand — no !fork command ships (quick-q5n scope gate)", () =>
   });
 });
 
+describe("parseCommand — !swapbuild (quick-t8k tier-1 portfolio-swap intent)", () => {
+  it("parses an unquoted multi-word name", () => {
+    expect(parseCommand("!swapbuild snake game")).toEqual({
+      kind: "swapbuild",
+      text: "snake game",
+    });
+  });
+
+  it('parses a quoted name, stripping ONE pair of surrounding double quotes', () => {
+    expect(parseCommand('!swapbuild "snake game"')).toEqual({
+      kind: "swapbuild",
+      text: "snake game",
+    });
+  });
+
+  it("strips only ONE pair of quotes — inner quotes survive", () => {
+    expect(parseCommand('!swapbuild ""snake""')).toEqual({
+      kind: "swapbuild",
+      text: '"snake"',
+    });
+  });
+
+  it("re-trims after quote stripping", () => {
+    expect(parseCommand('!swapbuild "  snake  "')).toEqual({
+      kind: "swapbuild",
+      text: "snake",
+    });
+  });
+
+  it("is case-insensitive on the command word", () => {
+    expect(parseCommand("!SWAPBUILD snake")).toEqual({ kind: "swapbuild", text: "snake" });
+  });
+
+  it("returns null for bare !swapbuild and for an empty quoted name", () => {
+    expect(parseCommand("!swapbuild")).toBeNull();
+    expect(parseCommand("!swapbuild    ")).toBeNull();
+    expect(parseCommand('!swapbuild ""')).toBeNull();
+    expect(parseCommand('!swapbuild "   "')).toBeNull();
+  });
+
+  it("caps the name at 2000 chars (funnel-bound mirror)", () => {
+    const body = "a".repeat(2001);
+    expect(parseCommand(`!swapbuild ${body}`)).toBeNull();
+    const ok = "a".repeat(2000);
+    expect(parseCommand(`!swapbuild ${ok}`)).toEqual({ kind: "swapbuild", text: ok });
+  });
+});
+
 describe("parseCommand — tier-2 info commands (quick-t8k: instant, read-only)", () => {
   it("parses the four bare info commands to kind 'info' with the right InfoCommandKind", () => {
     expect(parseCommand("!projects")).toEqual({ kind: "info", info: "projects" });
