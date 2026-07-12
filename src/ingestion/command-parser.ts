@@ -20,6 +20,33 @@ const SuggestCommand = z.object({
   text: z.string().min(1).max(2000),
 });
 
+/**
+ * quick-q5n tier-1 voted command: `!build <idea>` — the new-project intent.
+ * Mirrors SuggestCommand's shape and 2000-char cap; the regex below is the
+ * SAME shape as main.ts's BUILD_COMMAND so both surfaces agree on what a
+ * !build token is.
+ */
+const BuildCommand = z.object({
+  kind: z.literal("build"),
+  text: z.string().min(1).max(2000),
+});
+
+/**
+ * quick-q5n tier-1 voted command: `!revert` / `!undo` — the undo-last-change
+ * intent. STRICT no-arg match: trailing text → null, so no chat-derived free
+ * text can ever ride a revert (T-q5n-02).
+ */
+const RevertCommand = z.object({
+  kind: z.literal("revert"),
+});
+
+/**
+ * The ONLY text a revert candidate ever carries — server-composed, zero
+ * chat-derived bytes (T-q5n-02). Every viewer's revert request is byte-identical,
+ * so intake's duplicate check naturally dedups once one is pooled/pending.
+ */
+export const REVERT_REQUEST_TEXT = "Revert the last change to the current project";
+
 // Why 5: matches DEFAULT_ROUND_MAX_OPTIONS (state-machine/round.ts, quick-l2a
 // user amendment — vote options cap at 5 even when the pool holds 10).
 // recordVote() remains the authoritative bound against the LIVE option count:
@@ -30,8 +57,12 @@ const VoteCommand = z.object({
   option: z.number().int().min(1).max(5),
 });
 
-/** Discriminated result of parsing a chat message as a command. */
-export type ParsedCommand = { kind: "suggest"; text: string } | { kind: "vote"; option: number };
+/** Discriminated result of parsing a chat message as a command. No !fork (quick-q5n scope gate). */
+export type ParsedCommand =
+  | { kind: "suggest"; text: string }
+  | { kind: "vote"; option: number }
+  | { kind: "build"; text: string }
+  | { kind: "revert" };
 
 /**
  * Parse a raw chat message into a typed command, or null when the message
@@ -50,6 +81,21 @@ export function parseCommand(messageText: string): ParsedCommand | null {
   const voteMatch = /^!vote\s+([1-5])$/i.exec(trimmed);
   if (voteMatch?.[1]) {
     const parsed = VoteCommand.safeParse({ kind: "vote", option: Number(voteMatch[1]) });
+    return parsed.success ? parsed.data : null;
+  }
+
+  // quick-q5n: !build <idea> — same regex shape as main.ts's BUILD_COMMAND so
+  // the free-reign interceptor and this parser agree on what a !build token is.
+  const buildMatch = /^!build\s+(.+)$/i.exec(trimmed);
+  if (buildMatch?.[1]) {
+    const parsed = BuildCommand.safeParse({ kind: "build", text: buildMatch[1] });
+    return parsed.success ? parsed.data : null;
+  }
+
+  // quick-q5n: !revert / !undo — strict no-arg; "!revert something" is NOT a
+  // command (null), so revert candidates can never carry chat-derived text.
+  if (/^!(revert|undo)$/i.test(trimmed)) {
+    const parsed = RevertCommand.safeParse({ kind: "revert" });
     return parsed.success ? parsed.data : null;
   }
 

@@ -22,7 +22,17 @@ import type { Logger } from "pino";
 import type { BuildNarrator, RoundSnapshot } from "../shared/types.js";
 import type { ChatSender } from "./chat-sender.js";
 
-export type FeedbackKind = "rejected" | "held" | "duplicate" | "cooldown" | "trim";
+export type FeedbackKind =
+  | "rejected"
+  | "held"
+  | "duplicate"
+  | "cooldown"
+  | "trim"
+  // quick-q5n: confirmation beats for an APPROVED chat !build / !revert — the
+  // routing verbs are invisible until a round opens, so their pooling is
+  // confirmed (a plain approved !suggest stays silent per D2-15).
+  | "pooled-build"
+  | "pooled-revert";
 
 /**
  * The narrator implements the round/feedback beats AND the build-pipeline beats
@@ -98,6 +108,21 @@ export interface Narrator extends BuildNarrator {
    * rounds until the queue drains (user amendment). Emitted ONCE per park.
    */
   buildQueueFull(): void;
+
+  // ── Tier-1 voted-command beats (quick-q5n) ───────────────────────────────
+  // All server-composed; failure lines are AMBER-TIER (D2-18): matter-of-fact
+  // regroup language, never ERROR/red/alarm wording. `title` is gate-approved
+  // text rendered through truncateTitle.
+  /** A revert winner rolled back the last change — the previous version is live again. */
+  revertApplied(): void;
+  /** A revert winner found no earlier version to roll back to (no repo / one commit). */
+  revertNothing(): void;
+  /** The rollback couldn't apply cleanly — everything left as-is, loop continues. */
+  revertFailed(): void;
+  /** A project-switch winner: shipping the current app to the gallery BEFORE rotating. */
+  newProjectShipping(title: string): void;
+  /** The pre-rotation ship failed — staying on the current project (never a silent rotate). */
+  newProjectShipFailed(): void;
 }
 
 /** UI-SPEC: titles inside chat messages truncate to 60 chars (incl. the ellipsis). */
@@ -151,6 +176,10 @@ export function createNarrator(deps: {
         return `@${displayName} that one's already in the pool — vote for it when it comes up!`;
       case "cooldown":
         return `@${displayName} easy there — one suggestion per ${cooldownSeconds}s.`;
+      case "pooled-build":
+        return `@${displayName} NEW PROJECT idea is in — it competes in the next vote.`;
+      case "pooled-revert":
+        return `@${displayName} revert request is in — vote for it next round.`;
     }
   }
 
@@ -178,8 +207,21 @@ export function createNarrator(deps: {
   return {
     roundOpened(snap: RoundSnapshot): void {
       const durationSeconds = Math.round((snap.endsAtMs - snap.openedAtMs) / 1_000);
+      // quick-q5n kind-aware listing: NEW (project-switch) / TWEAK (suggestion)
+      // / the FIXED "REVERT the last change" label (never the candidate text —
+      // brevity; both strings are server-composed either way).
       const listing = snap.candidates
-        .map((entry) => `[${entry.option}] ${truncateTitle(entry.candidate.text)}`)
+        .map((entry) => {
+          const option = `[${entry.option}]`;
+          switch (entry.candidate.kind) {
+            case "project-switch":
+              return `${option} NEW: ${truncateTitle(entry.candidate.text)}`;
+            case "revert":
+              return `${option} REVERT the last change`;
+            case "suggestion":
+              return `${option} TWEAK: ${truncateTitle(entry.candidate.text)}`;
+          }
+        })
         .join(" ");
       void deps.sender.send(
         `Voting is OPEN — !vote ${optionsPhrase(snap.candidates.length)}: ${listing} — ${durationSeconds}s on the clock.`,
@@ -402,6 +444,38 @@ export function createNarrator(deps: {
 
     buildQueueFull(): void {
       void deps.sender.send("Build queue full — pausing new rounds until it drains.");
+    },
+
+    // ── Tier-1 voted-command beats (quick-q5n) ────────────────────────────
+    // Server-composed transition beats; the failure lines are AMBER-TIER
+    // (D2-18) — regroup wording, no ERROR/red/alarm vocabulary.
+
+    revertApplied(): void {
+      void deps.sender.send("Rolled back the last change — previous version is back.");
+    },
+
+    revertNothing(): void {
+      void deps.sender.send(
+        "Nothing to revert — this project has no earlier version. Carrying on.",
+      );
+    },
+
+    revertFailed(): void {
+      void deps.sender.send(
+        "Couldn't roll back cleanly — leaving everything as-is. Next round soon.",
+      );
+    },
+
+    newProjectShipping(title: string): void {
+      void deps.sender.send(
+        `Chat voted NEW PROJECT: "${truncateTitle(title)}" — shipping the current app to the gallery first…`,
+      );
+    },
+
+    newProjectShipFailed(): void {
+      void deps.sender.send(
+        "Couldn't ship the current project to the gallery just now — staying on it for the moment. We'll take the new-project switch again another round.",
+      );
     },
   };
 }

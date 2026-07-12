@@ -825,6 +825,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         }
       } else if (result.decision === "held-for-review") {
         narrator.feedback("held", viewer);
+      } else if (result.decision === "approved" && candidate.source === "chat") {
+        // quick-q5n: routing verbs get a pooled confirmation (they're invisible
+        // until a round opens). Approved plain suggestions stay silent (D2-15).
+        if (candidate.kind === "project-switch") narrator.feedback("pooled-build", viewer);
+        else if (candidate.kind === "revert") narrator.feedback("pooled-revert", viewer);
       }
       return result;
     };
@@ -928,12 +933,15 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         chatSource.onChannelChatMessage(bId, uId, (event) => {
           const match = BUILD_COMMAND.exec(event.messageText.trim());
           if (match?.[1]) {
-            // Only meaningful during an active window (D-11). Consume the token
-            // either way so it never falls through to the !suggest/!vote path.
+            // Inside an active window (D-11): the window funnel consumes the
+            // token — byte-identical to the pre-q5n behavior (safety
+            // invariant #4). Outside a window (quick-q5n): fall through to
+            // the parser → intake → classify → pool path, where !build is a
+            // kind-tagged project-switch candidate for the next vote.
             if (controlWindow.snapshot() !== null) {
               void routeWindowInstruction(event.chatterDisplayName, match[1]);
+              return;
             }
-            return;
           }
           handler(event);
         }),

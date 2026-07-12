@@ -107,6 +107,12 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     suggestionsOpen: vi.fn(),
     stillCollecting: vi.fn(),
     buildQueueFull: vi.fn(),
+    // Tier-1 voted-command beats (quick-q5n; unused by the chat listener).
+    revertApplied: vi.fn(),
+    revertNothing: vi.fn(),
+    revertFailed: vi.fn(),
+    newProjectShipping: vi.fn(),
+    newProjectShipFailed: vi.fn(),
   };
 }
 
