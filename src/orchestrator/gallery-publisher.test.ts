@@ -622,3 +622,286 @@ describe("createGalleryPublisher.publishNow — safety invariants", () => {
     ]);
   });
 });
+
+// ── quick-q5n Task 2: revertLast — mirror git-revert + workspace write-back ──
+
+const WS_DIR = "\\\\wsl.localhost\\vibecoding-build\\home\\builder\\projects\\app-1";
+
+/** rev-list responds with `count`; everything else follows captureExec defaults. */
+function revertExec(
+  count: string,
+  behavior?: (call: ExecCall) => Promise<{ stdout: string }> | undefined,
+): { exec: GalleryExec; calls: ExecCall[] } {
+  return captureExec((call) => {
+    const overridden = behavior?.(call);
+    if (overridden) return overridden;
+    if (call.args.includes("rev-list")) return Promise.resolve({ stdout: `${count}\n` });
+    return undefined;
+  });
+}
+
+describe("createGalleryPublisher.revertLast — chat-voted rollback (quick-q5n)", () => {
+  it("happy path: git revert --no-edit HEAD with -c identity, copy-first write-back, push → { status: 'reverted', commitHash }", async () => {
+    const { exec, calls } = revertExec("3");
+    const { fsx, cpCalls } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.revertLast({ generation: 1, taskId: "task-r1" });
+
+    expect(result).toMatchObject({ status: "reverted", commitHash: "abc1234def" });
+    // Exact rev-list guard invocation.
+    const revList = calls.find((c) => c.args.includes("rev-list"));
+    expect(revList?.args).toEqual([
+      "-C",
+      "data/gallery-mirror/my-repo",
+      "rev-list",
+      "--count",
+      "HEAD",
+    ]);
+    // Exact revert invocation: -c identity, --no-edit, HEAD — arg array only.
+    const revert = calls.find((c) => c.args.includes("revert"));
+    expect(revert?.args).toEqual([
+      "-C",
+      "data/gallery-mirror/my-repo",
+      "-c",
+      "user.name=Twitch Vibecodes",
+      "-c",
+      "user.email=twitchvibecodes@users.noreply.github.com",
+      "revert",
+      "--no-edit",
+      "HEAD",
+    ]);
+    // Identical push invocation to publishNow: credential helper, PAT env-only.
+    const push = calls.find((c) => c.args.includes("push"));
+    expect(push?.args).toEqual([
+      "-c",
+      "credential.helper=",
+      "-c",
+      "credential.helper=!gh auth git-credential",
+      "-C",
+      "data/gallery-mirror/my-repo",
+      "push",
+      "-u",
+      "origin",
+      "HEAD",
+    ]);
+    expect(push?.opts?.env?.GH_TOKEN).toBe(TOKEN);
+    for (const call of calls) {
+      for (const arg of call.args) {
+        expect(arg).not.toContain(TOKEN);
+      }
+    }
+    // Write-back: mirror → workspace UNC dir (reversed direction, same fs seam).
+    expect(cpCalls).toEqual([{ src: "data/gallery-mirror/my-repo", dest: WS_DIR }]);
+  });
+
+  it("prunes stale TOP-LEVEL workspace entries absent from the mirror ONLY after the cp (dot-entries + node_modules survive)", async () => {
+    const { exec } = revertExec("3");
+    const ops: string[] = [];
+    const { fsx } = captureFs({ hasGit: true });
+    fsx.readdir = async (p) =>
+      p.startsWith("\\\\wsl.localhost")
+        ? ["index.html", "stale.js", ".claude", "node_modules"]
+        : [".git", "index.html"];
+    fsx.cp = async (src, dest) => {
+      ops.push(`cp:${src}->${dest}`);
+    };
+    fsx.rm = async (p) => {
+      ops.push(`rm:${p}`);
+    };
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.revertLast({ generation: 1, taskId: "t" });
+    expect(result.status).toBe("reverted");
+    // COPY-FIRST ordering: the cp happens before any workspace rm.
+    expect(ops).toEqual([
+      `cp:data/gallery-mirror/my-repo->${WS_DIR}`,
+      `rm:${WS_DIR}\\stale.js`,
+    ]);
+  });
+
+  it("no stored repo → { status: 'nothing-to-revert' }, ZERO exec calls, workspace untouched", async () => {
+    const { exec, calls } = revertExec("3");
+    const { fsx, rmCalls, cpCalls } = captureFs({ hasGit: true });
+    const store = fakeStore();
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.revertLast({ generation: 1, taskId: "t" });
+    expect(result).toMatchObject({ status: "nothing-to-revert", commitHash: null });
+    expect(calls).toHaveLength(0);
+    expect(rmCalls).toEqual([]);
+    expect(cpCalls).toEqual([]);
+  });
+
+  it("rev-list count < 2 → { status: 'nothing-to-revert' } — reverting the only commit would empty the project", async () => {
+    const { exec, calls } = revertExec("1");
+    const { fsx, rmCalls, cpCalls } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.revertLast({ generation: 1, taskId: "t" });
+    expect(result).toMatchObject({ status: "nothing-to-revert", commitHash: null });
+    expect(calls.some((c) => c.args.includes("revert"))).toBe(false);
+    // Workspace fs never touched.
+    expect(rmCalls.filter((p) => p.startsWith("\\\\wsl.localhost"))).toEqual([]);
+    expect(cpCalls.filter((c) => c.dest.startsWith("\\\\wsl.localhost"))).toEqual([]);
+  });
+
+  it("a rejecting git revert → best-effort revert --abort, resolves failed, workspace fs NEVER touched (invariant #7)", async () => {
+    const logger = fakeLogger();
+    const { exec, calls } = revertExec("3", (call) =>
+      call.args.includes("revert") && !call.args.includes("--abort")
+        ? Promise.reject(new Error("could not revert: merge conflict"))
+        : undefined,
+    );
+    const { fsx, rmCalls, cpCalls } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({ config: TEST_CONFIG, store, exec, fsx, logger });
+
+    const result = await publisher.revertLast({ generation: 1, taskId: "t" });
+    expect(result.status).toBe("failed");
+    expect(result.commitHash).toBeNull();
+    // Best-effort abort attempted.
+    const abort = calls.find((c) => c.args.includes("--abort"));
+    expect(abort?.args).toEqual(["-C", "data/gallery-mirror/my-repo", "revert", "--abort"]);
+    // NO fs op receives a workspace UNC path on this branch.
+    expect(rmCalls.filter((p) => p.startsWith("\\\\wsl.localhost"))).toEqual([]);
+    expect(cpCalls.filter((c) => c.dest.startsWith("\\\\wsl.localhost"))).toEqual([]);
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it("a rejecting revert whose --abort ALSO rejects still resolves failed (never throws)", async () => {
+    const { exec } = revertExec("3", (call) =>
+      call.args.includes("revert") ? Promise.reject(new Error("busted")) : undefined,
+    );
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    await expect(publisher.revertLast({ generation: 1, taskId: "t" })).resolves.toMatchObject({
+      status: "failed",
+    });
+  });
+
+  it("a rejecting mirror→workspace cp → failed, ZERO rm on workspace paths (pre-revert files provably intact), mirror commit stays", async () => {
+    const logger = fakeLogger();
+    const { exec, calls } = revertExec("3");
+    const rmPaths: string[] = [];
+    const { fsx } = captureFs({ hasGit: true });
+    fsx.rm = async (p) => {
+      rmPaths.push(p);
+    };
+    fsx.cp = async (_src, dest) => {
+      if (dest.startsWith("\\\\wsl.localhost")) throw new Error("UNC write failed mid-copy");
+    };
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({ config: TEST_CONFIG, store, exec, fsx, logger });
+
+    const result = await publisher.revertLast({ generation: 1, taskId: "t" });
+    expect(result.status).toBe("failed");
+    // Copy-first ordering: NO rm has run against the workspace — every
+    // pre-revert file is still there (worst case: a buildable superset).
+    expect(rmPaths.filter((p) => p.startsWith("\\\\wsl.localhost"))).toEqual([]);
+    // The mirror-side revert commit exists (divergence tolerated — the next
+    // publishNow's refreshSnapshot re-syncs the mirror FROM the workspace).
+    expect(calls.some((c) => c.args.includes("revert"))).toBe(true);
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it("a missing mirror re-clones from origin before any git op (continueRepo reuse)", async () => {
+    const { exec, calls } = revertExec("3");
+    const { fsx } = captureFs({ hasGit: false });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.revertLast({ generation: 1, taskId: "t" });
+    expect(result.status).toBe("reverted");
+    const cloneIdx = calls.findIndex((c) => c.args.includes("clone"));
+    const revListIdx = calls.findIndex((c) => c.args.includes("rev-list"));
+    expect(cloneIdx).toBeGreaterThanOrEqual(0);
+    expect(cloneIdx).toBeLessThan(revListIdx);
+  });
+
+  it("serialization: an overlapping publishNow and revertLast share ONE chain — no interleaved git", async () => {
+    const labels: string[] = [];
+    const verbs = ["clone", "init", "add", "status", "commit", "push", "rev-parse", "rev-list", "revert"];
+    const exec: GalleryExec = async (file, args) => {
+      const verb = args.find((a) => verbs.includes(a)) ?? args[0] ?? "?";
+      labels.push(`${file}:${verb}`);
+      await new Promise((r) => setImmediate(r));
+      if (args.includes("--porcelain")) return { stdout: " M x\n" };
+      if (args.includes("rev-parse")) return { stdout: "hash\n" };
+      if (args.includes("rev-list")) return { stdout: "3\n" };
+      return { stdout: "" };
+    };
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([
+      [1, "repo-a"],
+      [2, "repo-b"],
+    ]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const [pub, rev] = await Promise.all([
+      publisher.publishNow({ generation: 1, title: "first", taskId: "t1" }),
+      publisher.revertLast({ generation: 2, taskId: "t2" }),
+    ]);
+    expect(pub.status).toBe("published");
+    expect(rev.status).toBe("reverted");
+    // The publish's full sequence precedes the revert's — no interleave.
+    expect(labels).toEqual([
+      "git:add",
+      "git:status",
+      "git:commit",
+      "git:push",
+      "git:rev-parse",
+      "git:rev-list",
+      "git:revert",
+      "git:push",
+      "git:rev-parse",
+    ]);
+  });
+});
