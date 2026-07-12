@@ -66,13 +66,27 @@ const ChaosCommand = z.object({
   kind: z.literal("chaos"),
 });
 
+/**
+ * quick-t8k tier-2 instant info commands: !projects / !current / !repo /
+ * !help (!commands aliases to help). STRICT no-arg (RevertCommand idiom) —
+ * trailing text → null. Read-only: dispatch calls an optional seam and
+ * returns; NO gate call, NO vote, NO state change ever rides one of these.
+ */
+export type InfoCommandKind = "projects" | "current" | "repo" | "help";
+
+const InfoCommand = z.object({
+  kind: z.literal("info"),
+  info: z.enum(["projects", "current", "repo", "help"]),
+});
+
 /** Discriminated result of parsing a chat message as a command. No fork command exists (quick-q5n scope gate). */
 export type ParsedCommand =
   | { kind: "suggest"; text: string }
   | { kind: "vote"; option: number }
   | { kind: "build"; text: string }
   | { kind: "revert" }
-  | { kind: "chaos" };
+  | { kind: "chaos" }
+  | { kind: "info"; info: InfoCommandKind };
 
 /**
  * Parse a raw chat message into a typed command, or null when the message
@@ -113,6 +127,18 @@ export function parseCommand(messageText: string): ParsedCommand | null {
   // (null), so chaos activation can never smuggle chat text anywhere.
   if (/^!chaos$/i.test(trimmed)) {
     const parsed = ChaosCommand.safeParse({ kind: "chaos" });
+    return parsed.success ? parsed.data : null;
+  }
+
+  // quick-t8k tier-2 info commands — strict no-arg; "!projects list" is NOT a
+  // command (null). "!commands" is an alias of "!help".
+  const infoMatch = /^!(projects|current|repo|help|commands)$/i.exec(trimmed);
+  if (infoMatch?.[1]) {
+    const token = infoMatch[1].toLowerCase();
+    const parsed = InfoCommand.safeParse({
+      kind: "info",
+      info: token === "commands" ? "help" : token,
+    });
     return parsed.success ? parsed.data : null;
   }
 

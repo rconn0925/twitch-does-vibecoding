@@ -62,9 +62,11 @@ import {
   startConsoleServer,
   type TwitchConnectionStatus,
 } from "./operator-console/server.js";
+import type { InfoCommandKind } from "./ingestion/command-parser.js";
 import {
   createGalleryPublisher,
   createProjectRepoStore,
+  DEFAULT_GALLERY_OWNER,
   type GalleryPublisher,
   resolveGalleryConfig,
 } from "./orchestrator/gallery-publisher.js";
@@ -297,6 +299,12 @@ const DEFAULT_EARLY_CLOSE_POOL_SIZE = 5;
 const DEFAULT_VOTE_QUEUE_MAX = 10;
 /** quick-rs3: unique chatters typing !chaos required to activate chaos mode. */
 const DEFAULT_CHAOS_ACTIVATION_VOTES = 3;
+/**
+ * quick-t8k: global per-command cooldown for the tier-2 info commands
+ * (!projects/!current/!repo/!help). One reply per command per window;
+ * suppressed repeats are SILENT (D2-15). Env knob INFO_COMMAND_COOLDOWN_SECONDS.
+ */
+const DEFAULT_INFO_COMMAND_COOLDOWN_SECONDS = 30;
 /** quick-rs3: how long an activated chaos window lasts before auto-revert. */
 const DEFAULT_CHAOS_MODE_DURATION_SECONDS = 300;
 
@@ -1027,6 +1035,49 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       logger.info({ roundId: mem.roundId }, "reconcile: in-memory round matches the vote ledger");
     };
 
+    // (5a-t8k) Tier-2 instant info commands (quick-t8k): read-only replies
+    // composed from project_repos.repo_name slugs + a PUBLIC owner string ONLY
+    // — never from GateResult, donor data, or raw candidate text (T-t8k-03).
+    // Global per-command cooldown (INFO_COMMAND_COOLDOWN_SECONDS, default 30):
+    // one reply per command per window, suppressed repeats SILENT (D2-15);
+    // silent while HALTED. Zero funnel contact by construction — the dispatch
+    // returns before intake/classify (twitch-chat.ts), and this closure only
+    // ever runs a prepared read-only SELECT.
+    const infoCooldownMs =
+      envPositive(
+        process.env.INFO_COMMAND_COOLDOWN_SECONDS,
+        DEFAULT_INFO_COMMAND_COOLDOWN_SECONDS,
+      ) * 1_000;
+    const infoOwner = (process.env.GALLERY_GITHUB_OWNER ?? "").trim() || DEFAULT_GALLERY_OWNER;
+    const infoRepoRowsStmt = db.prepare(
+      "SELECT generation, repo_name FROM project_repos ORDER BY generation DESC",
+    );
+    const infoLastSentAtMs = new Map<InfoCommandKind, number>();
+    const infoCommand = (kind: InfoCommandKind): void => {
+      if (machine.mode === "HALTED") return; // no info chatter while halted (D-02)
+      const now = Date.now();
+      if (now - (infoLastSentAtMs.get(kind) ?? 0) < infoCooldownMs) return; // silent (D2-15)
+      infoLastSentAtMs.set(kind, now);
+      const rows = infoRepoRowsStmt.all() as Array<{ generation: number; repo_name: string }>;
+      const urlOf = (name: string): string => `https://github.com/${infoOwner}/${name}`;
+      if (kind === "projects") {
+        narrator.infoProjects(rows.map((r) => ({ name: r.repo_name, url: urlOf(r.repo_name) })));
+        return;
+      }
+      if (kind === "current" || kind === "repo") {
+        const current = rows.find((r) => r.generation === workspace.generation()) ?? null;
+        if (kind === "current") {
+          narrator.infoCurrent(
+            current ? { name: current.repo_name, url: urlOf(current.repo_name) } : null,
+          );
+        } else {
+          narrator.infoRepo(current ? urlOf(current.repo_name) : null);
+        }
+        return;
+      }
+      narrator.infoHelp();
+    };
+
     // (5b) D-11 open-window routing: while a control window is ACTIVE, ANY
     // chatter's `!build <text>` OR `!suggest <text>` routes through the ONE
     // funnel (controlWindow.submitInstruction → submitDuringWindow → gate →
@@ -1122,6 +1173,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // quick-rs3: !chaos routes the chatterId to the controller (no intake,
       // no gate call — the command carries no buildable text by construction).
       chaosVote,
+      // quick-t8k: tier-2 info commands (read-only, cooldown-gated, HALTED-silent).
+      infoCommand,
       narrator,
       reconcile,
       logger,

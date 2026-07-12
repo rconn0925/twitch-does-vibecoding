@@ -21,6 +21,11 @@
  *    text (strict no-arg parse), so there is no gate call BY CONSTRUCTION and
  *    no suggest-cooldown is charged. Per-user rate limiting = the controller's
  *    unique-user dedupe + D2-15 silence on repeats.
+ *  - !projects / !current / !repo / !help / !commands (quick-t8k tier-2) →
+ *    deps.infoCommand?.(kind) and return. READ-ONLY contract: no gate call,
+ *    no vote, no state change, no intake state touched — the seam replies
+ *    from post-gate public data (project_repos slugs) only, and suppressed
+ *    repeats inside the per-command cooldown window stay silent per D2-15.
  *
  * Funnel decision (quick-q5n): !revert's FIXED server-composed text still
  * passes classify(). CandidatePool.add and toQueuedTask structurally require
@@ -41,7 +46,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { SubmitResult } from "../pipeline/submit.js";
 import type { CandidateKind, SuggestionCandidate } from "../shared/types.js";
-import { parseCommand, REVERT_REQUEST_TEXT } from "./command-parser.js";
+import { type InfoCommandKind, parseCommand, REVERT_REQUEST_TEXT } from "./command-parser.js";
 import type { FeedbackKind, Narrator } from "./narration.js";
 import type { SuggestIntake } from "./suggest-intake.js";
 
@@ -89,6 +94,13 @@ export interface TwitchChatDeps {
    * makes !chaos a silent no-op.
    */
   chaosVote?: (chatterId: string) => void;
+  /**
+   * quick-t8k tier-2 info commands: !projects/!current/!repo/!help route the
+   * parsed InfoCommandKind here (main.ts closes over the narrator + a
+   * read-only project_repos statement + the per-command cooldown map).
+   * Optional — an absent seam makes info commands a silent no-op.
+   */
+  infoCommand?: (kind: InfoCommandKind) => void;
   narrator: Narrator;
   /** D2-14 reconciliation, run on every EventSub (re)connect. */
   reconcile: () => void;
@@ -122,6 +134,14 @@ export function startTwitchChat(deps: TwitchChatDeps): { stop(): void } {
       if (command.kind === "vote") {
         // Return value deliberately ignored: invalid votes are silent (D2-15).
         deps.round.recordVote(chatterId, command.option);
+        return;
+      }
+
+      // Tier-2 info commands (quick-t8k) — immediately after the vote branch,
+      // BEFORE !chaos and the shared tier-1 path: read-only, no intake, no
+      // gate, no state change (the seam owns cooldown + HALTED silence).
+      if (command.kind === "info") {
+        deps.infoCommand?.(command.info);
         return;
       }
 

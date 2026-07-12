@@ -473,6 +473,10 @@ describe("EventSub disconnect → ready reconciliation (INFRA-02, D2-14)", () =>
         revertFailed() {},
         newProjectShipping() {},
         newProjectShipFailed() {},
+        infoProjects() {},
+        infoCurrent() {},
+        infoRepo() {},
+        infoHelp() {},
       },
       reconcile: () => {
         reconcileRuns += 1;

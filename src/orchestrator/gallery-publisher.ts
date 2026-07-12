@@ -119,8 +119,12 @@ export interface GalleryConfig {
   workspaceRootUnc: string;
 }
 
-/** The default owner when GALLERY_GITHUB_OWNER is unset. */
-const DEFAULT_OWNER = "TwitchVibecodes";
+/**
+ * The default owner when GALLERY_GITHUB_OWNER is unset. Exported (quick-t8k)
+ * so main.ts can compose the tier-2 info-command github.com links WITHOUT a
+ * configured token — the owner string is public data, not a credential.
+ */
+export const DEFAULT_GALLERY_OWNER = "TwitchVibecodes";
 
 /**
  * Fixed commit identity (EMPTY-01 live-run finding): the mirror repos are fresh
@@ -250,7 +254,7 @@ export function resolveGalleryConfig(env: NodeJS.ProcessEnv): GalleryConfig | nu
   if ((env.GALLERY_PUBLISH_ENABLED ?? "").trim() === "false") return null;
   const token = (env.GALLERY_GITHUB_TOKEN ?? "").trim();
   if (token.length === 0) return null;
-  const owner = (env.GALLERY_GITHUB_OWNER ?? "").trim() || DEFAULT_OWNER;
+  const owner = (env.GALLERY_GITHUB_OWNER ?? "").trim() || DEFAULT_GALLERY_OWNER;
   // Distro defaults duplicated from sandbox-process.ts:64-65 (READ-ONLY file;
   // importing it would drag the WSL spawn adapter into every consumer).
   const distroName = env.BUILD_DISTRO_NAME ?? "vibecoding-build";

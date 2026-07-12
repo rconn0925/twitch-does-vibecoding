@@ -275,6 +275,12 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "revertFailed",
         "newProjectShipping",
         "newProjectShipFailed",
+        // Tier-2 info replies (quick-t8k) — post-gate repo slugs/URLs at most;
+        // never a tally.
+        "infoProjects",
+        "infoCurrent",
+        "infoRepo",
+        "infoHelp",
       ].sort(),
     );
   });

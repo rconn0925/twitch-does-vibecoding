@@ -139,6 +139,20 @@ export interface Narrator extends BuildNarrator {
   newProjectShipping(title: string): void;
   /** The pre-rotation ship failed — staying on the current project (never a silent rotate). */
   newProjectShipFailed(): void;
+
+  // ── Tier-2 info replies (quick-t8k) ──────────────────────────────────────
+  // Instant read-only replies through the SAME single rate-budgeted sender
+  // (D2-08). The ONLY dynamic tokens are project_repos.repo_name slugs and
+  // their derived github.com URLs — already-public post-gate data. Raw chat
+  // or prompt text NEVER reaches these methods (T-t8k-03).
+  /** !projects — slug + link list, greedily packed to the 500-char cap with a "(+N more)" tail. */
+  infoProjects(entries: Array<{ name: string; url: string }>): void;
+  /** !current — the ACTIVE generation's repo, or the fixed not-shipped-yet line. */
+  infoCurrent(entry: { name: string; url: string } | null): void;
+  /** !repo — just the current repo link (same null fallback as infoCurrent). */
+  infoRepo(url: string | null): void;
+  /** !help / !commands — the FIXED-COPY command list, zero interpolation. */
+  infoHelp(): void;
 }
 
 /** UI-SPEC: titles inside chat messages truncate to 60 chars (incl. the ellipsis). */
@@ -524,6 +538,62 @@ export function createNarrator(deps: {
     newProjectShipFailed(): void {
       void deps.sender.send(
         "Couldn't ship the current project to the gallery just now — staying on it for the moment. We'll take the new-project switch again another round.",
+      );
+    },
+
+    // ── Tier-2 info replies (quick-t8k) ────────────────────────────────────
+    // Server-composed templates; slugs/URLs are the only dynamic tokens (all
+    // post-gate public data). Copy stays clear of the copy-separation scan
+    // vocabularies (no chance/money words).
+
+    infoProjects(entries: Array<{ name: string; url: string }>): void {
+      if (entries.length === 0) {
+        void deps.sender.send("No projects shipped yet — the first finished build starts the list.");
+        return;
+      }
+      const parts = entries.map((e) => `${e.name} — ${e.url}`);
+      // Greedy pack to Twitch's 500-char cap. The first entry always ships
+      // (a single slug+URL pair is far below the cap by construction:
+      // repo names are ≤80-char sanitized slugs). A conservative reserve for
+      // the largest possible "(+N more)" tail keeps the final message ≤500.
+      const tailReserve = ` (+${entries.length - 1} more)`.length;
+      let message = `Projects so far: ${parts[0]}`;
+      let included = 1;
+      for (let i = 1; i < parts.length; i++) {
+        const next = `${message} | ${parts[i]}`;
+        const reserve = i + 1 < parts.length ? tailReserve : 0;
+        if (next.length + reserve > MESSAGE_MAX_CHARS) break;
+        message = next;
+        included += 1;
+      }
+      const remaining = entries.length - included;
+      if (remaining > 0) message += ` (+${remaining} more)`;
+      void deps.sender.send(message);
+    },
+
+    infoCurrent(entry: { name: string; url: string } | null): void {
+      if (entry === null) {
+        void deps.sender.send(
+          "The current project hasn't shipped yet — its page appears after the first finished build.",
+        );
+        return;
+      }
+      void deps.sender.send(`On screen now: ${entry.name} — ${entry.url}`);
+    },
+
+    infoRepo(url: string | null): void {
+      if (url === null) {
+        void deps.sender.send(
+          "The current project hasn't shipped yet — its page appears after the first finished build.",
+        );
+        return;
+      }
+      void deps.sender.send(`Current project repo: ${url}`);
+    },
+
+    infoHelp(): void {
+      void deps.sender.send(
+        "Commands: !suggest <idea> | !build <idea> | !swapbuild <project name> | !vote 1-5 | !revert | !chaos | !projects | !current | !repo",
       );
     },
   };
