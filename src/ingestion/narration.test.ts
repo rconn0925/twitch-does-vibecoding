@@ -256,6 +256,13 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "chaosOn",
         "chaosOff",
         "chaosPick",
+        // Chat-activated chaos-mode beats (quick-rs3) — counts and titles at
+        // most; never a tally-shaped input.
+        "chaosTallyProgress",
+        "chaosActivated",
+        "chaosModePicked",
+        "chaosPickRecheck",
+        "chaosExpired",
         // Auto-cycle suggestion-phase beats (quick-t5k) — seconds counts and a
         // fixed park line, never a tally.
         "suggestionsOpen",
@@ -452,6 +459,34 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       expect(sent[3]).not.toContain("z".repeat(60));
     });
 
+    it("chat-activated chaos-mode beats render verbatim (quick-rs3 — reviewed copy contract)", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.chaosTallyProgress(1, 3);
+      n.chaosTallyProgress(2, 3);
+      n.chaosActivated(300_000);
+      n.chaosModePicked("a counter app");
+      n.chaosPickRecheck();
+      n.chaosExpired();
+      expect(sent).toEqual([
+        "Chaos votes: 1/3 — type !chaos to skip the voting.",
+        "Chaos votes: 2/3 — type !chaos to skip the voting.",
+        "CHAOS MODE ACTIVATED — no voting for 5:00: each round, one approved idea from the pool gets picked and built.",
+        'Chaos picked: "a counter app" — no vote this round, straight to the build queue.',
+        "The chaos pick needs a fresh safety check first — it may come back around.",
+        "Chaos mode is over — voting is back.",
+      ]);
+    });
+
+    it("chaosModePicked truncates the gate-approved title to 60 chars", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      const long = "q".repeat(100);
+      n.chaosModePicked(long);
+      expect(sent[0]).toContain(`"${"q".repeat(59)}…"`);
+      expect(sent[0]).not.toContain("q".repeat(60));
+    });
+
     it("COPY-SEPARATION INVARIANT (D-08): paid copy has no chance words; chaos copy has no money words", () => {
       const { sent, sender } = capturingSender();
       const n = createNarrator({ sender });
@@ -474,14 +509,24 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         expect(message, `paid copy mentions chance: "${message}"`).not.toMatch(CHANCE);
       }
 
-      // Chaos template strings.
+      // Chaos template strings — ALL of them: the console-toggle beats AND the
+      // chat-activated chaos-mode beats (quick-rs3). Scanned against MONEY and
+      // the GAMBLING word list (directive: no gambling-adjacent copy anywhere
+      // near the chance mechanic — sweepstakes-law separation, T-rs3-05).
       sent.length = 0;
       n.chaosOn();
       n.chaosOff();
       n.chaosPick("a build");
+      n.chaosTallyProgress(1, 3);
+      n.chaosActivated(300_000);
+      n.chaosModePicked("a build");
+      n.chaosPickRecheck();
+      n.chaosExpired();
       const MONEY = /money|tip|donation|points|pay/i;
+      const GAMBLING = /\b(luck|odds|roll|gamble)\b/i;
       for (const message of sent) {
         expect(message, `chaos copy mentions money: "${message}"`).not.toMatch(MONEY);
+        expect(message, `chaos copy sounds gambling-adjacent: "${message}"`).not.toMatch(GAMBLING);
       }
     });
   });

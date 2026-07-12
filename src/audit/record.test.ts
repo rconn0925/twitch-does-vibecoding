@@ -9,6 +9,8 @@ import {
   listAuditRecords,
   listBuildHistory,
   recordBuildHistory,
+  recordChaosActivated,
+  recordChaosExpired,
   recordChaosPick,
   recordChaosToggled,
   recordGateDecision,
@@ -334,6 +336,52 @@ describe("audit record helpers (append-only ledger)", () => {
     expect(rows[0]?.source).toBe("chaos");
     expect(rows[0]?.task_id).toBe("task-42");
     expect(rows[0]?.suggestion_text).toBe("build a random number generator");
+    db.close();
+  });
+
+  it("recordChaosPick with a kind writes it to the decision column (quick-rs3)", () => {
+    const db = openDb(":memory:");
+    recordChaosPick(db, {
+      taskId: "task-77",
+      title: "make it rain confetti",
+      kind: "project-switch",
+      streamMode: "IDLE",
+    });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "chaos_pick" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.decision).toBe("project-switch");
+    expect(rows[0]?.source).toBe("chaos");
+    db.close();
+  });
+
+  it("recordChaosPick without a kind keeps decision null (byte-identical to the old call site)", () => {
+    const db = openDb(":memory:");
+    recordChaosPick(db, { taskId: "task-78", title: "a thing", streamMode: "CHAOS_MODE" });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "chaos_pick" });
+    expect(rows[0]?.decision).toBeNull();
+    db.close();
+  });
+
+  it("recordChaosActivated inserts a chaos_activated row with the unique-chatter count (quick-rs3)", () => {
+    const db = openDb(":memory:");
+    recordChaosActivated(db, { votes: 3, streamMode: "IDLE" });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "chaos_activated" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.source).toBe("chaos");
+    expect(rows[0]?.decision).toBe("activated");
+    expect(rows[0]?.rationale).toBe("Chaos mode activated by 3 unique chatters");
+    expect(rows[0]?.stream_mode).toBe("IDLE");
+    db.close();
+  });
+
+  it("recordChaosExpired inserts a chaos_expired row (quick-rs3 auto-revert)", () => {
+    const db = openDb(":memory:");
+    recordChaosExpired(db, { streamMode: "BUILD_IN_PROGRESS" });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "chaos_expired" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.source).toBe("chaos");
+    expect(rows[0]?.rationale).toBe("Chaos mode expired — democratic mode restored");
+    expect(rows[0]?.stream_mode).toBe("BUILD_IN_PROGRESS");
     db.close();
   });
 

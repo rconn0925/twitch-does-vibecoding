@@ -61,6 +61,8 @@ function make(
     /** Wire the optional pool dep (quick-l2a early close) with this cap. */
     earlyCloseSize?: number;
     poolSizeAtBoot?: number;
+    /** Wire the optional chat-chaos vote-skip hook (quick-rs3). */
+    chaosModePick?: () => "picked" | "empty" | null;
   } = {},
 ): Harness {
   const machine = new StreamModeMachine();
@@ -115,6 +117,7 @@ function make(
           earlyCloseSize: opts.earlyCloseSize,
         }
       : {}),
+    ...(opts.chaosModePick !== undefined ? { chaosModePick: opts.chaosModePick } : {}),
   });
   const changed = vi.fn();
   scheduler.on(AUTO_CYCLE_CHANGED, changed);
@@ -362,6 +365,111 @@ describe("AutoCycleScheduler (fake-timer matrix, quick-t5k)", () => {
     h.scheduler.dispose();
     vi.advanceTimersByTime(SUGGEST_MS * 2);
     expect(h.startRound).not.toHaveBeenCalled();
+  });
+
+  // ── quick-rs3: chat-activated chaos vote-skip hook ───────────────────────
+  // The hook runs AFTER the eligibility re-check (halt/window/queue-full/old-
+  // chaos parking all still govern) and BEFORE startRound. "picked"/"empty"
+  // mean chaos owns this phase end (no vote round); null/absent → byte-
+  // identical democratic behavior. The follow-up begin MUST absorb the
+  // synchronous STATE_CHANGED re-entrancy (checker BLOCKER pin).
+  describe("chat-activated chaos vote-skip hook (quick-rs3)", () => {
+    it("'picked' → startRound is NEVER called and exactly one fresh phase begins", () => {
+      const chaosModePick = vi.fn(() => "picked" as const);
+      const h = track(make({ chaosModePick }));
+      h.scheduler.start();
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(1); // boot phase
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      expect(chaosModePick).toHaveBeenCalledTimes(1);
+      expect(h.startRound).not.toHaveBeenCalled();
+      // Exactly ONE new begin, with the "fresh"/suggestionsOpen beat.
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(2);
+      expect(h.narrate.stillCollecting).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+    });
+
+    it("'empty' → the window restarts with the 'restart'/stillCollecting beat (INFO 2 decision)", () => {
+      const chaosModePick = vi.fn(() => "empty" as const);
+      const h = track(make({ chaosModePick }));
+      h.scheduler.start();
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.narrate.stillCollecting).toHaveBeenCalledTimes(1);
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(1); // boot only
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+    });
+
+    it("null → behavior byte-identical to today: startRound fires as usual", () => {
+      const chaosModePick = vi.fn(() => null);
+      const h = track(make({ chaosModePick }));
+      h.scheduler.start();
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      expect(chaosModePick).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledWith("auto");
+    });
+
+    it("the hook is NOT consulted when eligibility fails (live control window parks first)", () => {
+      const chaosModePick = vi.fn(() => "picked" as const);
+      const h = track(make({ chaosModePick }));
+      h.scheduler.start();
+      h.setWindowLive(true); // FREE REIGN arrives mid-phase — outranks chaos
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      expect(chaosModePick).not.toHaveBeenCalled();
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBeNull(); // parked
+    });
+
+    it("the hook is NOT consulted after a HALT park (nothing fires while HALTED)", () => {
+      const chaosModePick = vi.fn(() => "picked" as const);
+      const h = track(make({ chaosModePick }));
+      h.scheduler.start();
+      h.machine.forceTransition("HALTED", haltCtx(h.machine));
+
+      vi.advanceTimersByTime(SUGGEST_MS * 3);
+
+      expect(chaosModePick).not.toHaveBeenCalled();
+      expect(h.startRound).not.toHaveBeenCalled();
+    });
+
+    it("RE-ENTRANCY PIN (checker BLOCKER): a pick that synchronously fires STATE_CHANGED begins ONE phase, arms ONE timer, never double-fires", () => {
+      // The stub mimics the real pick closure: enqueueWinner → onWinnerQueued →
+      // drainVoteQueue → machine.transition emits STATE_CHANGED SYNCHRONOUSLY,
+      // and the scheduler's own handler may begin the next phase MID-HOOK.
+      let h: Harness | null = null;
+      const chaosModePick = vi.fn((): "picked" => {
+        const machine = h?.machine;
+        if (machine) {
+          machine.transition(machine.mode === "IDLE" ? "BUILD_IN_PROGRESS" : "IDLE");
+        }
+        return "picked";
+      });
+      h = track(make({ chaosModePick }));
+      h.scheduler.start();
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(1);
+
+      // Phase end #1: the pick fires STATE_CHANGED mid-hook.
+      vi.advanceTimersByTime(SUGGEST_MS);
+      expect(chaosModePick).toHaveBeenCalledTimes(1);
+      // Exactly ONE begin beat for the follow-up phase — not two.
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(2);
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+
+      // No orphaned timer: exactly one suggestPhaseMs later there is exactly
+      // ONE further phase end (one more pick, one more begin) — never two.
+      vi.advanceTimersByTime(SUGGEST_MS);
+      expect(chaosModePick).toHaveBeenCalledTimes(2);
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(3);
+      expect(h.startRound).not.toHaveBeenCalled();
+    });
   });
 
   it("event-driven, zero polling: auto-cycle.ts contains no setInterval", () => {

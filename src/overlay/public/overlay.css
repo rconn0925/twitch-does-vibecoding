@@ -159,6 +159,17 @@ body {
   color: var(--muted);
 }
 
+/* quick-rs3 chat-activated chaos badge: slate-50 white is the RESERVED chaos
+   accent — the violet dot stays exclusively paid-control (D2-18 color
+   semantics); never red. */
+.banner-chaos .banner-dot {
+  background: #f8fafc;
+}
+
+.banner-chaos .banner-label {
+  color: #f8fafc;
+}
+
 .banner-label {
   flex: none;
   font-size: 20px;

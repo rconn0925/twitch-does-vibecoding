@@ -126,6 +126,33 @@ describe("parseCommand — !revert / !undo (quick-q5n tier-1 undo-last-change in
   });
 });
 
+describe("parseCommand — !chaos (quick-rs3 chat-activated chaos mode)", () => {
+  it("parses bare !chaos", () => {
+    expect(parseCommand("!chaos")).toEqual({ kind: "chaos" });
+  });
+
+  it("is case-insensitive on the command word", () => {
+    expect(parseCommand("!CHAOS")).toEqual({ kind: "chaos" });
+    expect(parseCommand("!Chaos")).toEqual({ kind: "chaos" });
+  });
+
+  it("trims surrounding whitespace on the message", () => {
+    expect(parseCommand("   !chaos   ")).toEqual({ kind: "chaos" });
+  });
+
+  it("rejects trailing args — chaos can never carry chat text (strict no-arg, T-rs3-01)", () => {
+    expect(parseCommand("!chaos now")).toBeNull();
+    expect(parseCommand("!chaos 1")).toBeNull();
+    expect(parseCommand("!chaos please skip the vote")).toBeNull();
+  });
+
+  it("leaves existing commands untouched", () => {
+    expect(parseCommand("!suggest a game")).toEqual({ kind: "suggest", text: "a game" });
+    expect(parseCommand("!vote 1")).toEqual({ kind: "vote", option: 1 });
+    expect(parseCommand("!revert")).toEqual({ kind: "revert" });
+  });
+});
+
 describe("parseCommand — no !fork command ships (quick-q5n scope gate)", () => {
   it("returns null for !fork in any shape", () => {
     expect(parseCommand("!fork")).toBeNull();

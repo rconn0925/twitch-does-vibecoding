@@ -46,6 +46,15 @@ export const CHAOS_TOGGLED = "chaos:toggled" as const;
 export const CHAOS_PICK = "chaos:pick" as const;
 
 /**
+ * CHAT-activated timed chaos mode's lifecycle beat (quick-rs3): activation,
+ * expiry, or a halt-clear changed the ChaosModeController's window state.
+ * DISTINCT from CHAOS_TOGGLED (the streamer console toggle of the CHAOS_MODE
+ * machine state) — the chat-activated mode never transitions the machine.
+ * Low-frequency show beat: overlays push IMMEDIATELY on it (never debounced).
+ */
+export const CHAOS_MODE_CHANGED = "chaos-mode:changed" as const;
+
+/**
  * Auto-cycle lifecycle beat (quick-t5k, D-04/A2): the scheduler's enabled flag
  * or suggest-phase state changed — toggle, phase begin, phase end, halt park.
  * Low-frequency show beats: consoles/overlays push IMMEDIATELY on it (never
@@ -84,6 +93,7 @@ export type AppEvent =
   | typeof WINDOW_DENIED
   | typeof CHAOS_TOGGLED
   | typeof CHAOS_PICK
+  | typeof CHAOS_MODE_CHANGED
   | typeof AUTO_CYCLE_CHANGED
   | typeof POOL_CHANGED
   | typeof BUILDER_FEED_CHANGED;
