@@ -33,7 +33,9 @@ import { insertHeld } from "../state-machine/review-queue.js";
 const CandidateSchema = z.object({
   id: z.string().min(1),
   source: z.enum(["chat", "channel_points", "donation", "chaos", "operator"]),
-  kind: z.enum(["suggestion", "project-switch", "revert"]),
+  // quick-t8k: "swap" added — the !swapbuild name reference is chat-derived
+  // and rides this SAME funnel (gate-before-pool holds for every kind).
+  kind: z.enum(["suggestion", "project-switch", "revert", "swap"]),
   twitchUsername: z.string().nullable(),
   text: z.string().min(1).max(2000),
   submittedAtMs: z.number().int().nonnegative(),

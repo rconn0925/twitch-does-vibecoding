@@ -85,10 +85,25 @@ export interface WorkspaceView {
   scaffolded(): boolean;
   /** A build finalized `done` — the workspace is now an existing project. */
   markBuilt(): void;
-  /** Rotate to a fresh generation (old dir archived in place); returns the new generation. */
+  /**
+   * Rotate to a fresh generation (old dir archived in place); returns the new
+   * generation. quick-t8k: allocates ABOVE the all-time top_generation
+   * high-water mark — never `generation + 1` off a possibly swapped-back
+   * pointer — so a fresh generation can never collide with an existing app-N
+   * dir or project_repos row.
+   */
   newProject(): number;
   /** The current generation number (1-based). */
   generation(): number;
+  /**
+   * quick-t8k chat-voted portfolio swap: move ONLY the generation pointer to
+   * an EXISTING generation (scaffolded flips to 1 — the target holds a built
+   * project, so the next build continues it). Non-destructive: no filesystem
+   * touch, no deletion, top_generation untouched. VALIDATING (BLOCKER 2):
+   * throws on a non-integer target, target < 1, target > top_generation, and
+   * target === the current generation — always BEFORE any write.
+   */
+  activateExisting(generation: number): void;
 }
 
 /**
@@ -135,6 +150,23 @@ export interface SandboxAdapter {
    * finalizes as before.
    */
   workspaceHasCommittableFiles?(dir: string): Promise<boolean>;
+  /**
+   * quick-t8k preview ownership: start the in-distro preview dev server
+   * (`python3 -m http.server <port>`, detached) rooted at `dir`. Both args are
+   * INTERNALLY derived — `dir` from workspace.dir() (integer-generation path)
+   * and `port` from resolvePreviewDevServerPort — never chat text. REJECTS on
+   * wsl exec failure (the supervisor catches — fail-open, never the app).
+   * OPTIONAL (ensureWorkspaceDir precedent): existing test fakes need no change.
+   */
+  startPreviewDevServer?(dir: string, port: number): Promise<void>;
+  /**
+   * quick-t8k preview ownership: stop ONLY the exact-port preview server via
+   * an END-ANCHORED `pkill -f 'http\.server <port>$'` — port 5555 can never
+   * match a hypothetical 55555, and `wsl --terminate` (the halt path's tool)
+   * is NEVER involved. `|| true` makes a no-match exit success by
+   * construction. OPTIONAL like startPreviewDevServer.
+   */
+  stopPreviewDevServer?(port: number): Promise<void>;
 }
 
 /**

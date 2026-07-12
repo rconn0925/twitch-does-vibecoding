@@ -384,3 +384,48 @@ wt -w vibecoding-ai --title "THE AI" --suppressApplicationTitle -d C:\Users\ross
   repaints the full feed on reconnect — nothing to do.
 - Viewer window closed by accident: re-run the `wt` line above; OBS re-attaches
   by window title.
+
+## 11. App-Preview Dev Server (Orchestrator-Owned)
+
+**The manual `python3 -m http.server 5555` start is RETIRED.** The orchestrator
+now owns the in-distro preview dev server end to end — no human step exists,
+so it can no longer die silently because nobody remembered to (re)start it
+(the 260711 outage class).
+
+**Lifecycle:**
+
+- **Boot:** when the build engine composes (real WSL2 sandbox adapter), the
+  supervisor starts `python3 -m http.server <PREVIEW_DEV_SERVER_PORT>` (default
+  5555) inside the distro, rooted at the ACTIVE `~/projects/app-<N>` dir —
+  detached (`nohup … &`), so it keeps serving between builds.
+- **Auto re-root on every generation change:** console **New project**, a
+  chat-voted **project-switch** winner's rotation, and a **!swapbuild**
+  activation each trigger one stop+start pair rooted at the NEW active dir.
+- **Health check:** after each start the supervisor consults the same TCP
+  probe the preview page uses; a failed probe gets exactly ONE stop/start
+  retry, then the supervisor **fails open** with a loud pino error — the
+  preview page shows its normal standing-by state and the show loop is
+  untouched. A supervisor failure can NEVER crash the app.
+- **Shutdown:** the app deliberately does NOT kill the server on close —
+  leaving it serving across host restarts is availability by design.
+
+**Stop scoping (why this is safe):** the stop side is
+`pkill -f 'http\.server <port>$'` — END-ANCHORED on the port token, so port
+5555 can never match a hypothetical 55555, and only the exact-port preview
+server dies. `|| true` makes "nothing running" a success. `wsl --terminate`
+is NEVER used here — that total teardown belongs exclusively to the kill
+switch / halt path. Anchored pkill-by-port also survives supervisor restarts
+and stale state, which a pidfile approach would not.
+
+**Troubleshooting:**
+
+- Probe keeps failing / preview stuck on standing-by: check what's actually
+  listening inside the distro —
+  `wsl -d vibecoding-build -u builder -- sh -lc "pgrep -af http.server"`.
+- A blank preview slot on stream is the standing-by **fail-open** state, not a
+  crash — check the pino log for the loud
+  `preview dev server did NOT come up after retry` error, then fix the distro
+  (e.g. python3 present? disk full?) and click **New project** or just restart
+  the app to force a fresh reroot.
+- §10's terminal viewer and this server are independent surfaces — the
+  cross-reference there stays as-is.

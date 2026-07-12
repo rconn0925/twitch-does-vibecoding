@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
   event_type      TEXT NOT NULL,             -- 'gate_decision' | 'veto' | 'halt' | 'review_resolved' | 'review_expired' | 'submission_refused' | 'round_opened' | 'round_closed' | 'pool_dropped'
                                              --   Phase 3 (D3-13): 'pipeline_stage' | 'comp02_decision' | 'build_refused' | 'build_retry' | 'build_skip' | 'sandbox_teardown'
                                              --   quick-q5n: 'revert_outcome' — a chat-voted rollback resolved (reverted | nothing-to-revert | failed)
+                                             --   quick-t8k: 'swap_activated' — a chat-voted portfolio swap activated an existing generation (from/to in rationale);
+                                             --     'swap_failed' — a swap resolved without activating (unresolved | already-current | ship-failed in `decision`)
                                              --   quick-rs3: 'chaos_activated' | 'chaos_expired' — the CHAT-activated timed chaos window's lifecycle
                                              --     (distinct from 'chaos_toggled', the console switch); 'chaos_pick' rows from the chat-activated
                                              --     vote-skip path carry the picked candidate's kind in `decision` (true-origin record — the
@@ -162,11 +164,20 @@ CREATE INDEX IF NOT EXISTS idx_build_history_created_at ON build_history(created
 -- `wsl --terminate` as plain filesystem; "New project" ROTATES the generation
 -- (old dir archived in place — no deletion path exists anywhere). Additive:
 -- IF NOT EXISTS, no migration of existing tables.
+-- quick-t8k: top_generation is the ALL-TIME allocation high-water mark.
+-- newProject() allocates ABOVE it (top_generation + 1, both columns move
+-- together) so a backward swap (activateExisting — a pointer-only move of
+-- `generation`) can never make a later new-project collide with an existing
+-- app-N distro dir or an existing project_repos row. This CREATE TABLE is
+-- IF NOT EXISTS, so an EXISTING streaming-PC db will NOT pick up the column
+-- from schema.sql alone — workspace.ts runs a guarded ALTER TABLE migration
+-- + idempotent seed (top_generation = max(top_generation, generation)).
 CREATE TABLE IF NOT EXISTS workspace_state (
-  id            INTEGER PRIMARY KEY CHECK (id = 1),
-  generation    INTEGER NOT NULL,                  -- 1-based; "New project" increments
-  scaffolded    INTEGER NOT NULL DEFAULT 0,        -- 1 once any build finalized done in this generation
-  updated_at_ms INTEGER NOT NULL
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  generation     INTEGER NOT NULL,                 -- 1-based; the ACTIVE generation pointer (swap moves ONLY this)
+  scaffolded     INTEGER NOT NULL DEFAULT 0,       -- 1 once any build finalized done in this generation
+  top_generation INTEGER NOT NULL DEFAULT 0,       -- all-time high-water mark; newProject allocates above it (quick-t8k)
+  updated_at_ms  INTEGER NOT NULL
 );
 
 -- quick-260711-hak per-project publisher routing. Maps a workspace GENERATION

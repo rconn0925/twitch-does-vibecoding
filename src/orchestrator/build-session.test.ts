@@ -157,6 +157,10 @@ function fakeWorkspace(initialScaffolded = false) {
     markBuilt,
     newProject,
     generation: () => generation,
+    activateExisting: (target: number) => {
+      generation = target;
+      scaffolded = true;
+    },
   };
   return { workspace, markBuilt, newProject };
 }

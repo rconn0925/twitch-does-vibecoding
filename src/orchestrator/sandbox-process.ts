@@ -264,6 +264,51 @@ export function createSandboxAdapter(deps: SandboxAdapterDeps = {}): SandboxAdap
       }
     },
     /**
+     * quick-t8k preview ownership: start the in-distro preview dev server,
+     * DETACHED (nohup + background — survives this wsl.exe invocation
+     * returning; the SANDBOX-SETUP.md-proven pattern). The port is argv-final,
+     * matching stopPreviewDevServer's end-anchored pkill pattern. `dir`/`port`
+     * are internally generated (workspace.dir() integer path + validated
+     * port) — never chat text; the SAME distro/user config as spawn(), NO env
+     * widening (buildSandboxEnv untouched — this is a distinct wsl
+     * invocation via the EXISTING execFileFn seam, zero new spawn paths).
+     * Rejects on wsl exec failure — the supervisor catches (fail-open).
+     */
+    async startPreviewDevServer(dir: string, port: number): Promise<void> {
+      await execFileFn(wslExePath, [
+        "-d",
+        config.distroName,
+        "-u",
+        config.distroUser,
+        "--",
+        "sh",
+        "-lc",
+        `mkdir -p ${dir} && cd ${dir} && nohup python3 -m http.server ${port} >/dev/null 2>&1 &`,
+      ]);
+    },
+    /**
+     * quick-t8k preview ownership: kill ONLY the exact-port preview server.
+     * END-ANCHORED pattern (checker INFO a): an unanchored `http\.server 5555`
+     * would also match `http.server 55555`; python's argv ends with the port,
+     * so `$` is correct. pkill-by-anchored-port survives supervisor restarts
+     * and stale pidfiles (a pidfile approach would not). `|| true` makes a
+     * non-zero pkill exit (no match — the routine between-streams case)
+     * success by construction. NEVER `wsl --terminate` — that is the halt
+     * path's tool.
+     */
+    async stopPreviewDevServer(port: number): Promise<void> {
+      await execFileFn(wslExePath, [
+        "-d",
+        config.distroName,
+        "-u",
+        config.distroUser,
+        "--",
+        "sh",
+        "-lc",
+        `pkill -f 'http\\.server ${port}$' || true`,
+      ]);
+    },
+    /**
      * EMPTY-01: does the workspace hold anything the gallery publisher could
      * commit? Non-hidden entries minus node_modules (mirrors the publisher's
      * workspaceCopyFilter at the top level). Consulted by build-session AFTER

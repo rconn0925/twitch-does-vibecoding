@@ -16,6 +16,7 @@ import {
   recordGalleryPublish,
   recordPoolDropped,
   recordRevertOutcome,
+  recordSwapOutcome,
   recordWorkspaceReset,
 } from "./audit/record.js";
 import { ChaosModeController } from "./chaos/mode.js";
@@ -35,6 +36,7 @@ import {
 } from "./control-window/duration.js";
 import { type HistoryServerHandle, startHistoryServer } from "./history/server.js";
 import { type ChatMessageSink, createChatSender } from "./ingestion/chat-sender.js";
+import type { InfoCommandKind } from "./ingestion/command-parser.js";
 import {
   connectStreamElements,
   type DonationEventSource,
@@ -65,6 +67,7 @@ import {
 import {
   createGalleryPublisher,
   createProjectRepoStore,
+  DEFAULT_GALLERY_OWNER,
   type GalleryPublisher,
   resolveGalleryConfig,
 } from "./orchestrator/gallery-publisher.js";
@@ -83,6 +86,7 @@ import { submitDuringWindow } from "./pipeline/paid-window.js";
 import { enqueueWinner } from "./pipeline/round.js";
 import { type SubmitResult, submitCandidate } from "./pipeline/submit.js";
 import { collectBroadcastSafetyWarnings } from "./preflight.js";
+import { createDevServerSupervisor } from "./preview/dev-server-supervisor.js";
 import { createPreviewManager, resolvePreviewDevServerPort } from "./preview/preview-manager.js";
 import { type PreviewServerHandle, startPreviewServer } from "./preview/server.js";
 import { CandidatePool } from "./queue/pool.js";
@@ -265,6 +269,59 @@ function envPositive(raw: string | undefined, fallback: number): number {
 }
 
 /**
+ * quick-t8k swap-name normalization: the sanitizeRepoName transform MINUS the
+ * dated fallback — lowercase, non-[a-z0-9] runs → "-", trim hyphens, cap 80.
+ * An all-symbol name normalizes to "" (unresolvable), never a dated slug.
+ * Pure + exported for the resolution-precedence tests.
+ */
+export function normalizeSwapName(text: string): string {
+  let slug = text
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "-")
+    .replaceAll(/^-+|-+$/g, "");
+  if (slug.length > 80) {
+    slug = slug.slice(0, 80).replaceAll(/-+$/g, "");
+  }
+  return slug;
+}
+
+/** One project_repos row as the swap resolver consumes it. */
+export interface SwapTargetRow {
+  generation: number;
+  repo_name: string;
+}
+
+/**
+ * quick-t8k swap resolution over ALL project_repos rows. Deterministic
+ * precedence: exact > prefix > substring (case-insensitive against
+ * repo_name). Within the winning tier, prefer NON-current matches (swapping
+ * away is the intent — checker INFO b); ties break to the HIGHEST generation
+ * (most recent wins). Returns the current-generation row ONLY when it is the
+ * exclusive match at the winning tier (the caller narrates the honest
+ * already-current line), and null when nothing matches. Pure + exported.
+ */
+export function resolveSwapTarget(
+  rows: SwapTargetRow[],
+  needle: string,
+  currentGeneration: number,
+): SwapTargetRow | null {
+  if (needle.length === 0) return null;
+  const tiers: Array<(name: string) => boolean> = [
+    (name) => name === needle,
+    (name) => name.startsWith(needle),
+    (name) => name.includes(needle),
+  ];
+  for (const matchesTier of tiers) {
+    const hits = rows.filter((row) => matchesTier(row.repo_name.toLowerCase()));
+    if (hits.length === 0) continue;
+    const nonCurrent = hits.filter((row) => row.generation !== currentGeneration);
+    const pool = nonCurrent.length > 0 ? nonCurrent : hits;
+    return pool.reduce((best, row) => (row.generation > best.generation ? row : best));
+  }
+  return null;
+}
+
+/**
  * D2-13 bounded pool, re-capped at 5 (quick-l2a user amendment): the pool, the
  * early-close threshold, and the vote-option draw all align at 5 by default —
  * a full pool becomes exactly one full vote round. Kept as SEPARATE knobs
@@ -297,6 +354,12 @@ const DEFAULT_EARLY_CLOSE_POOL_SIZE = 5;
 const DEFAULT_VOTE_QUEUE_MAX = 10;
 /** quick-rs3: unique chatters typing !chaos required to activate chaos mode. */
 const DEFAULT_CHAOS_ACTIVATION_VOTES = 3;
+/**
+ * quick-t8k: global per-command cooldown for the tier-2 info commands
+ * (!projects/!current/!repo/!help). One reply per command per window;
+ * suppressed repeats are SILENT (D2-15). Env knob INFO_COMMAND_COOLDOWN_SECONDS.
+ */
+const DEFAULT_INFO_COMMAND_COOLDOWN_SECONDS = 30;
 /** quick-rs3: how long an activated chaos window lasts before auto-revert. */
 const DEFAULT_CHAOS_MODE_DURATION_SECONDS = 300;
 
@@ -383,6 +446,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // engine exists → the task sits queued (the pre-04 degraded behavior).
   let driveWindowBuild: ((taskId: string) => boolean) | null = null;
   let driveChaosBuild: ((taskId: string) => boolean) | null = null;
+  // quick-t8k late-bound preview re-root seam (the windowNarrator idiom): the
+  // default is a SILENT no-op until the preview dev-server supervisor composes
+  // (only when a method-bearing sandbox adapter exists). Invoked at every
+  // generation change — console new-project, project-switch rotation, and
+  // swap activation.
+  let reRootPreview: () => void = () => {};
 
   // ── Chat-activated chaos mode controller (quick-rs3, RS3-01..RS3-05) ─────
   // A timed, chat-voted vote-skip window — DISTINCT from the console CHAOS_MODE
@@ -974,6 +1043,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         // until a round opens). Approved plain suggestions stay silent (D2-15).
         if (candidate.kind === "project-switch") narrator.feedback("pooled-build", viewer);
         else if (candidate.kind === "revert") narrator.feedback("pooled-revert", viewer);
+        else if (candidate.kind === "swap") narrator.feedback("pooled-swap", viewer);
       }
       return result;
     };
@@ -1025,6 +1095,49 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         return;
       }
       logger.info({ roundId: mem.roundId }, "reconcile: in-memory round matches the vote ledger");
+    };
+
+    // (5a-t8k) Tier-2 instant info commands (quick-t8k): read-only replies
+    // composed from project_repos.repo_name slugs + a PUBLIC owner string ONLY
+    // — never from GateResult, donor data, or raw candidate text (T-t8k-03).
+    // Global per-command cooldown (INFO_COMMAND_COOLDOWN_SECONDS, default 30):
+    // one reply per command per window, suppressed repeats SILENT (D2-15);
+    // silent while HALTED. Zero funnel contact by construction — the dispatch
+    // returns before intake/classify (twitch-chat.ts), and this closure only
+    // ever runs a prepared read-only SELECT.
+    const infoCooldownMs =
+      envPositive(
+        process.env.INFO_COMMAND_COOLDOWN_SECONDS,
+        DEFAULT_INFO_COMMAND_COOLDOWN_SECONDS,
+      ) * 1_000;
+    const infoOwner = (process.env.GALLERY_GITHUB_OWNER ?? "").trim() || DEFAULT_GALLERY_OWNER;
+    const infoRepoRowsStmt = db.prepare(
+      "SELECT generation, repo_name FROM project_repos ORDER BY generation DESC",
+    );
+    const infoLastSentAtMs = new Map<InfoCommandKind, number>();
+    const infoCommand = (kind: InfoCommandKind): void => {
+      if (machine.mode === "HALTED") return; // no info chatter while halted (D-02)
+      const now = Date.now();
+      if (now - (infoLastSentAtMs.get(kind) ?? 0) < infoCooldownMs) return; // silent (D2-15)
+      infoLastSentAtMs.set(kind, now);
+      const rows = infoRepoRowsStmt.all() as Array<{ generation: number; repo_name: string }>;
+      const urlOf = (name: string): string => `https://github.com/${infoOwner}/${name}`;
+      if (kind === "projects") {
+        narrator.infoProjects(rows.map((r) => ({ name: r.repo_name, url: urlOf(r.repo_name) })));
+        return;
+      }
+      if (kind === "current" || kind === "repo") {
+        const current = rows.find((r) => r.generation === workspace.generation()) ?? null;
+        if (kind === "current") {
+          narrator.infoCurrent(
+            current ? { name: current.repo_name, url: urlOf(current.repo_name) } : null,
+          );
+        } else {
+          narrator.infoRepo(current ? urlOf(current.repo_name) : null);
+        }
+        return;
+      }
+      narrator.infoHelp();
     };
 
     // (5b) D-11 open-window routing: while a control window is ACTIVE, ANY
@@ -1122,6 +1235,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // quick-rs3: !chaos routes the chatterId to the controller (no intake,
       // no gate call — the command carries no buildable text by construction).
       chaosVote,
+      // quick-t8k: tier-2 info commands (read-only, cooldown-gated, HALTED-silent).
+      infoCommand,
       narrator,
       reconcile,
       logger,
@@ -1198,9 +1313,20 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       on: (event, handler) => autoCycle.on(event, handler),
     },
     donationsStatus: () => donationsStatus,
-    // quick-0iu: the streamer's "New project" workspace-rotation seam — the
-    // SAME WorkspaceView instance the build session consumes below.
-    workspace,
+    // quick-0iu: the streamer's "New project" workspace-rotation seam — a
+    // THIN wrapper (spread + one override) over the SAME WorkspaceView the
+    // build session consumes below: the console rotation also re-roots the
+    // preview dev server (quick-t8k). The build session keeps the UNWRAPPED
+    // instance; reRootPreview is late-bound (no-op until the supervisor
+    // composes in the orchestrator block).
+    workspace: {
+      ...workspace,
+      newProject: (): number => {
+        const generation = workspace.newProject();
+        reRootPreview();
+        return generation;
+      },
+    },
     logger,
   });
   logger.info(
@@ -1330,7 +1456,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       if (galleryPublisher) {
         windowNarrator?.newProjectShipping(head.text);
         // Server-composed title (deliberate): if this generation somehow never
-        // published before, scaffoldRepo names the repo from this title, so
+        // published before, the publisher names the new repo from this title, so
         // the slug degrades to a sane `app-N-final-snapshot`; on the normal
         // continue path it is just the commit message.
         const result = await galleryPublisher.publishNow({
@@ -1362,6 +1488,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
             initiator: "chat-vote",
           });
         }
+        // quick-t8k: a rotation is a generation change — re-root the preview
+        // dev server at the fresh dir (fire-and-forget; supervisor fail-opens).
+        reRootPreview();
         await buildSession.startBuild(head, "vote");
         return;
       }
@@ -1445,6 +1574,149 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       }
     };
 
+    /**
+     * quick-t8k swap winner: the no-build portfolio-swap arm. Head removed
+     * FIRST (the runRevertWinner idiom), the target resolved over ALL
+     * project_repos rows, then the LOCKED confirmed-push gate (mirror of
+     * shipThenRotate ii–iv): activateExisting runs ONLY after publishNow
+     * resolves published|no-changes. Every failure branch is amber-narrated,
+     * audited (recordSwapOutcome), and returns the machine to IDLE (guarded)
+     * — never a dead round, never a silent activation.
+     */
+    const runSwapWinner = async (head: QueuedTask): Promise<void> => {
+      taskQueue.remove(head.id);
+      const current = workspace.generation();
+
+      // (b) Resolve the gate-approved name reference against the durable
+      // per-project routing table. Prepared read-only SELECT; normalized
+      // in-memory matching only — chat text never reaches exec/SQL (T-t8k-01).
+      const rows = db
+        .prepare("SELECT generation, repo_name FROM project_repos")
+        .all() as SwapTargetRow[];
+      const target = resolveSwapTarget(rows, normalizeSwapName(head.text), current);
+      const backToIdle = (): void => {
+        try {
+          // Guarded (finalize()'s idiom): a halt that landed mid-swap leaves
+          // the machine HALTED — never fight the kill switch.
+          if (machine.mode === "BUILD_IN_PROGRESS") machine.transition("IDLE");
+        } catch (err) {
+          logger.error({ err }, "failed to return to IDLE after a swap winner");
+        }
+      };
+      if (target === null) {
+        windowNarrator?.swapUnresolved();
+        if (db.open) {
+          recordSwapOutcome(db, {
+            taskId: head.id,
+            fromGeneration: current,
+            toGeneration: null,
+            repoName: null,
+            status: "unresolved",
+            detail: "no project matched the requested name",
+            streamMode: machine.mode,
+          });
+        }
+        backToIdle();
+        return;
+      }
+      if (target.generation === current) {
+        // Resolution ran over ALL rows, so "current" is detected honestly —
+        // then rejected with its OWN line, never a misleading not-found
+        // (checker INFO b).
+        windowNarrator?.swapAlreadyCurrent();
+        if (db.open) {
+          recordSwapOutcome(db, {
+            taskId: head.id,
+            fromGeneration: current,
+            toGeneration: target.generation,
+            repoName: target.repo_name,
+            status: "already-current",
+            detail: "requested project is already on screen",
+            streamMode: machine.mode,
+          });
+        }
+        backToIdle();
+        return;
+      }
+
+      // (c) Ship gate — mirror of shipThenRotate ii–iv (LOCKED): an ACTIVE
+      // project requires a CONFIRMABLE push before the pointer may move. No
+      // publisher = unconfirmable = ship failure (audited HERE). An
+      // unscaffolded fresh generation has nothing to ship — abandoned in
+      // place (archive-by-construction), proceed.
+      if (workspace.scaffolded()) {
+        let shipped: { status: "published" | "no-changes" | "failed" } | null = null;
+        if (galleryPublisher) {
+          const result = await galleryPublisher.publishNow({
+            generation: current,
+            title: `app-${current} final snapshot`,
+            taskId: head.id,
+          });
+          shipped = result;
+          if (db.open) {
+            recordGalleryPublish(db, {
+              taskId: head.id,
+              generation: current,
+              status: result.status,
+              commitHash: result.commitHash,
+              detail: result.detail,
+              streamMode: machine.mode,
+            });
+          }
+        }
+        if (!shipped || (shipped.status !== "published" && shipped.status !== "no-changes")) {
+          windowNarrator?.swapShipFailed();
+          if (!galleryPublisher && db.open) {
+            recordGalleryPublish(db, {
+              taskId: head.id,
+              generation: current,
+              status: "failed",
+              commitHash: null,
+              detail:
+                "gallery publisher not configured — cannot confirm a push, swap activation withheld",
+              streamMode: machine.mode,
+            });
+          }
+          if (db.open) {
+            recordSwapOutcome(db, {
+              taskId: head.id,
+              fromGeneration: current,
+              toGeneration: target.generation,
+              repoName: target.repo_name,
+              status: "ship-failed",
+              detail: "final publish did not confirm — swap activation withheld",
+              streamMode: machine.mode,
+            });
+          }
+          logger.error(
+            { taskId: head.id, generation: current, target: target.generation },
+            "swap ship failed — activation withheld, current project stays active (locked decision)",
+          );
+          backToIdle();
+          return;
+        }
+      }
+
+      // (d) Activate: validated pointer-only move; repo binding REUSED (the
+      // target generation's project_repos row routes future publishes through
+      // continueRepo — no new repo is ever created for a swap).
+      workspace.activateExisting(target.generation);
+      if (db.open) {
+        recordSwapOutcome(db, {
+          taskId: head.id,
+          fromGeneration: current,
+          toGeneration: target.generation,
+          repoName: target.repo_name,
+          status: "activated",
+          detail: null,
+          streamMode: machine.mode,
+        });
+      }
+      windowNarrator?.swapActivated(target.repo_name);
+      reRootPreview();
+      backToIdle();
+    };
+
     // ── drainVoteQueue — the ONE vote-winner build starter (quick-t5k A1) ──
     // Every path a queued winner can start on funnels through this helper, and
     // it only EVER starts the FIFO queue head — never a caller-supplied task id
@@ -1497,6 +1769,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
             break;
           case "revert":
             await runRevertWinner(head);
+            break;
+          case "swap":
+            // quick-t8k: portfolio swap — ship-gated activate-existing, no build.
+            await runSwapWinner(head);
             break;
           default:
             // "suggestion" — unchanged. HIST-01: a round winner's provenance
@@ -1638,6 +1914,33 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       "app-under-construction preview listening at http://127.0.0.1:%d — add as OBS browser source",
       preview.port,
     );
+
+    // quick-t8k: the orchestrator OWNS the in-distro preview dev server. The
+    // supervisor stops+starts it via the EXISTING sandbox adapter exec seam
+    // (end-anchored pkill by port — never wsl --terminate) and health-checks
+    // through the SAME probe the preview page uses. Every failure path
+    // fail-opens to the standing-by state — a supervisor error can never
+    // crash the app. Deliberately NOT torn down in close(): leaving the
+    // server serving across host restarts is availability by design (the
+    // 260711 outage was the server DYING, not living too long).
+    const settleRaw = Number.parseInt(process.env.PREVIEW_DEV_SERVER_SETTLE_MS ?? "", 10);
+    const devServerSupervisor = createDevServerSupervisor({
+      adapter: opts.sandboxAdapter,
+      port: previewManager.port,
+      workspaceDir: () => workspace.dir(),
+      probeReachable: () => (opts.devServerProbe ?? previewManager).reachable(),
+      logger,
+      // Test knob: PREVIEW_DEV_SERVER_SETTLE_MS=0 makes reroot cycles
+      // deterministic-fast in e2e; unset/invalid → the supervisor default.
+      ...(Number.isFinite(settleRaw) && settleRaw >= 0 ? { settleMs: settleRaw } : {}),
+    });
+    // The late-bound seam declared above — swap activation (runSwapWinner),
+    // project-switch rotation (shipThenRotate), and the console new-project
+    // wrapper all fire it. fire-and-forget: reroot() never rejects.
+    reRootPreview = () => void devServerSupervisor.reroot();
+    // Boot start: root the preview server at the ACTIVE generation dir with
+    // zero manual steps (OPERATIONS.md §11 retires the manual launch).
+    void devServerSupervisor.reroot();
   }
 
   // Public OBS overlay (PRES-01) — a physically separate read-only surface,

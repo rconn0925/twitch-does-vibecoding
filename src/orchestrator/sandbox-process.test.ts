@@ -414,6 +414,89 @@ describe("createSandboxAdapter — workspaceHasCommittableFiles (EMPTY-01 output
   });
 });
 
+describe("createSandboxAdapter — preview dev-server lifecycle (quick-t8k, execFileFn seam ONLY)", () => {
+  it("stopPreviewDevServer runs an END-ANCHORED pkill by port via sh -lc with `|| true` (no-match is success)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await adapter.stopPreviewDevServer?.(5555);
+
+    expect(execFileFn).toHaveBeenCalledWith(WSL_EXE, [
+      "-d",
+      "vibecoding-build",
+      "-u",
+      "builder",
+      "--",
+      "sh",
+      "-lc",
+      "pkill -f 'http\\.server 5555$' || true",
+    ]);
+  });
+
+  it("the pkill pattern carries the literal `$` anchor after the port — 5555 can never match 55555 (checker INFO a)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await adapter.stopPreviewDevServer?.(5555);
+
+    const script = (execFileFn.mock.calls[0]?.[1] ?? []).at(-1) as string;
+    expect(script).toContain("5555$'");
+    expect(script).toContain("|| true");
+  });
+
+  it("startPreviewDevServer runs mkdir+cd+nohup python3 http.server with the port argv-final (matches the stop anchor)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await adapter.startPreviewDevServer?.("/home/builder/projects/app-3", 5555);
+
+    expect(execFileFn).toHaveBeenCalledWith(WSL_EXE, [
+      "-d",
+      "vibecoding-build",
+      "-u",
+      "builder",
+      "--",
+      "sh",
+      "-lc",
+      "mkdir -p /home/builder/projects/app-3 && cd /home/builder/projects/app-3 && nohup python3 -m http.server 5555 >/dev/null 2>&1 &",
+    ]);
+  });
+
+  it("startPreviewDevServer REJECTS on wsl exec failure (the supervisor catches — adapter stays honest like ensureWorkspaceDir)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => {
+      throw new Error("wsl.exe hiccup");
+    });
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await expect(
+      adapter.startPreviewDevServer?.("/home/builder/projects/app-1", 5555),
+    ).rejects.toThrow("hiccup");
+  });
+
+  it("NEVER touches spawn()/terminate()/buildSandboxEnv — zero new process-spawn paths, zero env bytes in the scripts", async () => {
+    const { fn: spawnFn, calls } = captureSpawn();
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
+    const adapter = createSandboxAdapter({
+      config: { ...TEST_CONFIG, sandboxApiKey: "sandbox-scoped-key" },
+      spawnFn,
+      execFileFn,
+    });
+
+    await adapter.stopPreviewDevServer?.(5555);
+    await adapter.startPreviewDevServer?.("/home/builder/projects/app-1", 5555);
+
+    // No engine spawn, no wsl --terminate — distinct exec invocations only.
+    expect(calls).toHaveLength(0);
+    for (const call of execFileFn.mock.calls) {
+      expect(call[1]).not.toContain("--terminate");
+      // The scripts carry NO env assignments and NO secret-shaped bytes —
+      // buildSandboxEnv is untouched (secrets-isolation invariant).
+      const script = (call[1] ?? []).at(-1) as string;
+      expect(script).not.toMatch(/ANTHROPIC|TWITCH|TOKEN|SECRET|PATH=/);
+    }
+  });
+});
+
 describe("buildSandboxOptions — defense-in-depth (T-03-14)", () => {
   it("fails loud if unavailable and never silently runs unsandboxed", () => {
     const opts = buildSandboxOptions();

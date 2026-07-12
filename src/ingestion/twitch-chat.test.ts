@@ -119,6 +119,16 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     revertFailed: vi.fn(),
     newProjectShipping: vi.fn(),
     newProjectShipFailed: vi.fn(),
+    // Tier-2 info replies (quick-t8k; routed via the infoCommand seam, not here).
+    infoProjects: vi.fn(),
+    infoCurrent: vi.fn(),
+    infoRepo: vi.fn(),
+    infoHelp: vi.fn(),
+    // Swap beats (quick-t8k; unused by the chat listener).
+    swapActivated: vi.fn(),
+    swapShipFailed: vi.fn(),
+    swapUnresolved: vi.fn(),
+    swapAlreadyCurrent: vi.fn(),
   };
 }
 
@@ -344,6 +354,48 @@ describe("startTwitchChat — EventSub listener wiring (CHAT-01/D2-15/T-02-15)",
       expect(narrator.feedbackCalls).toEqual([["duplicate", "viewer1", undefined]]);
     });
 
+    it("!swapbuild builds a kind 'swap' candidate carrying the (gate-bound) name text", () => {
+      const src = fakeSource();
+      const intake = fakeIntake({ ok: true });
+      const deps = makeDeps({ source: src.source, intake });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: '!swapbuild "snake game"' });
+
+      expect(deps.submitted).toHaveLength(1);
+      expect(deps.submitted[0]).toMatchObject({
+        source: "chat",
+        kind: "swap",
+        twitchUsername: "viewer1",
+        text: "snake game",
+      });
+      expect(intake.registered).toEqual([["42", deps.submitted[0]?.id]]);
+    });
+
+    it("!swapbuild runs intake.check BEFORE submit — the ONE funnel, gate-before-pool ordering", () => {
+      const src = fakeSource();
+      const sequence: string[] = [];
+      const intake: SuggestIntake = {
+        check: (chatterId, text) => {
+          sequence.push(`intake:${chatterId}:${text}`);
+          return { ok: true };
+        },
+        registerAccepted: () => {
+          sequence.push("register");
+        },
+      };
+      const deps = makeDeps({
+        source: src.source,
+        intake,
+        submit: (candidate) => {
+          sequence.push(`submit:${candidate.kind}:${candidate.text}`);
+          return { accepted: true, id: candidate.id };
+        },
+      });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!swapbuild snake" });
+      expect(sequence).toEqual(["intake:42:snake", "submit:swap:snake", "register"]);
+    });
+
     it("!revert with trailing text is NOT a command — ignored silently (strict no-arg)", () => {
       const src = fakeSource();
       const deps = makeDeps({ source: src.source });
@@ -387,6 +439,49 @@ describe("startTwitchChat — EventSub listener wiring (CHAT-01/D2-15/T-02-15)",
       const deps = makeDeps({ source: src.source });
       startTwitchChat(deps);
       expect(() => src.emitMessage({ ...CHAT_EVENT, messageText: "!chaos" })).not.toThrow();
+      expect(deps.submitted).toHaveLength(0);
+      expect(deps.votes).toHaveLength(0);
+    });
+  });
+
+  describe("tier-2 info commands (quick-t8k — read-only, ZERO funnel contact)", () => {
+    it.each([
+      ["!projects", "projects"],
+      ["!current", "current"],
+      ["!repo", "repo"],
+      ["!help", "help"],
+      ["!commands", "help"],
+    ] as const)("%s routes %s to the infoCommand seam and returns", (messageText, kind) => {
+      const src = fakeSource();
+      const infoCommand = vi.fn();
+      const deps = makeDeps({ source: src.source, infoCommand });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText });
+      expect(infoCommand).toHaveBeenCalledExactlyOnceWith(kind);
+    });
+
+    it("an info command NEVER touches intake.check, submit, or the vote ledger (no gate call, no cooldown charged)", () => {
+      const src = fakeSource();
+      const infoCommand = vi.fn();
+      const checkSpy = vi.fn(() => ({ ok: true }) as const);
+      const registerSpy = vi.fn();
+      const intake: SuggestIntake = { check: checkSpy, registerAccepted: registerSpy };
+      const deps = makeDeps({ source: src.source, intake, infoCommand });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!projects" });
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!help" });
+      expect(infoCommand).toHaveBeenCalledTimes(2);
+      expect(checkSpy).not.toHaveBeenCalled();
+      expect(registerSpy).not.toHaveBeenCalled();
+      expect(deps.submitted).toHaveLength(0);
+      expect(deps.votes).toHaveLength(0);
+    });
+
+    it("an absent infoCommand seam makes info commands a silent no-op that never throws", () => {
+      const src = fakeSource();
+      const deps = makeDeps({ source: src.source });
+      startTwitchChat(deps);
+      expect(() => src.emitMessage({ ...CHAT_EVENT, messageText: "!projects" })).not.toThrow();
       expect(deps.submitted).toHaveLength(0);
       expect(deps.votes).toHaveLength(0);
     });

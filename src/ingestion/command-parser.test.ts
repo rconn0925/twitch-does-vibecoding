@@ -160,6 +160,95 @@ describe("parseCommand — no !fork command ships (quick-q5n scope gate)", () =>
   });
 });
 
+describe("parseCommand — !swapbuild (quick-t8k tier-1 portfolio-swap intent)", () => {
+  it("parses an unquoted multi-word name", () => {
+    expect(parseCommand("!swapbuild snake game")).toEqual({
+      kind: "swapbuild",
+      text: "snake game",
+    });
+  });
+
+  it("parses a quoted name, stripping ONE pair of surrounding double quotes", () => {
+    expect(parseCommand('!swapbuild "snake game"')).toEqual({
+      kind: "swapbuild",
+      text: "snake game",
+    });
+  });
+
+  it("strips only ONE pair of quotes — inner quotes survive", () => {
+    expect(parseCommand('!swapbuild ""snake""')).toEqual({
+      kind: "swapbuild",
+      text: '"snake"',
+    });
+  });
+
+  it("re-trims after quote stripping", () => {
+    expect(parseCommand('!swapbuild "  snake  "')).toEqual({
+      kind: "swapbuild",
+      text: "snake",
+    });
+  });
+
+  it("is case-insensitive on the command word", () => {
+    expect(parseCommand("!SWAPBUILD snake")).toEqual({ kind: "swapbuild", text: "snake" });
+  });
+
+  it("returns null for bare !swapbuild and for an empty quoted name", () => {
+    expect(parseCommand("!swapbuild")).toBeNull();
+    expect(parseCommand("!swapbuild    ")).toBeNull();
+    expect(parseCommand('!swapbuild ""')).toBeNull();
+    expect(parseCommand('!swapbuild "   "')).toBeNull();
+  });
+
+  it("caps the name at 2000 chars (funnel-bound mirror)", () => {
+    const body = "a".repeat(2001);
+    expect(parseCommand(`!swapbuild ${body}`)).toBeNull();
+    const ok = "a".repeat(2000);
+    expect(parseCommand(`!swapbuild ${ok}`)).toEqual({ kind: "swapbuild", text: ok });
+  });
+});
+
+describe("parseCommand — tier-2 info commands (quick-t8k: instant, read-only)", () => {
+  it("parses the four bare info commands to kind 'info' with the right InfoCommandKind", () => {
+    expect(parseCommand("!projects")).toEqual({ kind: "info", info: "projects" });
+    expect(parseCommand("!current")).toEqual({ kind: "info", info: "current" });
+    expect(parseCommand("!repo")).toEqual({ kind: "info", info: "repo" });
+    expect(parseCommand("!help")).toEqual({ kind: "info", info: "help" });
+  });
+
+  it("!commands aliases to help", () => {
+    expect(parseCommand("!commands")).toEqual({ kind: "info", info: "help" });
+  });
+
+  it("is case-insensitive on the command word", () => {
+    expect(parseCommand("!PROJECTS")).toEqual({ kind: "info", info: "projects" });
+    expect(parseCommand("!Current")).toEqual({ kind: "info", info: "current" });
+    expect(parseCommand("!REPO")).toEqual({ kind: "info", info: "repo" });
+    expect(parseCommand("!Help")).toEqual({ kind: "info", info: "help" });
+    expect(parseCommand("!COMMANDS")).toEqual({ kind: "info", info: "help" });
+  });
+
+  it("trims surrounding whitespace on the message", () => {
+    expect(parseCommand("   !projects   ")).toEqual({ kind: "info", info: "projects" });
+  });
+
+  it("rejects trailing args — strict no-arg per the RevertCommand idiom", () => {
+    expect(parseCommand("!projects list")).toBeNull();
+    expect(parseCommand("!current one")).toBeNull();
+    expect(parseCommand("!repo url")).toBeNull();
+    expect(parseCommand("!help me")).toBeNull();
+    expect(parseCommand("!commands all")).toBeNull();
+  });
+
+  it("leaves every existing command parsing byte-identically", () => {
+    expect(parseCommand("!suggest a game")).toEqual({ kind: "suggest", text: "a game" });
+    expect(parseCommand("!vote 3")).toEqual({ kind: "vote", option: 3 });
+    expect(parseCommand("!build a thing")).toEqual({ kind: "build", text: "a thing" });
+    expect(parseCommand("!revert")).toEqual({ kind: "revert" });
+    expect(parseCommand("!chaos")).toEqual({ kind: "chaos" });
+  });
+});
+
 describe("parseCommand — non-commands and hostile input", () => {
   it("returns null for plain chat, other commands, and empty string", () => {
     expect(parseCommand("hello")).toBeNull();

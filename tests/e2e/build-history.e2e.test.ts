@@ -168,6 +168,10 @@ function fakeWorkspaceView(): WorkspaceView {
       return generation;
     },
     generation: () => generation,
+    activateExisting: (target: number) => {
+      generation = target;
+      scaffolded = true;
+    },
   };
 }
 

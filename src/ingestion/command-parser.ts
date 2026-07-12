@@ -66,13 +66,39 @@ const ChaosCommand = z.object({
   kind: z.literal("chaos"),
 });
 
+/**
+ * quick-t8k tier-1 voted command: `!swapbuild <name>` — the portfolio-swap
+ * intent. The name is a project reference but still chat-derived text, so it
+ * mirrors SuggestCommand's funnel-bound 2000-char cap and is gate-screened
+ * before pooling like every other tier-1 command.
+ */
+const SwapbuildCommand = z.object({
+  kind: z.literal("swapbuild"),
+  text: z.string().min(1).max(2000),
+});
+
+/**
+ * quick-t8k tier-2 instant info commands: !projects / !current / !repo /
+ * !help (!commands aliases to help). STRICT no-arg (RevertCommand idiom) —
+ * trailing text → null. Read-only: dispatch calls an optional seam and
+ * returns; NO gate call, NO vote, NO state change ever rides one of these.
+ */
+export type InfoCommandKind = "projects" | "current" | "repo" | "help";
+
+const InfoCommand = z.object({
+  kind: z.literal("info"),
+  info: z.enum(["projects", "current", "repo", "help"]),
+});
+
 /** Discriminated result of parsing a chat message as a command. No fork command exists (quick-q5n scope gate). */
 export type ParsedCommand =
   | { kind: "suggest"; text: string }
   | { kind: "vote"; option: number }
   | { kind: "build"; text: string }
   | { kind: "revert" }
-  | { kind: "chaos" };
+  | { kind: "chaos" }
+  | { kind: "swapbuild"; text: string }
+  | { kind: "info"; info: InfoCommandKind };
 
 /**
  * Parse a raw chat message into a typed command, or null when the message
@@ -102,6 +128,18 @@ export function parseCommand(messageText: string): ParsedCommand | null {
     return parsed.success ? parsed.data : null;
   }
 
+  // quick-t8k: !swapbuild <name> — quoted AND unquoted names both parse; ONE
+  // pair of surrounding double quotes is stripped, then re-trimmed (an empty
+  // quoted name → null). The text stays funnel-bound (min 1 / max 2000).
+  const swapMatch = /^!swapbuild\s+(.+)$/i.exec(trimmed);
+  if (swapMatch?.[1]) {
+    let text = swapMatch[1].trim();
+    const quoted = /^"([\s\S]*)"$/.exec(text);
+    if (quoted) text = (quoted[1] ?? "").trim();
+    const parsed = SwapbuildCommand.safeParse({ kind: "swapbuild", text });
+    return parsed.success ? parsed.data : null;
+  }
+
   // quick-q5n: !revert / !undo — strict no-arg; "!revert something" is NOT a
   // command (null), so revert candidates can never carry chat-derived text.
   if (/^!(revert|undo)$/i.test(trimmed)) {
@@ -113,6 +151,18 @@ export function parseCommand(messageText: string): ParsedCommand | null {
   // (null), so chaos activation can never smuggle chat text anywhere.
   if (/^!chaos$/i.test(trimmed)) {
     const parsed = ChaosCommand.safeParse({ kind: "chaos" });
+    return parsed.success ? parsed.data : null;
+  }
+
+  // quick-t8k tier-2 info commands — strict no-arg; "!projects list" is NOT a
+  // command (null). "!commands" is an alias of "!help".
+  const infoMatch = /^!(projects|current|repo|help|commands)$/i.exec(trimmed);
+  if (infoMatch?.[1]) {
+    const token = infoMatch[1].toLowerCase();
+    const parsed = InfoCommand.safeParse({
+      kind: "info",
+      info: token === "commands" ? "help" : token,
+    });
     return parsed.success ? parsed.data : null;
   }
 
