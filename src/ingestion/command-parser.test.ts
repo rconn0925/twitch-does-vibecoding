@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCommand } from "./command-parser.js";
+import { parseCommand, REVERT_REQUEST_TEXT } from "./command-parser.js";
 
 describe("parseCommand — !suggest", () => {
   it("parses a basic suggestion", () => {
@@ -61,6 +61,75 @@ describe("parseCommand — !vote", () => {
     expect(parseCommand("!vote -1")).toBeNull();
     expect(parseCommand("!vote 10")).toBeNull();
     expect(parseCommand("!vote 22")).toBeNull();
+  });
+});
+
+describe("parseCommand — !build (quick-q5n tier-1 new-project intent)", () => {
+  it("parses a basic build command", () => {
+    expect(parseCommand("!build make a snake game")).toEqual({
+      kind: "build",
+      text: "make a snake game",
+    });
+  });
+
+  it("is case-insensitive on the command word", () => {
+    expect(parseCommand("!BUILD x")).toEqual({ kind: "build", text: "x" });
+    expect(parseCommand("!Build mixed Case Idea")).toEqual({
+      kind: "build",
+      text: "mixed Case Idea",
+    });
+  });
+
+  it("trims surrounding whitespace on the message", () => {
+    expect(parseCommand("   !build a tetris clone   ")).toEqual({
+      kind: "build",
+      text: "a tetris clone",
+    });
+  });
+
+  it("returns null for !build with no text", () => {
+    expect(parseCommand("!build")).toBeNull();
+    expect(parseCommand("!build    ")).toBeNull();
+  });
+
+  it("returns null for a build body over 2000 chars (mirrors the suggest cap)", () => {
+    const body = "a".repeat(2001);
+    expect(parseCommand(`!build ${body}`)).toBeNull();
+    const ok = "a".repeat(2000);
+    expect(parseCommand(`!build ${ok}`)).toEqual({ kind: "build", text: ok });
+  });
+});
+
+describe("parseCommand — !revert / !undo (quick-q5n tier-1 undo-last-change intent)", () => {
+  it("parses bare !revert and bare !undo to the same revert command", () => {
+    expect(parseCommand("!revert")).toEqual({ kind: "revert" });
+    expect(parseCommand("!undo")).toEqual({ kind: "revert" });
+  });
+
+  it("is case-insensitive on the command word", () => {
+    expect(parseCommand("!REVERT")).toEqual({ kind: "revert" });
+    expect(parseCommand("!Undo")).toEqual({ kind: "revert" });
+  });
+
+  it("trims surrounding whitespace on the message", () => {
+    expect(parseCommand("   !revert   ")).toEqual({ kind: "revert" });
+  });
+
+  it("rejects trailing args — no chat-derived free text may ride a revert (T-q5n-02)", () => {
+    expect(parseCommand("!revert something")).toBeNull();
+    expect(parseCommand("!undo the last thing")).toBeNull();
+    expect(parseCommand("!revert 1")).toBeNull();
+  });
+
+  it("exports the fixed server-composed REVERT_REQUEST_TEXT constant", () => {
+    expect(REVERT_REQUEST_TEXT).toBe("Revert the last change to the current project");
+  });
+});
+
+describe("parseCommand — no !fork command ships (quick-q5n scope gate)", () => {
+  it("returns null for !fork in any shape", () => {
+    expect(parseCommand("!fork")).toBeNull();
+    expect(parseCommand("!fork my project")).toBeNull();
   });
 });
 

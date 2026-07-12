@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SubmitResult } from "../pipeline/submit.js";
 import type { SuggestionCandidate } from "../shared/types.js";
+import { REVERT_REQUEST_TEXT } from "./command-parser.js";
 import type { FeedbackKind, Narrator } from "./narration.js";
 import type { IntakeVerdict, SuggestIntake } from "./suggest-intake.js";
 import {
@@ -106,6 +107,12 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     suggestionsOpen: vi.fn(),
     stillCollecting: vi.fn(),
     buildQueueFull: vi.fn(),
+    // Tier-1 voted-command beats (quick-q5n; unused by the chat listener).
+    revertApplied: vi.fn(),
+    revertNothing: vi.fn(),
+    revertFailed: vi.fn(),
+    newProjectShipping: vi.fn(),
+    newProjectShipFailed: vi.fn(),
   };
 }
 
@@ -223,6 +230,122 @@ describe("startTwitchChat — EventSub listener wiring (CHAT-01/D2-15/T-02-15)",
     src.emitMessage(CHAT_EVENT);
     expect(intake.registered).toEqual([]);
     expect(narrator.feedbackCalls).toEqual([]);
+  });
+
+  describe("tier-1 voted commands (quick-q5n): !build / !revert / !undo through the ONE funnel", () => {
+    it("!build builds a project-switch candidate carrying the idea text", () => {
+      const src = fakeSource();
+      const intake = fakeIntake({ ok: true });
+      const deps = makeDeps({ source: src.source, intake });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!build make a snake game" });
+
+      expect(deps.submitted).toHaveLength(1);
+      expect(deps.submitted[0]).toMatchObject({
+        source: "chat",
+        kind: "project-switch",
+        twitchUsername: "viewer1",
+        text: "make a snake game",
+      });
+      expect(intake.registered).toEqual([["42", deps.submitted[0]?.id]]);
+    });
+
+    it("!revert builds a revert candidate carrying EXACTLY the fixed server-composed text", () => {
+      const src = fakeSource();
+      const deps = makeDeps({ source: src.source });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!revert" });
+
+      expect(deps.submitted).toHaveLength(1);
+      expect(deps.submitted[0]).toMatchObject({
+        source: "chat",
+        kind: "revert",
+        twitchUsername: "viewer1",
+        text: REVERT_REQUEST_TEXT,
+      });
+    });
+
+    it("!undo is an alias for !revert (same candidate shape)", () => {
+      const src = fakeSource();
+      const deps = makeDeps({ source: src.source });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!undo" });
+      expect(deps.submitted).toHaveLength(1);
+      expect(deps.submitted[0]).toMatchObject({ kind: "revert", text: REVERT_REQUEST_TEXT });
+    });
+
+    it("!build runs intake.check BEFORE submit (D2-11 ordering, sequence-recorded)", () => {
+      const src = fakeSource();
+      const sequence: string[] = [];
+      const intake: SuggestIntake = {
+        check: (chatterId, text) => {
+          sequence.push(`intake:${chatterId}:${text}`);
+          return { ok: true };
+        },
+        registerAccepted: () => {
+          sequence.push("register");
+        },
+      };
+      const deps = makeDeps({
+        source: src.source,
+        intake,
+        submit: (candidate) => {
+          sequence.push(`submit:${candidate.text}`);
+          return { accepted: true, id: candidate.id };
+        },
+      });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!build a game" });
+      expect(sequence).toEqual(["intake:42:a game", "submit:a game", "register"]);
+    });
+
+    it("!revert runs intake.check with the FIXED text before submit (dedup via identical text)", () => {
+      const src = fakeSource();
+      const sequence: string[] = [];
+      const intake: SuggestIntake = {
+        check: (chatterId, text) => {
+          sequence.push(`intake:${chatterId}:${text}`);
+          return { ok: true };
+        },
+        registerAccepted: () => {
+          sequence.push("register");
+        },
+      };
+      const deps = makeDeps({
+        source: src.source,
+        intake,
+        submit: (candidate) => {
+          sequence.push(`submit:${candidate.kind}`);
+          return { accepted: true, id: candidate.id };
+        },
+      });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!revert" });
+      expect(sequence).toEqual([`intake:42:${REVERT_REQUEST_TEXT}`, "submit:revert", "register"]);
+    });
+
+    it("an intake refusal on !build narrates the notice and never submits", () => {
+      const src = fakeSource();
+      const narrator = fakeNarrator();
+      const deps = makeDeps({
+        source: src.source,
+        intake: fakeIntake({ ok: false, reason: "duplicate" }),
+        narrator,
+      });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!build a game" });
+      expect(deps.submitted).toHaveLength(0);
+      expect(narrator.feedbackCalls).toEqual([["duplicate", "viewer1", undefined]]);
+    });
+
+    it("!revert with trailing text is NOT a command — ignored silently (strict no-arg)", () => {
+      const src = fakeSource();
+      const deps = makeDeps({ source: src.source });
+      startTwitchChat(deps);
+      src.emitMessage({ ...CHAT_EVENT, messageText: "!revert that thing" });
+      expect(deps.submitted).toHaveLength(0);
+      expect(deps.votes).toHaveLength(0);
+    });
   });
 
   it("!vote 2 records a vote keyed by the EventSub chatterId", () => {

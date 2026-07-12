@@ -145,8 +145,9 @@ describe("createApp chat composition (fake source + capturing sink)", () => {
       sent.find((message) => message.startsWith("Voting is OPEN")),
     );
     expect(openMessage).toContain("!vote 1 or 2");
-    expect(openMessage).toContain("[1] build a snake game");
-    expect(openMessage).toContain("[2] build a pomodoro timer");
+    // quick-q5n kind-aware round-open wording: suggestions render as TWEAK:.
+    expect(openMessage).toContain("[1] TWEAK: build a snake game");
+    expect(openMessage).toContain("[2] TWEAK: build a pomodoro timer");
 
     // A chat vote lands in the round ledger, keyed by chatterId.
     chat.say("103", "carol", "!vote 1");

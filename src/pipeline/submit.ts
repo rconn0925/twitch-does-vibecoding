@@ -33,7 +33,7 @@ import { insertHeld } from "../state-machine/review-queue.js";
 const CandidateSchema = z.object({
   id: z.string().min(1),
   source: z.enum(["chat", "channel_points", "donation", "chaos", "operator"]),
-  kind: z.enum(["suggestion", "project-switch"]),
+  kind: z.enum(["suggestion", "project-switch", "revert"]),
   twitchUsername: z.string().nullable(),
   text: z.string().min(1).max(2000),
   submittedAtMs: z.number().int().nonnegative(),

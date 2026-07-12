@@ -20,13 +20,18 @@ function capturingSender(): { sent: string[]; sender: ChatSender } {
   };
 }
 
-function roundCandidate(option: number, text: string, votes = 0): RoundCandidate {
+function roundCandidate(
+  option: number,
+  text: string,
+  votes = 0,
+  kind: RoundCandidate["candidate"]["kind"] = "suggestion",
+): RoundCandidate {
   return {
     option,
     candidate: {
       id: `c${option}`,
       source: "chat",
-      kind: "suggestion",
+      kind,
       twitchUsername: "viewer",
       text,
       submittedAtMs: 1_000,
@@ -58,12 +63,12 @@ function snapshot(overrides: Partial<RoundSnapshot> = {}): RoundSnapshot {
 }
 
 describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)", () => {
-  it("roundOpened with 3 candidates sends exactly one message on the UI-SPEC template", () => {
+  it("roundOpened with 3 suggestion candidates sends one kind-aware TWEAK-prefixed message", () => {
     const { sent, sender } = capturingSender();
     const narrator = createNarrator({ sender });
     narrator.roundOpened(snapshot());
     expect(sent).toEqual([
-      "Voting is OPEN — !vote 1, 2 or 3: [1] Title A [2] Title B [3] Title C — 60s on the clock.",
+      "Voting is OPEN — !vote 1, 2 or 3: [1] TWEAK: Title A [2] TWEAK: Title B [3] TWEAK: Title C — 60s on the clock.",
     ]);
   });
 
@@ -74,8 +79,27 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       snapshot({ candidates: [roundCandidate(1, "Title A"), roundCandidate(2, "Title B")] }),
     );
     expect(sent).toEqual([
-      "Voting is OPEN — !vote 1 or 2: [1] Title A [2] Title B — 60s on the clock.",
+      "Voting is OPEN — !vote 1 or 2: [1] TWEAK: Title A [2] TWEAK: Title B — 60s on the clock.",
     ]);
+  });
+
+  it("a mixed round renders NEW / TWEAK / REVERT wording in ONE round-open line (quick-q5n)", () => {
+    const { sent, sender } = capturingSender();
+    const narrator = createNarrator({ sender });
+    narrator.roundOpened(
+      snapshot({
+        candidates: [
+          roundCandidate(1, "make a snake game", 0, "project-switch"),
+          roundCandidate(2, "add a dark theme", 0, "suggestion"),
+          roundCandidate(3, "Revert the last change to the current project", 0, "revert"),
+        ],
+      }),
+    );
+    expect(sent).toEqual([
+      "Voting is OPEN — !vote 1, 2 or 3: [1] NEW: make a snake game [2] TWEAK: add a dark theme [3] REVERT the last change — 60s on the clock.",
+    ]);
+    // The revert option renders the FIXED label, never the candidate text.
+    expect(sent[0]).not.toContain("Revert the last change to the current project");
   });
 
   it("candidate titles truncate to 60 chars in chat messages", () => {
@@ -86,7 +110,7 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       snapshot({ candidates: [roundCandidate(1, long), roundCandidate(2, "Title B")] }),
     );
     const message = sent[0] ?? "";
-    expect(message).toContain(`[1] ${"x".repeat(59)}…`);
+    expect(message).toContain(`[1] TWEAK: ${"x".repeat(59)}…`);
     expect(message).not.toContain("x".repeat(60));
   });
 
@@ -237,8 +261,72 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "suggestionsOpen",
         "stillCollecting",
         "buildQueueFull",
+        // Tier-1 voted-command beats (quick-q5n) — fixed server-composed lines,
+        // title string at most; never a tally.
+        "revertApplied",
+        "revertNothing",
+        "revertFailed",
+        "newProjectShipping",
+        "newProjectShipFailed",
       ].sort(),
     );
+  });
+
+  describe("tier-1 voted-command narration (quick-q5n — server-composed, amber-tier D2-18)", () => {
+    it("pooled-build and pooled-revert feedback templates render verbatim (coalesced)", () => {
+      vi.useFakeTimers();
+      try {
+        const { sent, sender } = capturingSender();
+        const narrator = createNarrator({ sender, coalesceMs: 3_000 });
+        narrator.feedback("pooled-build", "alice");
+        narrator.feedback("pooled-revert", "bob");
+        vi.advanceTimersByTime(3_000);
+        expect(sent).toEqual([
+          "@alice NEW PROJECT idea is in — it competes in the next vote. " +
+            "@bob revert request is in — vote for it next round.",
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("revert-outcome and ship beats render verbatim, one message each", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.revertApplied();
+      n.revertNothing();
+      n.revertFailed();
+      n.newProjectShipping("make a snake game");
+      n.newProjectShipFailed();
+      expect(sent).toEqual([
+        "Rolled back the last change — previous version is back.",
+        "Nothing to revert — this project has no earlier version. Carrying on.",
+        "Couldn't roll back cleanly — leaving everything as-is. Next round soon.",
+        'Chat voted NEW PROJECT: "make a snake game" — shipping the current app to the gallery first…',
+        "Couldn't ship the current project to the gallery just now — staying on it for the moment. We'll take the new-project switch again another round.",
+      ]);
+    });
+
+    it("newProjectShipping truncates the gate-approved title to 60 chars", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      const long = "w".repeat(100);
+      n.newProjectShipping(long);
+      expect(sent[0]).toContain(`"${"w".repeat(59)}…"`);
+      expect(sent[0]).not.toContain("w".repeat(60));
+    });
+
+    it("AMBER-TIER INVARIANT (D2-18): failure beats carry no red/alarm wording", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.revertFailed();
+      n.newProjectShipFailed();
+      n.revertNothing();
+      const ALARM = /error|alarm|crash|panic|fatal|broken|emergency|urgent/i;
+      for (const message of sent) {
+        expect(message, `alarm wording leaked: "${message}"`).not.toMatch(ALARM);
+      }
+    });
   });
 
   describe("build-pipeline narration (BUILD-03 / D3-08 / D3-09 — 03-UI-SPEC copy)", () => {

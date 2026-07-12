@@ -35,8 +35,13 @@ export type CandidateSource =
  * D-15: "project-switch" is a first-class instruction type, distinct from a normal
  * suggestion. The switch mechanics land in Phases 2 (chat consensus vote) and 4
  * (large-donation grant); Phase 1 only defines the vocabulary.
+ *
+ * quick-q5n: "project-switch" is now LIVE as chat's `!build <idea>` new-project
+ * intent, and "revert" is the chat-voted undo-last-change intent (`!revert` /
+ * `!undo`). A revert candidate carries ONLY the fixed server-composed
+ * REVERT_REQUEST_TEXT (command-parser.ts) — never chat-derived free text.
  */
-export type CandidateKind = "suggestion" | "project-switch";
+export type CandidateKind = "suggestion" | "project-switch" | "revert";
 
 /** The normalized candidate shape every ingestion path (current or future) reduces to. */
 export interface SuggestionCandidate {
@@ -224,8 +229,12 @@ export type BuildProvenance = "vote" | "donation" | "channel_points" | "chaos";
  * The honest terminal outcome of a COMPLETED build, 1:1 with the pipeline's
  * terminal stage (done->built, failed->failed, refused->refused). An aborted /
  * vetoed build is NEITHER — it produces no build_history row at all (CR-01).
+ *
+ * quick-q5n adds "reverted": a chat-voted rollback of the last mirror commit
+ * (no agent build ran — the host-side gallery publisher applied a git revert
+ * and re-synced the workspace).
  */
-export type BuildResult = "built" | "refused" | "failed";
+export type BuildResult = "built" | "refused" | "failed" | "reverted";
 
 /**
  * One durable, append-only changelog entry (a build_history row). `title` is the

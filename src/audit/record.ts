@@ -558,16 +558,24 @@ export function recordChaosToggled(
 }
 
 /**
- * One row per workspace ROTATION (quick-0iu): the streamer started a new
- * project — the persistent build workspace rotated to a fresh generation (the
- * old distro dir stays archived in place). Mirrors recordChaosToggled's
- * shape/idiom; the rationale interpolates the internally-generated integer
- * generation only — never chat text.
+ * One row per workspace ROTATION (quick-0iu): a new project started — the
+ * persistent build workspace rotated to a fresh generation (the old distro
+ * dir stays archived in place). Mirrors recordChaosToggled's shape/idiom;
+ * the rationale interpolates the internally-generated integer generation
+ * only — never chat text.
+ *
+ * quick-q5n: optional `initiator` distinguishes a console-clicked rotation
+ * ("operator", the default — rationale byte-identical to before) from a
+ * chat-voted project-switch winner ("chat-vote", the ship-then-rotate path).
  */
 export function recordWorkspaceReset(
   db: Database.Database,
-  args: { generation: number; streamMode: StreamMode },
+  args: { generation: number; streamMode: StreamMode; initiator?: "operator" | "chat-vote" },
 ): void {
+  const rationale =
+    args.initiator === "chat-vote"
+      ? `Chat voted a new project — workspace rotated to generation ${args.generation}`
+      : `Streamer started a new project — workspace rotated to generation ${args.generation}`;
   insert(db, {
     createdAtMs: Date.now(),
     eventType: "workspace_reset",
@@ -576,9 +584,39 @@ export function recordWorkspaceReset(
     suggestionText: null,
     decision: null,
     category: null,
-    rationale: `Streamer started a new project — workspace rotated to generation ${args.generation}`,
+    rationale,
     streamMode: args.streamMode,
     taskId: null,
+  });
+}
+
+/**
+ * One row per chat-voted revert OUTCOME (quick-q5n): the host-side mirror
+ * rollback resolved reverted / nothing-to-revert / failed. `detail` is
+ * SERVER-COMPOSED only (publisher detail strings or fixed reasons) — never
+ * chat text. audit_log has no CHECK constraints, so the new "revert_outcome"
+ * event_type is a schema-safe addition (comment-only schema.sql change).
+ */
+export function recordRevertOutcome(
+  db: Database.Database,
+  args: {
+    taskId: string;
+    status: "reverted" | "nothing-to-revert" | "failed";
+    detail: string | null;
+    streamMode: StreamMode;
+  },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "revert_outcome",
+    source: "operator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: args.status,
+    category: null,
+    rationale: args.detail,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
   });
 }
 

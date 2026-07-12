@@ -14,6 +14,7 @@ import {
   recordGateDecision,
   recordHalt,
   recordPoolDropped,
+  recordRevertOutcome,
   recordReviewResolution,
   recordRoundClosed,
   recordRoundOpened,
@@ -263,6 +264,64 @@ describe("audit record helpers (append-only ledger)", () => {
     db.close();
   });
 
+  it("recordWorkspaceReset default initiator keeps today's rationale byte-identical (quick-q5n back-compat)", () => {
+    const db = openDb(":memory:");
+    recordWorkspaceReset(db, { generation: 3, streamMode: "IDLE" });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "workspace_reset" });
+    expect(rows[0]?.rationale).toBe(
+      "Streamer started a new project — workspace rotated to generation 3",
+    );
+    db.close();
+  });
+
+  it("recordWorkspaceReset initiator 'chat-vote' says chat voted (quick-q5n ship-then-rotate)", () => {
+    const db = openDb(":memory:");
+    recordWorkspaceReset(db, {
+      generation: 4,
+      streamMode: "BUILD_IN_PROGRESS",
+      initiator: "chat-vote",
+    });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "workspace_reset" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.rationale).toBe("Chat voted a new project — workspace rotated to generation 4");
+    expect(rows[0]?.source).toBe("operator");
+    db.close();
+  });
+
+  it("recordRevertOutcome inserts a revert_outcome row per status with server-composed detail (quick-q5n)", () => {
+    const db = openDb(":memory:");
+    recordRevertOutcome(db, {
+      taskId: "task-r1",
+      status: "reverted",
+      detail: "TwitchVibecodes/my-repo: revert commit abc pushed",
+      streamMode: "BUILD_IN_PROGRESS",
+    });
+    recordRevertOutcome(db, {
+      taskId: "task-r2",
+      status: "nothing-to-revert",
+      detail: null,
+      streamMode: "BUILD_IN_PROGRESS",
+    });
+    recordRevertOutcome(db, {
+      taskId: "task-r3",
+      status: "failed",
+      detail: "gallery publisher not configured",
+      streamMode: "BUILD_IN_PROGRESS",
+    });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "revert_outcome" });
+    expect(rows).toHaveLength(3);
+    // newest-first
+    expect(rows.map((r) => r.decision)).toEqual(["failed", "nothing-to-revert", "reverted"]);
+    expect(rows.map((r) => r.task_id)).toEqual(["task-r3", "task-r2", "task-r1"]);
+    expect(rows[2]?.rationale).toBe("TwitchVibecodes/my-repo: revert commit abc pushed");
+    expect(rows[1]?.rationale).toBeNull();
+    for (const row of rows) {
+      expect(row.source).toBe("operator");
+      expect(row.suggestion_text).toBeNull();
+    }
+    db.close();
+  });
+
   it("recordChaosPick inserts a chaos_pick row with source 'chaos' and the picked title/taskId", () => {
     const db = openDb(":memory:");
     recordChaosPick(db, {
@@ -322,6 +381,12 @@ describe("audit record helpers (append-only ledger)", () => {
       provenance: "chaos",
       result: "built",
     });
+    recordBuildHistory(db, {
+      taskId: "t-5",
+      title: "Revert the last change to the current project",
+      provenance: "vote",
+      result: "reverted",
+    });
     const rows = listBuildHistory(db, { limit: 10 });
     const byTask = new Map(rows.map((r) => [r.taskId, r]));
     expect(byTask.get("t-1")?.provenance).toBe("vote");
@@ -330,6 +395,8 @@ describe("audit record helpers (append-only ledger)", () => {
     expect(byTask.get("t-3")?.provenance).toBe("channel_points");
     expect(byTask.get("t-3")?.result).toBe("refused");
     expect(byTask.get("t-4")?.provenance).toBe("chaos");
+    // quick-q5n: a chat-voted rollback lands as result 'reverted'.
+    expect(byTask.get("t-5")?.result).toBe("reverted");
     db.close();
   });
 

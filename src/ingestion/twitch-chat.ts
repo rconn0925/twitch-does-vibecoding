@@ -7,11 +7,24 @@
  * branch adapts the real EventSubWsListener behind this interface.
  *
  * Dispatch contract:
- *  - !suggest → intake.check() (D2-11/D2-12, BEFORE any classifier call) →
- *    deps.submit(), which is submitCandidate pre-bound in main.ts — the ONLY
- *    intake path (COMP-01). The funnel itself is untouched.
+ *  - !suggest / !build / !revert (quick-q5n) → ONE shared path: derive the
+ *    candidate text (command text for suggest/build, the fixed
+ *    REVERT_REQUEST_TEXT for revert) and kind ("suggestion" /
+ *    "project-switch" / "revert"), then intake.check() (D2-11/D2-12, BEFORE
+ *    any classifier call) → deps.submit(), which is submitCandidate pre-bound
+ *    in main.ts — the ONLY intake path (COMP-01). The funnel itself is
+ *    untouched.
  *  - !vote → round.recordVote(chatterId, option); invalid votes are ignored
  *    silently (D2-15 — no chat noise).
+ *
+ * Funnel decision (quick-q5n): !revert's FIXED server-composed text still
+ * passes classify(). CandidatePool.add and toQueuedTask structurally require
+ * an approved GateResult, and minting one outside gate.ts would need a second
+ * brand path — violating the machine-enforced single-funnel invariant
+ * (tests/invariants/single-funnel.test.ts). Funnel-pass is therefore both the
+ * SAFER and the SIMPLER option. Cost: one classification per pooled revert —
+ * naturally deduped, because every viewer's revert carries identical text, so
+ * intake refuses "duplicate" once one is pooled/pending.
  *
  * Safety: EventSub payloads are network input — twurple's TS types are
  * compile-time fiction, so the event object is zod-validated before any
@@ -22,8 +35,8 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { SubmitResult } from "../pipeline/submit.js";
-import type { SuggestionCandidate } from "../shared/types.js";
-import { parseCommand } from "./command-parser.js";
+import type { CandidateKind, SuggestionCandidate } from "../shared/types.js";
+import { parseCommand, REVERT_REQUEST_TEXT } from "./command-parser.js";
 import type { FeedbackKind, Narrator } from "./narration.js";
 import type { SuggestIntake } from "./suggest-intake.js";
 
@@ -101,8 +114,19 @@ export function startTwitchChat(deps: TwitchChatDeps): { stop(): void } {
         return;
       }
 
-      // !suggest — per-user limits run BEFORE classification (D2-11, closes T-01-11).
-      const verdict = deps.intake.check(chatterId, command.text);
+      // !suggest / !build / !revert — ONE shared path (quick-q5n). The text is
+      // the command text for suggest/build and the FIXED server-composed
+      // REVERT_REQUEST_TEXT for revert (zero chat-derived bytes, T-q5n-02).
+      const text = command.kind === "revert" ? REVERT_REQUEST_TEXT : command.text;
+      const kind: CandidateKind =
+        command.kind === "suggest"
+          ? "suggestion"
+          : command.kind === "build"
+            ? "project-switch"
+            : "revert";
+
+      // Per-user limits run BEFORE classification (D2-11, closes T-01-11).
+      const verdict = deps.intake.check(chatterId, text);
       if (!verdict.ok) {
         deps.narrator.feedback(INTAKE_FEEDBACK[verdict.reason], chatterDisplayName);
         return;
@@ -111,9 +135,9 @@ export function startTwitchChat(deps: TwitchChatDeps): { stop(): void } {
       const candidate: SuggestionCandidate = {
         id: randomUUID(),
         source: "chat",
-        kind: "suggestion",
+        kind,
         twitchUsername: chatterDisplayName,
-        text: command.text,
+        text,
         submittedAtMs: Date.now(),
       };
       const result = deps.submit(candidate);
