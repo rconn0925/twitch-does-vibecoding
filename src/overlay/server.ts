@@ -464,6 +464,17 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
     res.sendFile("builder.html", { root: publicDir });
   });
 
+  // The command-reference page (quick-ur2, command layer C) — a fourth
+  // OBS browser-source URL on this SAME read-only server. PURE STATIC: it has
+  // no wire dependency (no /api/state, no ws), just a fixed reference card of
+  // the parser-recognized chat commands. GET only; the app-level Host-allowlist
+  // middleware above covers /commands automatically (CR-02 DNS-rebinding
+  // posture), and no mutation route exists by construction. Same `root`-option
+  // rationale as /queue and /builder.
+  app.get("/commands", (_req, res) => {
+    res.sendFile("commands.html", { root: publicDir });
+  });
+
   app.get("/api/state", (_req, res) => {
     res.json(buildOverlayState());
   });

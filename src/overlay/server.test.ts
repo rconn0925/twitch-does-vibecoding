@@ -582,7 +582,15 @@ describe("overlay server (read-only broadcast surface)", () => {
 
     // No mutation routes exist AT ALL — the strongest read-only control.
     for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
-      for (const path of ["/api/state", "/api/halt", "/", "/anything", "/queue", "/builder"]) {
+      for (const path of [
+        "/api/state",
+        "/api/halt",
+        "/",
+        "/anything",
+        "/queue",
+        "/builder",
+        "/commands",
+      ]) {
         const attempt = await fetch(`${base}${path}`, {
           method,
           headers: { "content-type": "application/json" },
@@ -965,6 +973,37 @@ describe("overlay server (read-only broadcast surface)", () => {
           port: handle.port,
           method: "GET",
           path: "/queue",
+          headers: { host: `attacker.example:${handle.port}` },
+        },
+        (response) => {
+          response.resume();
+          response.on("end", () => resolve({ status: response.statusCode ?? 0 }));
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    expect(rebound.status).toBe(403);
+  });
+
+  it("GET /commands serves the static command card; a DNS-rebound GET /commands 403s (CR-02)", async () => {
+    const { handle } = await start();
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/commands`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+
+    // Rebound GET: the socket reaches 127.0.0.1 but Host names the attacker —
+    // the app-level Host allowlist covers /commands too (raw request; fetch()
+    // forbids Host overrides).
+    const http = await import("node:http");
+    const rebound = await new Promise<{ status: number }>((resolve, reject) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: handle.port,
+          method: "GET",
+          path: "/commands",
           headers: { host: `attacker.example:${handle.port}` },
         },
         (response) => {
