@@ -229,8 +229,10 @@ describe("swap e2e: winner ships current (confirmed), activates existing generat
     await app.close();
   });
 
-  it("an approved chat swap got the pooled-swap confirmation beat (coalesced flush)", async () => {
-    await until(() => sent.some((m) => m.includes("@ann PROJECT SWAP request is in")));
+  it("the pooled-swap submission ack is SILENCED — no chat spam on pool entry (Ross 2026-07-12)", () => {
+    // The swap still pooled (verified below via the gate_decision funnel row);
+    // the per-submission "PROJECT SWAP request is in" chat beat no longer posts.
+    expect(sent.some((m) => m.includes("PROJECT SWAP request is in"))).toBe(false);
   });
 
   it("the swap candidate pooled as kind 'swap' through the ONE funnel (gate_decision row exists)", () => {

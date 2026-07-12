@@ -319,6 +319,15 @@ export function createNarrator(deps: {
     },
 
     feedback(kind: FeedbackKind, displayName: string, categoryLabel?: string): void {
+      // Submission acknowledgments ("…idea is in — competes in the next vote")
+      // fired on EVERY accepted suggestion and flooded chat; the overlay's
+      // suggestion-pool / up-next panels already show it (Ross 2026-07-12).
+      // Silenced here — per-user REJECTION/error feedback (rejected, trim, held,
+      // duplicate, cooldown: why an idea didn't take) still posts, since that's
+      // useful guidance the overlay doesn't convey.
+      if (kind === "pooled-build" || kind === "pooled-swap" || kind === "pooled-revert") {
+        return;
+      }
       buffer.push(renderFeedback(kind, displayName, categoryLabel));
       if (timer === null) {
         // Trailing coalesce window: everything buffered before it fires goes
@@ -340,18 +349,20 @@ export function createNarrator(deps: {
     // quick-0iu: no research turn exists anymore — the pickup beat goes
     // straight to the code, truthful for BOTH a new app and a tweak to the
     // app on screen (the title is the suggestion text either way).
-    buildPickedUp(title: string): void {
-      void deps.sender.send(`Building "${truncateTitle(title)}" now — straight to the code.`);
+    // Build-progress beats silenced (Ross 2026-07-12): "Building X now",
+    // "Plan's coming together", "Writing the code" fired on every build and
+    // flooded chat — the overlay's NOW BUILDING panel + builder feed already
+    // show all of this. Kept as no-ops so the build-session wiring stays intact.
+    buildPickedUp(_title: string): void {
+      // intentionally silent — see note above
     },
 
-    stagePlanning(title: string): void {
-      void deps.sender.send(`Plan's coming together for "${truncateTitle(title)}"…`);
+    stagePlanning(_title: string): void {
+      // intentionally silent — see note above
     },
 
-    stageBuilding(title: string): void {
-      void deps.sender.send(
-        `Writing the code for "${truncateTitle(title)}" now — watch it come alive.`,
-      );
+    stageBuilding(_title: string): void {
+      // intentionally silent — see note above
     },
 
     buildDone(title: string): void {

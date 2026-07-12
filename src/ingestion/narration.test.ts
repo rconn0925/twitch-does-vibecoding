@@ -295,17 +295,32 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
   });
 
   describe("tier-1 voted-command narration (quick-q5n — server-composed, amber-tier D2-18)", () => {
-    it("pooled-build and pooled-revert feedback templates render verbatim (coalesced)", () => {
+    it("pooled submission acks are SILENT — they flooded chat and the overlay shows the pool (Ross 2026-07-12)", () => {
       vi.useFakeTimers();
       try {
         const { sent, sender } = capturingSender();
         const narrator = createNarrator({ sender, coalesceMs: 3_000 });
         narrator.feedback("pooled-build", "alice");
         narrator.feedback("pooled-revert", "bob");
+        narrator.feedback("pooled-swap", "carol");
+        vi.advanceTimersByTime(3_000);
+        expect(sent).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("per-user REJECTION/error feedback still posts (that's useful guidance, not spam)", () => {
+      vi.useFakeTimers();
+      try {
+        const { sent, sender } = capturingSender();
+        const narrator = createNarrator({ sender, coalesceMs: 3_000, cooldownSeconds: 30 });
+        narrator.feedback("rejected", "alice", "not allowed here");
+        narrator.feedback("cooldown", "bob");
         vi.advanceTimersByTime(3_000);
         expect(sent).toEqual([
-          "@alice NEW PROJECT idea is in — it competes in the next vote. " +
-            "@bob revert request is in — vote for it next round.",
+          "@alice that one can't run on stream: not allowed here. Different idea? " +
+            "@bob easy there — one suggestion per 30s.",
         ]);
       } finally {
         vi.useRealTimers();
@@ -355,6 +370,9 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
     it("emits each build-event template VERBATIM through the sender", () => {
       const { sent, sender } = capturingSender();
       const n = createNarrator({ sender });
+      // Build-PROGRESS beats (buildPickedUp/stagePlanning/stageBuilding) are
+      // silenced (Ross 2026-07-12) — they emit nothing; the outcome/decision
+      // beats below still render verbatim.
       n.buildPickedUp("a counter app");
       n.stagePlanning("a counter app");
       n.stageBuilding("a counter app");
@@ -368,9 +386,6 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       n.buildHeld("a counter app");
       n.buildVetoed("a counter app");
       expect(sent).toEqual([
-        'Building "a counter app" now — straight to the code.',
-        'Plan\'s coming together for "a counter app"…',
-        'Writing the code for "a counter app" now — watch it come alive.',
         '"a counter app" is built — it\'s live on screen. GG.',
         'Heads up — the build agent won\'t build "a counter app". Moving on to the next one.',
         '"a counter app" hit a snag — giving it one more shot.',
@@ -570,14 +585,14 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
   });
 
   describe("swap narration (quick-t8k — server-composed, amber-tier failures D2-18)", () => {
-    it("pooled-swap feedback renders the @-line confirmation (coalesced)", () => {
+    it("pooled-swap submission ack is SILENT (Ross 2026-07-12 — overlay shows the pool)", () => {
       vi.useFakeTimers();
       try {
         const { sent, sender } = capturingSender();
         const narrator = createNarrator({ sender, coalesceMs: 3_000 });
         narrator.feedback("pooled-swap", "alice");
         vi.advanceTimersByTime(3_000);
-        expect(sent).toEqual(["@alice PROJECT SWAP request is in — it competes in the next vote."]);
+        expect(sent).toEqual([]);
       } finally {
         vi.useRealTimers();
       }
