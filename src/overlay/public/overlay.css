@@ -225,17 +225,28 @@ body {
 
 .phase-banner {
   position: fixed;
-  top: var(--safe-margin);
+  /* Moved up from --safe-margin (48px) so the two stacked rows clear the
+     centered preview at y=150 (Ross 2026-07-12). */
+  top: 28px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  align-items: baseline;
-  gap: 16px;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
   max-width: 900px;
   box-sizing: border-box;
   background: var(--dominant);
   border-radius: 12px;
-  padding: 12px 24px;
+  padding: 10px 24px;
+  text-align: center;
+}
+
+/* Top row: title + live countdown together on one baseline. */
+.phase-toprow {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
 }
 
 .phase-title {
@@ -248,7 +259,7 @@ body {
 .phase-hint {
   flex: 0 1 auto;
   min-width: 0;
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 600;
   line-height: 1.4;
   color: var(--muted);
@@ -259,7 +270,7 @@ body {
 
 .phase-countdown {
   flex: none;
-  font-size: 48px;
+  font-size: 36px;
   font-weight: 700;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;

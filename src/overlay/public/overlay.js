@@ -328,31 +328,36 @@
     const liveRound = latest?.round?.status === "open" ? latest.round : null;
     if (liveRound) {
       phaseBanner.hidden = false;
-      phaseBanner.appendChild(el("span", "phase-title", "VOTE NOW"));
-      phaseBanner.appendChild(el("span", "phase-hint", voteHint(liveRound.candidates.length)));
       const remaining = roundRemainingMs(liveRound);
       const countdown = el("span", "phase-countdown", formatRemaining(remaining));
       if (!liveRound.frozen && remaining <= FINAL_COUNTDOWN_MS) {
         countdown.classList.add("countdown-final");
       }
-      phaseBanner.appendChild(countdown);
+      // Two-row banner: title + live timer on top, participation hint below.
+      const top = el("div", "phase-toprow");
+      top.appendChild(el("span", "phase-title", "VOTE NOW"));
+      top.appendChild(countdown);
+      phaseBanner.appendChild(top);
+      phaseBanner.appendChild(el("span", "phase-hint", voteHint(liveRound.candidates.length)));
       return;
     }
     const sp = latest?.suggestPhase ?? null;
     if (sp) {
       phaseBanner.hidden = false;
-      phaseBanner.appendChild(el("span", "phase-title", "SUGGESTIONS OPEN"));
-      // Ross 2026-07-11: kept deliberately VAGUE — chat has many commands now
-      // (see the on-screen COMMANDS panel), so the banner nudges participation
-      // without advertising a single command. Fixed copy — never chat-derived;
-      // still one line inside the 900px banner at 1080p.
-      phaseBanner.appendChild(el("span", "phase-hint", "type a command to jump in"));
       const remaining = sp.endsAtMs - Date.now();
       const countdown = el("span", "phase-countdown", formatRemaining(remaining));
       if (remaining <= FINAL_COUNTDOWN_MS) {
         countdown.classList.add("countdown-final");
       }
-      phaseBanner.appendChild(countdown);
+      // Two-row banner (Ross 2026-07-12): "Suggestions open:" + timer on the top
+      // row, then the vague participation nudge below. Chat has many commands now
+      // (see the on-screen COMMANDS panel), so the hint names none. Fixed copy —
+      // never chat-derived.
+      const top = el("div", "phase-toprow");
+      top.appendChild(el("span", "phase-title", "Suggestions open:"));
+      top.appendChild(countdown);
+      phaseBanner.appendChild(top);
+      phaseBanner.appendChild(el("span", "phase-hint", "type a command to jump in"));
       return;
     }
     phaseBanner.hidden = true;
