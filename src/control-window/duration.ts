@@ -24,10 +24,9 @@ export interface DurationConfig {
   maxSeconds: number;
 }
 
-// [ASSUMED defaults — Claude's judgment, streamer-tunable; flag for confirmation.]
-// Donation: a $5 tip ≈ 60s (ratePerUnit 12), a $1 tip still clears a 30s floor,
-// and no single tip can exceed a 5-minute (300s) segment.
-const DONATION_DEFAULTS: DurationConfig = { ratePerUnit: 12, minSeconds: 30, maxSeconds: 300 };
+// Confirmed by Ross 2026-07-11: $5 = 1 minute (ratePerUnit 12), 30s floor,
+// hard cap 10 minutes (600s) — no single tip buys more than a 600s segment.
+const DONATION_DEFAULTS: DurationConfig = { ratePerUnit: 12, minSeconds: 30, maxSeconds: 600 };
 // Redemption: channel-points cost is the amount input, on its own smaller scale —
 // ~1000 points ≈ 30s, capped at 2 minutes so points windows stay shorter than tips.
 const REDEMPTION_DEFAULTS: DurationConfig = {
