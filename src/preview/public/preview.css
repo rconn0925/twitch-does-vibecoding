@@ -18,7 +18,11 @@
   --live: #22c55e; /* green dot — dev server reachable */
   --standing-by: #f59e0b; /* amber dot — unreachable (never red) */
 
-  --status-bar-height: 48px;
+  /* Bar removed from the captured surface (Ross, 2026-07-11): height 0 +
+     display:none below. The header element stays in the DOM — preview.js
+     binds to #reachability/#status-* and the placeholder card still carries
+     the standing-by state on its own. */
+  --status-bar-height: 0px;
 }
 
 * {
@@ -38,12 +42,12 @@ body {
 /* ── Chrome status bar ─────────────────────────────────────────────── */
 
 .status-bar {
+  display: none;
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   height: var(--status-bar-height);
-  display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 24px;
