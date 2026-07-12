@@ -213,14 +213,13 @@ export function createNarrator(deps: {
       const listing = snap.candidates
         .map((entry) => {
           const option = `[${entry.option}]`;
-          switch (entry.candidate.kind) {
-            case "project-switch":
-              return `${option} NEW: ${truncateTitle(entry.candidate.text)}`;
-            case "revert":
-              return `${option} REVERT the last change`;
-            case "suggestion":
-              return `${option} TWEAK: ${truncateTitle(entry.candidate.text)}`;
+          if (entry.candidate.kind === "project-switch") {
+            return `${option} NEW: ${truncateTitle(entry.candidate.text)}`;
           }
+          if (entry.candidate.kind === "revert") {
+            return `${option} REVERT the last change`;
+          }
+          return `${option} TWEAK: ${truncateTitle(entry.candidate.text)}`;
         })
         .join(" ");
       void deps.sender.send(

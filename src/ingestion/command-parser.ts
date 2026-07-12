@@ -57,7 +57,7 @@ const VoteCommand = z.object({
   option: z.number().int().min(1).max(5),
 });
 
-/** Discriminated result of parsing a chat message as a command. No !fork (quick-q5n scope gate). */
+/** Discriminated result of parsing a chat message as a command. No fork command exists (quick-q5n scope gate). */
 export type ParsedCommand =
   | { kind: "suggest"; text: string }
   | { kind: "vote"; option: number }

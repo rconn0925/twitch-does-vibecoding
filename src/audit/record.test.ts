@@ -14,6 +14,7 @@ import {
   recordGateDecision,
   recordHalt,
   recordPoolDropped,
+  recordRevertOutcome,
   recordReviewResolution,
   recordRoundClosed,
   recordRoundOpened,
@@ -21,7 +22,6 @@ import {
   recordWindowDenied,
   recordWindowExpired,
   recordWindowOpened,
-  recordRevertOutcome,
   recordWindowRevoked,
   recordWorkspaceReset,
 } from "./record.js";
@@ -276,7 +276,11 @@ describe("audit record helpers (append-only ledger)", () => {
 
   it("recordWorkspaceReset initiator 'chat-vote' says chat voted (quick-q5n ship-then-rotate)", () => {
     const db = openDb(":memory:");
-    recordWorkspaceReset(db, { generation: 4, streamMode: "BUILD_IN_PROGRESS", initiator: "chat-vote" });
+    recordWorkspaceReset(db, {
+      generation: 4,
+      streamMode: "BUILD_IN_PROGRESS",
+      initiator: "chat-vote",
+    });
     const rows = listAuditRecords(db, { limit: 10, eventType: "workspace_reset" });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.rationale).toBe("Chat voted a new project — workspace rotated to generation 4");

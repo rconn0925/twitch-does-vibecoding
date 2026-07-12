@@ -211,9 +211,10 @@ describe("full chat-vote loop e2e (suggest → filter → vote → winner → qu
       sent.find((message) => message.startsWith("Voting is OPEN")),
     );
     expect(openMessage).toContain("!vote 1, 2 or 3");
-    expect(openMessage).toContain(`[1] ${IDEAS[0]}`);
-    expect(openMessage).toContain(`[2] ${IDEAS[1]}`);
-    expect(openMessage).toContain(`[3] ${IDEAS[2]}`);
+    // quick-q5n kind-aware round-open wording: suggestions render as TWEAK:.
+    expect(openMessage).toContain(`[1] TWEAK: ${IDEAS[0]}`);
+    expect(openMessage).toContain(`[2] TWEAK: ${IDEAS[1]}`);
+    expect(openMessage).toContain(`[3] TWEAK: ${IDEAS[2]}`);
     expect(openMessage).toContain("s on the clock.");
 
     const state = await getState();

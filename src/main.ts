@@ -8,10 +8,13 @@ import { openDb } from "./audit/db.js";
 import { purgeOldAuditRecords } from "./audit/purge.js";
 import {
   recordAutoCycleToggled,
+  recordBuildHistory,
   recordChaosPick,
   recordChaosToggled,
   recordGalleryPublish,
   recordPoolDropped,
+  recordRevertOutcome,
+  recordWorkspaceReset,
 } from "./audit/record.js";
 import { pickChaos } from "./chaos/selector.js";
 import { CATEGORY_META, isLegalCategory } from "./compliance/categories.js";
@@ -658,7 +661,13 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     },
     pick: (): ChaosPickResult | null => {
       if (machine.mode !== "CHAOS_MODE") return null;
-      const picked = pickChaos(pool.list(), opts.chaosRng);
+      // quick-q5n: a chaos "random build" must be a buildable prompt — routing
+      // verbs (project-switch/revert) are vote-only, so filter them out here
+      // (selector.ts untouched, preserving the paid↔chaos source-scan invariant).
+      const picked = pickChaos(
+        pool.list().filter((c) => c.candidate.kind === "suggestion"),
+        opts.chaosRng,
+      );
       if (picked === null) return null; // empty pool → no pick, never a busy-loop
       const result = submitChaosPick(
         { taskQueue, mode: () => machine.mode, resubmit, logger },
@@ -1143,6 +1152,146 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     });
     orchestrator = buildSession;
 
+    /**
+     * quick-q5n LOCKED USER DECISION: a project-switch winner commits and
+     * pushes the CURRENT project FIRST, and rotates the workspace ONLY on a
+     * confirmed publish outcome (published | no-changes). A failed final push
+     * keeps the current project active — amber-narrated, audited, never a
+     * silent rotate. publishNow ALREADY returns Promise<PublishResult> and
+     * NEVER rejects (T-hak-03); the post-DONE call site (onBuildDone) merely
+     * fire-and-forgets that promise — this router AWAITS the same promise and
+     * branches on result.status, so the never-throw-into-the-build-pipeline
+     * contract is untouched for both call sites.
+     */
+    const shipThenRotate = async (head: QueuedTask): Promise<void> => {
+      // (i) No active project: nothing to ship, nothing to rotate — the
+      // current fresh generation scaffolds (build-session computes the mode).
+      if (!workspace.scaffolded()) {
+        await buildSession.startBuild(head, "vote");
+        return;
+      }
+      // (ii) Active project ⇒ require a CONFIRMABLE push. No publisher = the
+      // push can never be confirmed ⇒ treat as ship failure without any exec.
+      const generation = workspace.generation();
+      let shipped: { status: "published" | "no-changes" | "failed" } | null = null;
+      if (galleryPublisher) {
+        windowNarrator?.newProjectShipping(head.text);
+        // Server-composed title (deliberate): if this generation somehow never
+        // published before, scaffoldRepo names the repo from this title, so
+        // the slug degrades to a sane `app-N-final-snapshot`; on the normal
+        // continue path it is just the commit message.
+        const result = await galleryPublisher.publishNow({
+          generation,
+          title: `app-${generation} final snapshot`,
+          taskId: head.id,
+        });
+        shipped = result;
+        if (db.open) {
+          recordGalleryPublish(db, {
+            taskId: head.id,
+            generation,
+            status: result.status,
+            commitHash: result.commitHash,
+            detail: result.detail,
+            streamMode: machine.mode,
+          });
+        }
+      }
+      // (iii) Confirmed ship: published, or no-changes (everything already
+      // pushed — a confirmed-current remote counts as shipped) ⇒ rotate, then
+      // build the fresh empty generation (scaffold mode computes on its own).
+      if (shipped && (shipped.status === "published" || shipped.status === "no-changes")) {
+        const rotated = workspace.newProject();
+        if (db.open) {
+          recordWorkspaceReset(db, {
+            generation: rotated,
+            streamMode: machine.mode,
+            initiator: "chat-vote",
+          });
+        }
+        await buildSession.startBuild(head, "vote");
+        return;
+      }
+      // (iv) Ship FAILED (or no publisher): DO NOT rotate, DO NOT startBuild.
+      // Resolves like a failed build: task removed, amber regroup line
+      // (D2-18), audited, back to IDLE — never a dead round, never a silent
+      // rotate. When no publisher is configured, step (ii) never ran — write
+      // the failed audit row HERE (the "audited" behavior contract governs).
+      taskQueue.remove(head.id);
+      windowNarrator?.newProjectShipFailed();
+      if (!galleryPublisher && db.open) {
+        recordGalleryPublish(db, {
+          taskId: head.id,
+          generation,
+          status: "failed",
+          commitHash: null,
+          detail: "gallery publisher not configured — cannot confirm a push, rotation withheld",
+          streamMode: machine.mode,
+        });
+      }
+      logger.error(
+        { taskId: head.id, generation },
+        "project-switch ship failed — rotation withheld, current project stays active (locked decision)",
+      );
+      try {
+        // Guarded (finalize()'s idiom): a halt that landed mid-ship leaves the
+        // machine HALTED — never fight the kill switch.
+        if (machine.mode === "BUILD_IN_PROGRESS") machine.transition("IDLE");
+      } catch (err) {
+        logger.error({ err }, "failed to return to IDLE after a failed project-switch ship");
+      }
+    };
+
+    /**
+     * quick-q5n revert winner: a HOST-side mirror git-revert + republish —
+     * never an agent build. The task is removed FIRST (finalize never runs
+     * for a revert, so nothing else dequeues it; removing before the await
+     * also stops drain re-entry from re-picking it). In ALL outcomes the
+     * machine returns to IDLE (guarded) and the drain continues — never a
+     * dead round.
+     */
+    const runRevertWinner = async (head: QueuedTask): Promise<void> => {
+      taskQueue.remove(head.id);
+      const generation = workspace.generation();
+      const outcome = galleryPublisher
+        ? await galleryPublisher.revertLast({ generation, taskId: head.id })
+        : {
+            status: "failed" as const,
+            commitHash: null,
+            detail: "gallery publisher not configured",
+          };
+      // Narrator may be absent when no chat pipeline is composed — optional calls.
+      if (outcome.status === "reverted") {
+        windowNarrator?.revertApplied();
+        if (db.open) {
+          recordBuildHistory(db, {
+            taskId: head.id,
+            title: head.text,
+            provenance: "vote",
+            result: "reverted",
+          });
+        }
+      } else if (outcome.status === "nothing-to-revert") {
+        windowNarrator?.revertNothing();
+      } else {
+        windowNarrator?.revertFailed();
+      }
+      if (db.open) {
+        recordRevertOutcome(db, {
+          taskId: head.id,
+          status: outcome.status,
+          detail: outcome.detail,
+          streamMode: machine.mode,
+        });
+      }
+      try {
+        // Guarded: a halt that landed mid-revert leaves the machine HALTED.
+        if (machine.mode === "BUILD_IN_PROGRESS") machine.transition("IDLE");
+      } catch (err) {
+        logger.error({ err }, "failed to return to IDLE after a revert winner");
+      }
+    };
+
     // ── drainVoteQueue — the ONE vote-winner build starter (quick-t5k A1) ──
     // Every path a queued winner can start on funnels through this helper, and
     // it only EVER starts the FIFO queue head — never a caller-supplied task id
@@ -1179,11 +1328,28 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         return false;
       }
       void (async () => {
-        // HIST-01: a round winner's provenance is always the normal vote loop.
-        await buildSession.startBuild(head, "vote");
+        // quick-q5n kind router: the winner's kind decides execution. The
+        // synchronous prologue above already entered BUILD_IN_PROGRESS — the
+        // mutual exclusion that stops a concurrent round/console rotation
+        // racing this block (console POST /api/workspace/new-project 409s
+        // mid-build; the state machine itself is untouched, invariant #3).
+        switch (head.kind) {
+          case "project-switch":
+            await shipThenRotate(head);
+            break;
+          case "revert":
+            await runRevertWinner(head);
+            break;
+          default:
+            // "suggestion" — unchanged. HIST-01: a round winner's provenance
+            // is always the normal vote loop.
+            await buildSession.startBuild(head, "vote");
+            break;
+        }
         // Completion continuation (driveChaosBuild's shape): drain the NEXT
-        // queued winner. This continuation is never "from HALTED" — a halt
-        // leaves the machine HALTED, so the mode check below refuses.
+        // queued winner — for ALL three arms. This continuation is never
+        // "from HALTED" — a halt leaves the machine HALTED, so the mode check
+        // below refuses.
         if (machine.mode === "IDLE") drainVoteQueue();
       })();
       return true;

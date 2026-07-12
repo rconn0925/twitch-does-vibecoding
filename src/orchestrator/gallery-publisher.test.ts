@@ -728,10 +728,7 @@ describe("createGalleryPublisher.revertLast — chat-voted rollback (quick-q5n)"
     const result = await publisher.revertLast({ generation: 1, taskId: "t" });
     expect(result.status).toBe("reverted");
     // COPY-FIRST ordering: the cp happens before any workspace rm.
-    expect(ops).toEqual([
-      `cp:data/gallery-mirror/my-repo->${WS_DIR}`,
-      `rm:${WS_DIR}\\stale.js`,
-    ]);
+    expect(ops).toEqual([`cp:data/gallery-mirror/my-repo->${WS_DIR}`, `rm:${WS_DIR}\\stale.js`]);
   });
 
   it("no stored repo → { status: 'nothing-to-revert' }, ZERO exec calls, workspace untouched", async () => {
@@ -862,7 +859,17 @@ describe("createGalleryPublisher.revertLast — chat-voted rollback (quick-q5n)"
 
   it("serialization: an overlapping publishNow and revertLast share ONE chain — no interleaved git", async () => {
     const labels: string[] = [];
-    const verbs = ["clone", "init", "add", "status", "commit", "push", "rev-parse", "rev-list", "revert"];
+    const verbs = [
+      "clone",
+      "init",
+      "add",
+      "status",
+      "commit",
+      "push",
+      "rev-parse",
+      "rev-list",
+      "revert",
+    ];
     const exec: GalleryExec = async (file, args) => {
       const verb = args.find((a) => verbs.includes(a)) ?? args[0] ?? "?";
       labels.push(`${file}:${verb}`);
