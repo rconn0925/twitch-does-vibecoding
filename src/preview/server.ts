@@ -78,7 +78,11 @@ export function startPreviewServer(deps: PreviewServerDeps): Promise<PreviewServ
   app.get("/api/reachable", async (_req, res) => {
     let reachable = false;
     try {
-      reachable = await probe.reachable();
+      // Prefer the content-aware readiness check (quick-ofs) so a bare python
+      // http.server "Directory listing for /" boot page never reads as "LIVE";
+      // fall back to the pure TCP reachable() when a probe implements only it.
+      const check = probe.appReady ? probe.appReady.bind(probe) : probe.reachable.bind(probe);
+      reachable = await check();
     } catch {
       reachable = false;
     }

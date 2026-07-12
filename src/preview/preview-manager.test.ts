@@ -82,6 +82,79 @@ describe("preview-manager (DevServerProbe seam)", () => {
   });
 });
 
+describe("preview-manager appReady() (content-aware readiness, quick-ofs)", () => {
+  it("returns true for a real-app page (200, normal HTML, no directory-listing title)", async () => {
+    const manager = createPreviewManager({
+      port: 5555,
+      httpGet: async () =>
+        "<!doctype html><html><head><title>My Cool App</title></head><body>hi</body></html>",
+    });
+    expect(await manager.appReady?.()).toBe(true);
+  });
+
+  it("returns false for a python http.server directory-listing page", async () => {
+    const manager = createPreviewManager({
+      port: 5555,
+      httpGet: async () =>
+        "<!DOCTYPE HTML><html><head><title>Directory listing for /</title></head><body><h1>Directory listing for /</h1></body></html>",
+    });
+    expect(await manager.appReady?.()).toBe(false);
+  });
+
+  it("returns false for a directory-listing title regardless of case/whitespace", async () => {
+    const manager = createPreviewManager({
+      port: 5555,
+      httpGet: async () => "<title>\n   DIRECTORY   listing for /some/path</title>",
+    });
+    expect(await manager.appReady?.()).toBe(false);
+  });
+
+  it("fails closed: an httpGet rejecting with ECONNREFUSED resolves to false", async () => {
+    const manager = createPreviewManager({
+      port: 5555,
+      httpGet: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+    });
+    await expect(manager.appReady?.()).resolves.toBe(false);
+  });
+
+  it("fails closed: an httpGet rejecting with a timeout resolves to false", async () => {
+    const manager = createPreviewManager({
+      port: 5555,
+      httpGet: async () => {
+        throw new Error("The operation was aborted due to timeout");
+      },
+    });
+    await expect(manager.appReady?.()).resolves.toBe(false);
+  });
+
+  it("passes the devServerUrl and configured timeout through to httpGet", async () => {
+    const calls: Array<[string, number]> = [];
+    const manager = createPreviewManager({
+      port: 6001,
+      timeoutMs: 250,
+      httpGet: async (url, timeoutMs) => {
+        calls.push([url, timeoutMs]);
+        return "<title>My App</title>";
+      },
+    });
+    await manager.appReady?.();
+    expect(calls).toEqual([["http://127.0.0.1:6001", 250]]);
+  });
+
+  it("leaves reachable() (TCP) unaffected by the httpGet seam", async () => {
+    const manager = createPreviewManager({
+      port: 5555,
+      connect: async () => true,
+      httpGet: async () => {
+        throw new Error("should not be consulted by reachable()");
+      },
+    });
+    expect(await manager.reachable()).toBe(true);
+  });
+});
+
 describe("resolvePreviewDevServerPort", () => {
   it("returns the parsed port for a valid value", () => {
     expect(resolvePreviewDevServerPort("6123")).toBe(6123);

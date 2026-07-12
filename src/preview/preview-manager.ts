@@ -37,6 +37,17 @@ export const DEFAULT_PROBE_TIMEOUT_MS = 750;
  */
 export type TcpConnectProbe = (port: number, timeoutMs: number) => Promise<boolean>;
 
+/**
+ * The injected HTTP-body seam (quick-ofs) mirroring TcpConnectProbe. Resolves a
+ * BOUNDED prefix of the dev server's response body on a 200; REJECTS on non-200,
+ * network error, or timeout so the caller fails closed. Used ONLY by the
+ * content-aware appReady() path — never by the TCP reachable() supervisor path.
+ */
+export type HttpBodyProbe = (url: string, timeoutMs: number) => Promise<string>;
+
+/** Bytes of body to read before cancelling — enough to see <head><title>, never unbounded. */
+const APP_READY_BODY_BYTE_CAP = 8192;
+
 export interface PreviewManagerOptions {
   /** Fixed dev-server port; defaults to PREVIEW_DEV_SERVER_PORT (5555). */
   port?: number;
@@ -44,6 +55,8 @@ export interface PreviewManagerOptions {
   timeoutMs?: number;
   /** Injected TCP probe; defaults to the real loopback socket probe. */
   connect?: TcpConnectProbe;
+  /** Injected HTTP-body probe for appReady(); defaults to fetchDevServerBody. */
+  httpGet?: HttpBodyProbe;
 }
 
 export interface PreviewManager extends DevServerProbe {
@@ -81,6 +94,45 @@ export function openTcpConnection(port: number, timeoutMs: number): Promise<bool
 }
 
 /**
+ * Real content-aware body probe (quick-ofs). Does a bounded, timed HTTP GET of
+ * the dev server's OWN response (127.0.0.1:<port>, D3-12) and returns a small
+ * prefix of the body. Throws (rejects) on non-200 / network error / timeout so
+ * appReady() fails closed. Reads at most ~8KB then cancels the stream — a slow
+ * or huge app response can never stall or exhaust the preview host (T-ofs-02).
+ * Targets the passed devServerUrl (already pinned to IPv4 127.0.0.1, WR-06) —
+ * never introduces `localhost`.
+ */
+export async function fetchDevServerBody(url: string, timeoutMs: number): Promise<string> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) {
+    throw new Error(`dev server responded ${res.status}`);
+  }
+  const body = res.body;
+  if (!body) {
+    return "";
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let read = 0;
+  try {
+    while (read < APP_READY_BODY_BYTE_CAP) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      read += value.byteLength;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    // Stop reading the (possibly huge) app response — we only need the prefix.
+    await reader.cancel().catch(() => {});
+  }
+  return text;
+}
+
+/** Matches python http.server's directory-listing title, case/whitespace-tolerant. */
+const DIRECTORY_LISTING_TITLE = /<title>\s*directory\s+listing\s+for/i;
+
+/**
  * Construct a preview manager. The returned `reachable()` is fail-closed: any
  * probe error (or a throwing injected probe) resolves to `false` — an
  * unreachable dev server is a normal, expected between-builds condition, never
@@ -92,6 +144,7 @@ export function createPreviewManager(options: PreviewManagerOptions = {}): Previ
   const port = options.port ?? DEFAULT_PREVIEW_DEV_SERVER_PORT;
   const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
   const connect = options.connect ?? openTcpConnection;
+  const httpGet = options.httpGet ?? fetchDevServerBody;
   // WR-06: frame the SAME address family the probe checks. openTcpConnection
   // probes 127.0.0.1; if this framed `localhost` resolved to IPv6 ::1 while the
   // sandboxed dev server bound IPv4 only, the probe would report reachable while
@@ -108,6 +161,18 @@ export function createPreviewManager(options: PreviewManagerOptions = {}): Previ
       } catch {
         // Fail closed: a probe that rejects reads as "not up yet", never an
         // error on the broadcast surface (T-03-19).
+        return false;
+      }
+    },
+    async appReady(): Promise<boolean> {
+      // Content-aware readiness (quick-ofs): the dev server is TCP-reachable at
+      // boot serving python http.server's bare "Directory listing for /" page —
+      // that must NOT read as "LIVE". Peek the body; ready only when it is a
+      // real app page. Fail closed on every path (mirror reachable()).
+      try {
+        const body = await httpGet(devServerUrl, timeoutMs);
+        return !DIRECTORY_LISTING_TITLE.test(body);
+      } catch {
         return false;
       }
     },
