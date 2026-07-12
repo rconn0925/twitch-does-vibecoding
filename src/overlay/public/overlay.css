@@ -472,6 +472,25 @@ body {
   color: var(--text); /* neutral — chaos never uses the paid violet */
 }
 
+/*
+ * Kind chip (quick-ur2, command layer C) — the NEW/TWEAK/SWAP/REVERT intent
+ * label on vote rows, composed client-side from the closed CandidateKind enum.
+ * Mirrors .provenance-chip: Secondary bg, muted text, small rounded box. NO new
+ * accent color, NEVER red — it stays inside the neutral Secondary/muted budget.
+ */
+.kind-chip {
+  flex: none;
+  align-self: center;
+  background: var(--secondary);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
+}
+
 .build-task {
   margin-top: 8px;
   font-size: 24px;

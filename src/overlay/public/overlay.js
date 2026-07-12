@@ -81,6 +81,12 @@
   // failed/refused caption is amber (honest but calm) — never red on stream.
   const AMBER_STAGES = new Set(["failed", "refused"]);
 
+  // quick-ur2 command layer C: the CLIENT-side chip label for a candidate's
+  // CandidateKind. The enum string is the ONLY thing on the wire; this fixed
+  // lookup composes the human label. An unknown/missing kind yields undefined →
+  // NO chip (fail closed) — we never build a chip for an unrecognized kind.
+  const KIND_CHIP = { "project-switch": "NEW", suggestion: "TWEAK", swap: "SWAP", revert: "REVERT" };
+
   // --- tiny DOM helpers (textContent-only construction, from console.js) ---
 
   function el(tag, className, text) {
@@ -272,6 +278,13 @@
     top.appendChild(
       el("span", "vote-candidate-title", truncate(entry.candidate.text, VOTE_TITLE_MAX)),
     );
+    // quick-ur2: kind chip (NEW/TWEAK/SWAP/REVERT) from the closed enum already
+    // on the wire (entry.candidate.kind). Fail-closed: an unknown/missing kind
+    // yields no label → no chip. textContent-only via el().
+    const kindLabel = KIND_CHIP[entry.candidate.kind];
+    if (kindLabel) {
+      top.appendChild(el("span", "kind-chip", kindLabel));
+    }
     if (beatActive && entry.option === round.winnerOption) {
       top.appendChild(el("span", "winner-label", "WINNER"));
     }

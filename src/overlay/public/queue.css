@@ -110,9 +110,33 @@ body {
   gap: 0;
 }
 
-.wc-row-stacked .wc-text {
-  flex: none;
+/* quick-ur2: the chip + suggestion text share the first line of a stacked pool
+   row (username sits on the muted line below). The text flexes to fill and
+   truncates; the chip keeps its intrinsic size. */
+.wc-textline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   width: 100%;
+  min-width: 0;
+}
+
+/*
+ * Kind chip (quick-ur2, command layer C) — NEW/TWEAK/SWAP/REVERT intent label
+ * composed client-side from the closed CandidateKind enum. Secondary bg, muted
+ * text, small rounded box (the .provenance-chip idiom). NO red, no new accent —
+ * stays inside the neutral Secondary/muted budget.
+ */
+.wc-chip {
+  flex: none;
+  background: var(--secondary);
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.04em;
 }
 
 .wc-empty {

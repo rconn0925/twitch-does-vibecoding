@@ -26,6 +26,12 @@
   const POOL_SHOW = 10;
   const QUEUE_SHOW = 10;
 
+  // quick-ur2 command layer C: the CLIENT-side chip label for a candidate's
+  // CandidateKind. The enum string is the ONLY thing on the wire; this fixed
+  // lookup composes the human label. An unknown/missing kind yields undefined →
+  // NO chip (fail closed).
+  const KIND_CHIP = { "project-switch": "NEW", suggestion: "TWEAK", swap: "SWAP", revert: "REVERT" };
+
   /** Latest OverlayState from the ws push (full state every message). */
   let latest = null;
 
@@ -58,7 +64,15 @@
       // Stacked layout (440px panel): suggestion text on its own line, the
       // suggester's name muted underneath — both too wide to share a row.
       const row = el("div", "wc-row wc-row-stacked");
-      row.appendChild(el("span", "wc-text", truncate(item.text, TEXT_MAX)));
+      const textLine = el("div", "wc-textline");
+      // quick-ur2: kind chip (NEW/TWEAK/SWAP/REVERT) from the closed enum.
+      // Fail-closed: unknown/missing kind yields no label → no chip.
+      const poolKindLabel = KIND_CHIP[item.kind];
+      if (poolKindLabel) {
+        textLine.appendChild(el("span", "wc-chip", poolKindLabel));
+      }
+      textLine.appendChild(el("span", "wc-text", truncate(item.text, TEXT_MAX)));
+      row.appendChild(textLine);
       if (item.username !== null && item.username !== undefined) {
         row.appendChild(el("span", "wc-user", truncate(item.username, USER_MAX)));
       }
@@ -85,6 +99,12 @@
     queue.slice(0, QUEUE_SHOW).forEach((item, index) => {
       const row = el("div", "wc-row");
       row.appendChild(el("span", "wc-pos", String(index + 1)));
+      // quick-ur2: kind chip (NEW/TWEAK/SWAP/REVERT) from the closed enum.
+      // Fail-closed: unknown/missing kind yields no label → no chip.
+      const queueKindLabel = KIND_CHIP[item.kind];
+      if (queueKindLabel) {
+        row.appendChild(el("span", "wc-chip", queueKindLabel));
+      }
       row.appendChild(el("span", "wc-text", truncate(item.text, TEXT_MAX)));
       queuePanel.appendChild(row);
     });
