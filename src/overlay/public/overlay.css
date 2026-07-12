@@ -48,6 +48,13 @@ body {
   color: var(--text);
 }
 
+/* overlay.js hides elements via the HTML `hidden` attribute; author `display`
+   rules (e.g. the flex panels) would otherwise override the UA's [hidden]
+   display:none — which rendered empty flex boxes as stray corner ovals. */
+[hidden] {
+  display: none !important;
+}
+
 /* ── State pill — top-right, the only permanent element ─────────────── */
 
 .state-pill {
