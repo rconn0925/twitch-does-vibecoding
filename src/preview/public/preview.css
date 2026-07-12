@@ -23,6 +23,13 @@
      binds to #reachability/#status-* and the placeholder card still carries
      the standing-by state on its own. */
   --status-bar-height: 0px;
+
+  /* Fit-to-frame design canvas: the app frame is rendered at this laptop-sized
+     viewport and scaled by --fit-scale (set by preview.js from the real stage
+     size) to fill the short OBS source without a scrollbar. See preview.js. */
+  --design-w: 1500px;
+  --design-h: 900px;
+  --fit-scale: 1;
 }
 
 * {
@@ -109,9 +116,16 @@ body {
 
 .app-frame {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  top: 0;
+  left: 0;
+  /* Framed at the laptop-sized design canvas, then scaled to fill the short OBS
+     source (transform-origin top-left so scale(0.7)*1280x768 == 900x540 from the
+     corner). Gives the app a real viewport instead of a cramped 540px one, so it
+     fits without a scrollbar. --fit-scale is recomputed by preview.js. */
+  width: var(--design-w);
+  height: var(--design-h);
+  transform-origin: top left;
+  transform: scale(var(--fit-scale));
   border: 0;
   background: var(--dominant); /* dark, so reloads never flash white */
 }

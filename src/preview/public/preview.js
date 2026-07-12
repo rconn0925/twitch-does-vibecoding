@@ -29,6 +29,30 @@
   const POLL_INTERVAL_MS = 2000; // reachability poll cadence (UI-SPEC ~2s)
   const REFRESH_INTERVAL_MS = 5000; // live app-frame auto-refresh (UI-SPEC 5s)
 
+  // --- fit-to-frame scaling --------------------------------------------------
+  // The OBS source is only ~540px tall — an unusually short viewport that forces
+  // almost any real app to scroll (a scrollbar viewers can't use, content below
+  // the fold). Instead of framing the app at the cramped source size, frame it
+  // at a standard laptop viewport (1280x768 — the 5:3 aspect of the 900x540
+  // source) and scale that down to fill the source. Apps are built for
+  // laptop-sized screens (and now told to be single-screen / 100vh), so they fit
+  // 768 logical px with no scrollbar. Scale is recomputed from the ACTUAL stage
+  // size, so it adapts if the source is resized.
+  // 1500x900 keeps the source's exact 5:3 aspect (so the frame fills edge-to-edge
+  // with no letterbox bars) while giving the app a tall, real viewport — enough
+  // vertical headroom that a single-screen app fits with no scrollbar.
+  const DESIGN_W = 1500;
+  const DESIGN_H = 900;
+  function applyFitScale() {
+    const w = document.documentElement.clientWidth;
+    const h = document.documentElement.clientHeight;
+    if (w === 0 || h === 0) return;
+    const scale = Math.min(w / DESIGN_W, h / DESIGN_H);
+    document.documentElement.style.setProperty("--fit-scale", String(scale));
+  }
+  applyFitScale();
+  window.addEventListener("resize", applyFitScale);
+
   // Fixed on-stream copy (UI-SPEC §Copywriting). Static labels only — nothing
   // here is derived from chat or orchestrator state.
   const TITLE = "APP UNDER CONSTRUCTION";
