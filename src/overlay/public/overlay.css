@@ -50,7 +50,10 @@ body {
 
 /* overlay.js hides elements via the HTML `hidden` attribute; author `display`
    rules (e.g. the flex panels) would otherwise override the UA's [hidden]
-   display:none — which rendered empty flex boxes as stray corner ovals. */
+   display:none — which rendered empty flex boxes as stray corner ovals.
+   !important is deliberate: it must beat every current AND future author
+   display rule regardless of cascade order or specificity. */
+/* biome-ignore lint/complexity/noImportantStyles: [hidden] must always win over author display rules */
 [hidden] {
   display: none !important;
 }

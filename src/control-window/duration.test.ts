@@ -6,7 +6,7 @@ import {
   loadRedemptionDurationConfig,
 } from "./duration.js";
 
-const DONATION = { ratePerUnit: 12, minSeconds: 30, maxSeconds: 300 };
+const DONATION = { ratePerUnit: 12, minSeconds: 30, maxSeconds: 600 };
 
 describe("amountToDurationSeconds (D-04 linear+floor+cap)", () => {
   it("returns the floor when amount*rate is below minSeconds", () => {
@@ -15,8 +15,8 @@ describe("amountToDurationSeconds (D-04 linear+floor+cap)", () => {
   });
 
   it("returns the hard cap for a large amount — never unbounded", () => {
-    // 1000 * 12 = 12000, clamped to 300
-    expect(amountToDurationSeconds(1000, DONATION)).toBe(300);
+    // 1000 * 12 = 12000, clamped to 600
+    expect(amountToDurationSeconds(1000, DONATION)).toBe(600);
   });
 
   it("returns the linear value for a $5-shaped tip (≈60s)", () => {
@@ -26,7 +26,7 @@ describe("amountToDurationSeconds (D-04 linear+floor+cap)", () => {
   it("never returns NaN or a negative value for hostile amounts", () => {
     expect(amountToDurationSeconds(Number.NaN, DONATION)).toBe(30);
     expect(amountToDurationSeconds(-100, DONATION)).toBe(30);
-    expect(amountToDurationSeconds(Number.POSITIVE_INFINITY, DONATION)).toBe(300);
+    expect(amountToDurationSeconds(Number.POSITIVE_INFINITY, DONATION)).toBe(600);
   });
 });
 
@@ -41,7 +41,7 @@ describe("duration config env loaders (parse-or-default discipline)", () => {
     delete process.env.DONATION_WINDOW_MIN_SECONDS;
     delete process.env.DONATION_WINDOW_MAX_SECONDS;
     const cfg = loadDonationDurationConfig();
-    expect(cfg).toEqual({ ratePerUnit: 12, minSeconds: 30, maxSeconds: 300 });
+    expect(cfg).toEqual({ ratePerUnit: 12, minSeconds: 30, maxSeconds: 600 });
     // A $5 tip maps to ~60s under the defaults.
     expect(amountToDurationSeconds(5, cfg)).toBe(60);
   });
@@ -53,7 +53,7 @@ describe("duration config env loaders (parse-or-default discipline)", () => {
     const cfg = loadDonationDurationConfig();
     expect(cfg.ratePerUnit).toBe(20);
     expect(cfg.minSeconds).toBe(30); // garbage → default
-    expect(cfg.maxSeconds).toBe(300); // negative → default
+    expect(cfg.maxSeconds).toBe(600); // negative → default
   });
 
   it("loadRedemptionDurationConfig is a separate, smaller-scale config", () => {
