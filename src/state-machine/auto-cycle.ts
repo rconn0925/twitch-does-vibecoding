@@ -110,6 +110,19 @@ export interface AutoCycleDeps {
    *    startRound, byte-identical to today.
    */
   chaosModePick?: () => "picked" | "empty" | null;
+  /**
+   * quick-260711-ly4 single-suggestion auto-build hook (main.ts's soloPick
+   * closure). Consulted at phase end on the DEMOCRATIC path (chaosModePick
+   * returned null) when the pool holds EXACTLY ONE candidate — a 1-option vote
+   * is meaningless, so that lone candidate is enqueued via the SAME winner
+   * funnel a voted/chaos win uses. Same tri-state contract as chaosModePick:
+   *  - "picked": the lone candidate entered the queue — skip startRound, open a
+   *    fresh window (RE-ENTRANCY: uses #maybeBegin, never #beginSuggestPhase);
+   *  - "empty":  nothing was eligible to build — restart the window (nothing
+   *    consumed), exactly as a 0-candidate window restarts;
+   *  - null (or absent dep): treated as "empty" — restart the window.
+   */
+  soloPick?: () => "picked" | "empty" | null;
   /** Suggestion-window length (SUGGEST_PHASE_SECONDS, default 40s). */
   suggestPhaseMs: number;
   /** AUTO_ROUND_ENABLED boot state (only the exact string "false" disables). */
@@ -317,6 +330,29 @@ export class AutoCycleScheduler {
       this.#emitChanged();
     } catch (err) {
       if (err instanceof RoundStartError && err.reason === "pool-too-small") {
+        // quick-260711-ly4 single-suggestion auto-build: a 1-option "vote" is
+        // meaningless. When the wired pool holds EXACTLY ONE candidate and a
+        // soloPick hook is wired, build that lone candidate directly through the
+        // same winner funnel a vote/chaos win uses. Zero candidates (or no hook)
+        // → restart, byte-identical to before. This runs ONLY on the democratic
+        // path (chaosModePick returned null above), so FREE REIGN > CHAOS >
+        // (democratic: solo-if-1 / vote-if-2+) precedence is preserved.
+        if (this.#deps.pool?.size() === 1 && this.#deps.soloPick !== undefined) {
+          const solo = this.#deps.soloPick?.() ?? null;
+          if (solo === "picked") {
+            // RE-ENTRANCY (identical to the chaosOutcome branch above — why
+            // #maybeBegin, NEVER #beginSuggestPhase): the enqueue can
+            // synchronously enter BUILD_IN_PROGRESS (enqueueWinner →
+            // onWinnerQueued → drainVoteQueue → machine.transition), emitting
+            // STATE_CHANGED synchronously, which may ALREADY have begun the next
+            // phase. #maybeBegin's "already in a phase" guard absorbs it
+            // idempotently — one phase, one beat, one timer.
+            this.#maybeBegin("fresh");
+            return;
+          }
+          // "empty"/null → nothing consumed → restart, same as a 0-candidate
+          // window (fall through to the restart below).
+        }
         // D-02: restart another full window with the "still collecting" beat
         // — exactly one startRound attempt per window, no busy spin.
         this.#beginSuggestPhase("restart");

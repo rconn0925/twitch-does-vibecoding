@@ -127,6 +127,16 @@ export interface Narrator extends BuildNarrator {
    */
   buildQueueFull(): void;
 
+  // ── Single-suggestion auto-build beats (quick-260711-ly4 — server-composed) ─
+  // A DISTINCT beat from a vote win (roundClosed) and a chaos pick
+  // (chaosModePicked): the suggestion window ended with exactly ONE pooled idea,
+  // so it was built directly with no vote. Copy carries no chance/money words
+  // (copy-separation), and truthfully names the origin (one idea, not a vote).
+  /** The lone pooled candidate was auto-built (no vote round opened). */
+  soloPicked(title: string): void;
+  /** The lone pick went stale and re-entered the full gate (D2-05 — never a silent re-roll). */
+  soloPickRecheck(): void;
+
   // ── Tier-1 voted-command beats (quick-q5n) ───────────────────────────────
   // All server-composed; failure lines are AMBER-TIER (D2-18): matter-of-fact
   // regroup language, never ERROR/red/alarm wording. `title` is gate-approved
@@ -530,6 +540,20 @@ export function createNarrator(deps: {
 
     buildQueueFull(): void {
       void deps.sender.send("Build queue full — pausing new rounds until it drains.");
+    },
+
+    // ── Single-suggestion auto-build beats (quick-260711-ly4 — VERBATIM) ──────
+    // Distinct wording from a vote win and a chaos pick: it truthfully names the
+    // origin (a single idea, built unopposed) and carries no chance/money words.
+
+    soloPicked(title: string): void {
+      void deps.sender.send(`Only one idea in — building it: "${truncateTitle(title)}".`);
+    },
+
+    soloPickRecheck(): void {
+      void deps.sender.send(
+        "That idea needs a fresh safety check first — it may come back around.",
+      );
     },
 
     // ── Tier-1 voted-command beats (quick-q5n) ────────────────────────────

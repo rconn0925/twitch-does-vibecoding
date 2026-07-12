@@ -113,6 +113,9 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     suggestionsOpen: vi.fn(),
     stillCollecting: vi.fn(),
     buildQueueFull: vi.fn(),
+    // Single-suggestion auto-build beats (quick-260711-ly4; unused here).
+    soloPicked: vi.fn(),
+    soloPickRecheck: vi.fn(),
     // Tier-1 voted-command beats (quick-q5n; unused by the chat listener).
     revertApplied: vi.fn(),
     revertNothing: vi.fn(),

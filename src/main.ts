@@ -16,6 +16,7 @@ import {
   recordGalleryPublish,
   recordPoolDropped,
   recordRevertOutcome,
+  recordSoloPick,
   recordSwapOutcome,
   recordWorkspaceReset,
 } from "./audit/record.js";
@@ -883,6 +884,56 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     return "picked";
   };
 
+  // The single-suggestion auto-build hook (AutoCycleScheduler's soloPick dep,
+  // quick-260711-ly4). Consulted at phase end on the DEMOCRATIC path
+  // (chaosModePick returned null) ONLY when the pool holds EXACTLY ONE candidate
+  // — a 1-option vote is meaningless, so that lone candidate is built directly
+  // through the SAME sanctioned winner funnel a voted/chaos win uses
+  // (enqueueWinner → onWinnerQueued → drainVoteQueue's kind router — zero new
+  // routing). Precedence stays FREE REIGN > CHAOS > (democratic: solo-if-1 /
+  // vote-if-2+). Returns:
+  //   "empty" — nothing eligible to build (defensive; the scheduler only calls
+  //             this at pool size 1) → the window restarts;
+  //   "picked"— the lone candidate entered the queue via the winner funnel.
+  const soloPick = (): "picked" | "empty" | null => {
+    if (machine.mode === "HALTED") return "empty"; // belt-and-braces — enqueueWinner also refuses
+    const pooled = pool.list();
+    if (pooled.length !== 1) return "empty"; // defensive — the scheduler only calls at size 1
+    const solo = pooled[0];
+    if (solo === undefined) return "empty";
+    // Source ALLOWLIST parity with the chaos path (T-rs3-05): a pool candidate is
+    // always chat/operator by construction, but only enqueue chat/operator so no
+    // payment token can ever appear near this path (source scan stays clean). This
+    // is the democratic path, NOT a chance/paid window — safety-and-parity only.
+    if (solo.candidate.source !== "chat" && solo.candidate.source !== "operator") return "empty";
+    const outcome = enqueueWinner(
+      { taskQueue, db, mode: () => machine.mode, resubmit, logger },
+      solo,
+    );
+    if (outcome.queued) {
+      pool.remove(solo.candidate.id);
+      recordSoloPick(db, {
+        taskId: solo.candidate.id,
+        title: solo.candidate.text,
+        kind: solo.candidate.kind,
+        streamMode: machine.mode,
+      });
+      windowNarrator?.soloPicked(solo.candidate.text);
+      // PROVENANCE ACK (same as the chaos path): a solo-built suggestion's
+      // build_history provenance reads "vote" because drainVoteQueue's default
+      // arm hardcodes startBuild(head, "vote") — inherent to riding the SAME
+      // winner rail. The TRUE origin is the solo_pick audit row above.
+      onWinnerQueued?.(solo.candidate.id);
+    } else if (outcome.reason === "stale-reclassified") {
+      // D2-05: a stale lone pick re-entered the full gate via resubmit —
+      // narrated (neutral recheck copy, never mis-attributed to chaos), never a
+      // silent re-roll.
+      windowNarrator?.soloPickRecheck();
+    }
+    // outcome "halted" → nothing: the halt itself is already narrated.
+    return "picked";
+  };
+
   // ── Auto-cycle scheduler (quick-t5k D-01..D-04, A1) ─────────────────────
   // Hands-free [suggest → vote → enqueue → suggest] cadence. Composed here so
   // both the console (toggle route/pill) and the overlay (suggestPhase
@@ -925,6 +976,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     // quick-rs3: the chat-activated vote-skip hook — consulted at phase end
     // AFTER the eligibility check above (FREE REIGN > CHAOS, HALT parks all).
     chaosModePick,
+    // quick-260711-ly4: the single-suggestion auto-build hook — consulted ONLY
+    // on the democratic path (chaosModePick returned null) when startRound
+    // throws pool-too-small with EXACTLY ONE pooled candidate: build it directly
+    // instead of opening a meaningless 1-option vote.
+    soloPick,
     // quick-l2a pool-full early close: the pool sliver + threshold. The pool
     // is approved-only by construction (CandidatePool.add throws, COMP-01);
     // the scheduler funnels the close through its own #onPhaseEnd, so the

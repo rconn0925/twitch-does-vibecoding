@@ -268,6 +268,10 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "suggestionsOpen",
         "stillCollecting",
         "buildQueueFull",
+        // Single-suggestion auto-build beats (quick-260711-ly4) — a title string
+        // at most and a fixed recheck line; never a tally.
+        "soloPicked",
+        "soloPickRecheck",
         // Tier-1 voted-command beats (quick-q5n) — fixed server-composed lines,
         // title string at most; never a tally.
         "revertApplied",

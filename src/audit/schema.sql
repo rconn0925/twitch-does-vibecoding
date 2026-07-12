@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS audit_log (
                                              --     (distinct from 'chaos_toggled', the console switch); 'chaos_pick' rows from the chat-activated
                                              --     vote-skip path carry the picked candidate's kind in `decision` (true-origin record — the
                                              --     build_history provenance for such picks reads 'vote' by same-winner-rail design)
+                                             --   quick-260711-ly4: 'solo_pick' — the auto-cycle window ended with EXACTLY ONE pooled candidate, built
+                                             --     UNOPPOSED with no vote round (kind in `decision`, distinct from 'chaos_pick' and 'round_closed')
   source          TEXT NOT NULL,             -- 'chat' | 'channel_points' | 'donation' | 'chaos' | 'operator' | 'orchestrator' | 'console' | 'hotkey'
   twitch_username TEXT,                      -- nullable: absent for operator-console-originated events
   suggestion_text TEXT,                      -- nullable: absent for pure veto/halt events with no candidate

@@ -63,6 +63,8 @@ function make(
     poolSizeAtBoot?: number;
     /** Wire the optional chat-chaos vote-skip hook (quick-rs3). */
     chaosModePick?: () => "picked" | "empty" | null;
+    /** Wire the optional single-suggestion auto-build hook (quick-260711-ly4). */
+    soloPick?: () => "picked" | "empty" | null;
   } = {},
 ): Harness {
   const machine = new StreamModeMachine();
@@ -104,9 +106,10 @@ function make(
     enabledAtBoot: opts.enabledAtBoot ?? true,
     narrate,
     onToggled,
-    // The optional pool dep (quick-l2a): only wired when the test asks for it,
-    // so every pre-existing test also proves the no-pool back-compat path.
-    ...(opts.earlyCloseSize !== undefined
+    // The optional pool dep (quick-l2a / quick-260711-ly4): wired when EITHER
+    // early close OR the solo hook needs the pool.size() sliver, so every
+    // pre-existing test still proves the no-pool back-compat path.
+    ...(opts.earlyCloseSize !== undefined || opts.soloPick !== undefined
       ? {
           pool: {
             size: () => poolSize,
@@ -114,10 +117,11 @@ function make(
               poolEmitter.on(event, handler);
             },
           },
-          earlyCloseSize: opts.earlyCloseSize,
         }
       : {}),
+    ...(opts.earlyCloseSize !== undefined ? { earlyCloseSize: opts.earlyCloseSize } : {}),
     ...(opts.chaosModePick !== undefined ? { chaosModePick: opts.chaosModePick } : {}),
+    ...(opts.soloPick !== undefined ? { soloPick: opts.soloPick } : {}),
   });
   const changed = vi.fn();
   scheduler.on(AUTO_CYCLE_CHANGED, changed);
@@ -469,6 +473,154 @@ describe("AutoCycleScheduler (fake-timer matrix, quick-t5k)", () => {
       expect(chaosModePick).toHaveBeenCalledTimes(2);
       expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(3);
       expect(h.startRound).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── quick-260711-ly4: single-suggestion auto-build hook ──────────────────
+  // On the DEMOCRATIC path (chaosModePick returned null), when startRound throws
+  // pool-too-small AND the wired pool holds EXACTLY ONE candidate, the soloPick
+  // hook builds that lone candidate directly — no meaningless 1-option vote.
+  // Zero candidates → restart (unchanged); 2+ → startRound succeeds (unchanged).
+  describe("single-suggestion auto-build hook (quick-260711-ly4)", () => {
+    it("size()===1 + 'picked': the lone candidate is built, NO restart, a FRESH window opens", () => {
+      const soloPick = vi.fn(() => "picked" as const);
+      const h = track(
+        make({
+          startRoundImpl: () => {
+            throw new RoundStartError("pool-too-small");
+          },
+          poolSizeAtBoot: 1,
+          soloPick,
+        }),
+      );
+      h.scheduler.start();
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(1); // boot phase
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      // startRound was ATTEMPTED (threw pool-too-small), then soloPick fired once.
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(soloPick).toHaveBeenCalledTimes(1);
+      // NOT the restart path: stillCollecting never fired.
+      expect(h.narrate.stillCollecting).not.toHaveBeenCalled();
+      // A FRESH window opened via #maybeBegin("fresh").
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(2);
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+    });
+
+    it("size()===0: soloPick is NOT called; the window restarts (unchanged)", () => {
+      const soloPick = vi.fn(() => "picked" as const);
+      const h = track(
+        make({
+          startRoundImpl: () => {
+            throw new RoundStartError("pool-too-small");
+          },
+          poolSizeAtBoot: 0,
+          soloPick,
+        }),
+      );
+      h.scheduler.start();
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(soloPick).not.toHaveBeenCalled();
+      expect(h.narrate.stillCollecting).toHaveBeenCalledTimes(1); // restart beat
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+    });
+
+    it("size()>=2: startRound succeeds and soloPick is NOT called (unchanged democratic vote)", () => {
+      const soloPick = vi.fn(() => "picked" as const);
+      const h = track(make({ poolSizeAtBoot: 2, soloPick }));
+      h.scheduler.start();
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledWith("auto");
+      expect(soloPick).not.toHaveBeenCalled();
+    });
+
+    it("'empty' (nothing consumed) → the window restarts, same as a 0-candidate window", () => {
+      const soloPick = vi.fn(() => "empty" as const);
+      const h = track(
+        make({
+          startRoundImpl: () => {
+            throw new RoundStartError("pool-too-small");
+          },
+          poolSizeAtBoot: 1,
+          soloPick,
+        }),
+      );
+      h.scheduler.start();
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      expect(soloPick).toHaveBeenCalledTimes(1);
+      expect(h.narrate.stillCollecting).toHaveBeenCalledTimes(1);
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(1); // boot only
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+    });
+
+    it("soloPick only fires on the DEMOCRATIC path: a live chaos pick preempts it (chaosModePick wins)", () => {
+      const chaosModePick = vi.fn(() => "picked" as const);
+      const soloPick = vi.fn(() => "picked" as const);
+      const h = track(
+        make({
+          startRoundImpl: () => {
+            throw new RoundStartError("pool-too-small");
+          },
+          poolSizeAtBoot: 1,
+          chaosModePick,
+          soloPick,
+        }),
+      );
+      h.scheduler.start();
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      // Chaos owned the phase end BEFORE startRound — solo is never consulted.
+      expect(chaosModePick).toHaveBeenCalledTimes(1);
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(soloPick).not.toHaveBeenCalled();
+    });
+
+    it("RE-ENTRANCY PIN: a soloPick that synchronously fires STATE_CHANGED begins ONE phase, arms ONE timer, never double-fires", () => {
+      // The stub mimics the real closure: enqueueWinner → onWinnerQueued →
+      // drainVoteQueue → machine.transition emits STATE_CHANGED SYNCHRONOUSLY,
+      // and the scheduler's own handler may begin the next phase MID-HOOK.
+      let h: Harness | null = null;
+      const soloPick = vi.fn((): "picked" => {
+        const machine = h?.machine;
+        if (machine) {
+          machine.transition(machine.mode === "IDLE" ? "BUILD_IN_PROGRESS" : "IDLE");
+        }
+        return "picked";
+      });
+      h = track(
+        make({
+          startRoundImpl: () => {
+            throw new RoundStartError("pool-too-small");
+          },
+          poolSizeAtBoot: 1,
+          soloPick,
+        }),
+      );
+      h.scheduler.start();
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(1);
+
+      // Phase end #1: startRound throws pool-too-small; soloPick fires STATE_CHANGED mid-hook.
+      vi.advanceTimersByTime(SUGGEST_MS);
+      expect(soloPick).toHaveBeenCalledTimes(1);
+      // Exactly ONE begin beat for the follow-up phase — not two.
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(2);
+      expect(h.narrate.stillCollecting).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+
+      // No orphaned timer: exactly ONE further phase end one window later.
+      vi.advanceTimersByTime(SUGGEST_MS);
+      expect(soloPick).toHaveBeenCalledTimes(2);
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(3);
     });
   });
 

@@ -686,6 +686,37 @@ export function recordChaosPick(
   });
 }
 
+/**
+ * One row per SINGLE-SUGGESTION auto-build (quick-260711-ly4): the auto-cycle
+ * suggestion window ended with EXACTLY ONE pooled candidate, so it was built
+ * directly WITHOUT a meaningless 1-option vote round. A DISTINCT event_type from
+ * 'chaos_pick' (a random pick) and 'round_closed' (a democratic vote) so the
+ * ledger shows this winner was UNOPPOSED — not voted, not chance-picked. The
+ * picked candidate's kind rides in `decision` (mirrors recordChaosPick); its
+ * build_history provenance reads 'vote' by the same same-winner-rail design.
+ * source "operator" matches the auto-cycle's other ledger rows (round_opened's
+ * initiator-"auto" idiom). audit_log has no CHECK constraint, so 'solo_pick' is
+ * a schema-safe addition.
+ */
+export function recordSoloPick(
+  db: Database.Database,
+  args: { taskId: string; title: string; kind?: CandidateKind; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "solo_pick",
+    source: "operator",
+    twitchUsername: null,
+    suggestionText: args.title,
+    decision: args.kind ?? null,
+    category: null,
+    rationale:
+      "Single pooled candidate auto-built unopposed — no vote round (single-suggestion auto-build)",
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
 // ── quick-rs3: chat-activated chaos-mode lifecycle audit events (RS3-05) ─────
 // One row per activation and one per natural expiry — the never-silent
 // doctrine. Both carry source "chaos" (the chance path, never a monetary
