@@ -171,11 +171,17 @@
   function renderBanner() {
     banner.replaceChildren();
     const cw = latest?.controlWindow ?? null;
+    banner.hidden = false;
     if (!cw) {
-      banner.hidden = true;
+      // Persistent mode badge (Ross, 2026-07-11): the banner never collapses —
+      // no active window means the show is in its default chat-voted mode.
+      // Fixed copy only; the free-reign no-expiry/no-red rules (T-04-14) hold.
+      banner.classList.add("banner-democratic");
+      banner.appendChild(el("span", "banner-dot"));
+      banner.appendChild(el("span", "banner-label", "DEMOCRATIC MODE"));
       return;
     }
-    banner.hidden = false;
+    banner.classList.remove("banner-democratic");
 
     banner.appendChild(el("span", "banner-dot"));
     banner.appendChild(el("span", "banner-label", "FREE REIGN"));

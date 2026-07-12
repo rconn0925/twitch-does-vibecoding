@@ -146,6 +146,16 @@ body {
   align-self: center;
 }
 
+/* Default-mode badge: same banner chrome, neutral dot + muted label — the
+   violet dot stays exclusively paid-control (D2-18 color semantics). */
+.banner-democratic .banner-dot {
+  background: var(--muted);
+}
+
+.banner-democratic .banner-label {
+  color: var(--muted);
+}
+
 .banner-label {
   flex: none;
   font-size: 20px;
