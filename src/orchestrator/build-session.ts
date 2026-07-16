@@ -813,8 +813,9 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     // (never scaffold over debris). A probe error resolves to hasFiles=true —
     // never assert "empty" when unsure. This composes with forced rotation: a
     // rotated-to new generation has a fresh empty dir → scaffold. The build
-    // inherits the Fable session default (AgentRunSpec has no model field — the
-    // pipeline structurally cannot request an override).
+    // model is explicitly pinned to Fable in assembleSandboxedBuildOptions
+    // (BUILD_MODEL env override, default claude-fable-5); AgentRunSpec has no
+    // model field — the pipeline structurally cannot request an override.
     const hasFiles = deps.sandboxAdapter.workspaceHasFiles
       ? await deps.sandboxAdapter.workspaceHasFiles(deps.workspace.dir()).catch(() => true)
       : false;
@@ -1008,7 +1009,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       // turn — abort still routes through finalizeAborted, no stage "done".
       if (abortedNow(ac)) return finalizeAborted(task);
 
-      // 2) Build (Fable session default, SANDBOXED, persistent workspace) +
+      // 2) Build (Fable — explicitly pinned, SANDBOXED, persistent workspace) +
       //    in-flight COMP-02 (D3-07), auto-retrying a transient failure at most
       //    once (D3-09).
       deps.narrator?.stageBuilding(task.text);

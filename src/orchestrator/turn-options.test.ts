@@ -1,5 +1,5 @@
 import type { SandboxSettings, SpawnedProcess, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assembleHostTurnOptions,
   assembleSandboxedBuildOptions,
@@ -46,6 +46,36 @@ function settingsObject(settings: unknown): Record<string, unknown> {
   expect(settings).not.toBeNull();
   return settings as Record<string, unknown>;
 }
+
+// Stubbed BUILD_MODEL must never leak between tests (mirrors the GATE_MODEL
+// test hygiene in classifier-runner.test.ts).
+afterEach(() => vi.unstubAllEnvs());
+
+describe("model pin — chat-driven builds provably run on Fable (quick-260716-9mk)", () => {
+  it("pins the sandboxed build turn to claude-fable-5 by default (no BUILD_MODEL set)", () => {
+    vi.stubEnv("BUILD_MODEL", "");
+    const options = assembleSandboxedBuildOptions(makeSpec(), fakeSandboxSettings());
+    expect(options.model).toBe("claude-fable-5");
+  });
+
+  it("honors a BUILD_MODEL override, read at assembly-call-time (GATE_MODEL idiom)", () => {
+    vi.stubEnv("BUILD_MODEL", "claude-fable-5-custom");
+    const options = assembleSandboxedBuildOptions(makeSpec(), fakeSandboxSettings());
+    expect(options.model).toBe("claude-fable-5-custom");
+  });
+
+  it("treats a whitespace-only BUILD_MODEL (blank .env entry) as unset — falls back to claude-fable-5", () => {
+    vi.stubEnv("BUILD_MODEL", "   ");
+    const options = assembleSandboxedBuildOptions(makeSpec(), fakeSandboxSettings());
+    expect(options.model).toBe("claude-fable-5");
+  });
+
+  it("pins the unreachable host branch too (CR-02/WR-01: no boundary depends on an SDK default)", () => {
+    vi.stubEnv("BUILD_MODEL", "");
+    const options = assembleHostTurnOptions(makeSpec());
+    expect(options.model).toBe("claude-fable-5");
+  });
+});
 
 describe("assembleSandboxedBuildOptions — MCP lockdown triple (T-22l-01)", () => {
   it("carries strictMcpConfig: true, mcpServers: {}, and settings.disableClaudeAiConnectors: true", () => {

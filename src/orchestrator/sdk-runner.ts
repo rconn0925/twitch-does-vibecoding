@@ -12,9 +12,10 @@
  * turn is the sandboxed Fable build turn — spec.spawnClaudeCodeProcess
  * redirects the Claude Code engine into the WSL2 distro and
  * buildSandboxOptions() applies SAND-01/02/03 (failIfUnavailable: true → never
- * silently unsandboxed, T-03-23). The build inherits the Fable session default
- * (AgentRunSpec carries no model field — the pipeline structurally cannot
- * request an override; the Sonnet classifier gate is a separate surface).
+ * silently unsandboxed, T-03-23). The build model is explicitly pinned to
+ * Fable in turn-options.ts (BUILD_MODEL env override, default claude-fable-5);
+ * AgentRunSpec still carries no model field, so the pipeline structurally
+ * cannot request an override; the Sonnet classifier gate is a separate surface.
  *
  * The orchestrator-authored systemPrompt is passed by BARE REFERENCE (never an
  * interpolating template literal) so the SAND-04 prompt-boundary invariant
