@@ -457,6 +457,12 @@ describe("EventSub disconnect → ready reconciliation (INFRA-02, D2-14)", () =>
         window30sLeft() {},
         windowExpired() {},
         windowRevoked() {},
+        // Pending-window beats (quick-260716-h73) — no-op stubs.
+        windowPendingDonation() {},
+        windowPendingChannelPoints() {},
+        windowOpenedFromPending() {},
+        windowDeniedPending() {},
+        windowPendingCancelled() {},
         chaosOn() {},
         chaosOff() {},
         chaosPick() {},

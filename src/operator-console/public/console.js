@@ -597,16 +597,32 @@
     }
     windowPanel.hidden = false;
 
-    // Countdown computed CLIENT-side from endsAtMs (resynced on every ws push);
-    // the server never streams per-second timer frames (reuses formatRemaining).
-    const remaining = window_.endsAtMs - Date.now();
-    windowPanel.appendChild(
-      el(
-        "h2",
-        "section-title round-countdown",
-        `Free-reign window — ${formatRemaining(remaining)} left`,
-      ),
-    );
+    if (window_.pending) {
+      // quick-260716-h73: a BANKED window awaiting the return to IDLE. Its
+      // endsAtMs is the 0 no-deadline sentinel — NEVER render a countdown from
+      // it; the full paid duration clock starts at open. Donor line, mapping
+      // line, and the SAME Revoke button below all still apply (Revoke cancels
+      // a pending window exactly like an active one).
+      windowPanel.appendChild(el("h2", "section-title", "Free-reign window — PENDING"));
+      windowPanel.appendChild(
+        el(
+          "p",
+          "window-pending-note",
+          `Opens the moment the current build/round finishes — full ${formatRemaining(window_.durationMs)} starts then`,
+        ),
+      );
+    } else {
+      // Countdown computed CLIENT-side from endsAtMs (resynced on every ws push);
+      // the server never streams per-second timer frames (reuses formatRemaining).
+      const remaining = window_.endsAtMs - Date.now();
+      windowPanel.appendChild(
+        el(
+          "h2",
+          "section-title round-countdown",
+          `Free-reign window — ${formatRemaining(remaining)} left`,
+        ),
+      );
+    }
 
     // Donor line — untruncated, textContent-only (attacker-controlled string).
     const triggerLabel = window_.trigger === "donation" ? "donation" : "channel points";

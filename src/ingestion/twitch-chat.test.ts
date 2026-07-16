@@ -101,6 +101,12 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     window30sLeft: vi.fn(),
     windowExpired: vi.fn(),
     windowRevoked: vi.fn(),
+    // Pending-window beats (quick-260716-h73) — unused by the chat listener.
+    windowPendingDonation: vi.fn(),
+    windowPendingChannelPoints: vi.fn(),
+    windowOpenedFromPending: vi.fn(),
+    windowDeniedPending: vi.fn(),
+    windowPendingCancelled: vi.fn(),
     chaosOn: vi.fn(),
     chaosOff: vi.fn(),
     chaosPick: vi.fn(),

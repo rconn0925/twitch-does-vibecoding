@@ -268,9 +268,9 @@ describe("ControlWindow pending slot (quick-260716-h73: bank mid-busy, promote o
       expect(snap.pending).toBe(true);
       expect(harness.machine.mode).toBe(mode);
       expect(harness.manager.pendingSnapshot()).not.toBeNull();
-      expect(
-        listAuditRecords(harness.db, { limit: 10, eventType: "window_pending" }),
-      ).toHaveLength(1);
+      expect(listAuditRecords(harness.db, { limit: 10, eventType: "window_pending" })).toHaveLength(
+        1,
+      );
       harness.manager.dispose();
       harness.db.close();
     }
