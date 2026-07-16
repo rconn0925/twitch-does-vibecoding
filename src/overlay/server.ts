@@ -179,6 +179,18 @@ export interface OverlayState {
    */
   playable: { url: string } | null;
   /**
+   * The ACTIVE generation's PERSISTENT public play URL (quick-260716-ko2), or
+   * null when no project_repos row exists for it. DISTINCT from `playable`
+   * above: playable is the transient just-published done-beat link (g8p, an
+   * 8s show beat); playUrl is the always-on phase-banner sub-line, recomputed
+   * inside buildOverlayState at EVERY push/connect from the durable
+   * project_repos routing — server-composed config owner + post-gate
+   * sanitizeRepoName slug via the galleryPlayUrl helper, never chat text.
+   * Fail-closed: anything non-string from the pull source narrows to null, so
+   * a misbehaving/rich source can never put routing/donor detail on the wire.
+   */
+  playUrl: string | null;
+  /**
    * The builder-view feed (quick-x7d, the /builder page). SAFETY CONTRACT:
    * every line is orchestrator-authored fixed copy (stage captions, the
    * "Writing/Editing <path>" verbs) or COMP-02-APPROVED path/snippet content,
@@ -306,6 +318,29 @@ const NULL_PLAYABLE_SOURCE: OverlayPlayableSource = {
 };
 
 /**
+ * The persistent play-link sliver (quick-260716-ko2). PULL-based by design —
+ * deliberately NO subscription method (unlike every push seam above):
+ * buildOverlayState calls current() on every push AND every connect, so
+ * freshness rides the EXISTING push cadence for free. A project switch, swap
+ * or rotation flips the URL on the next state push with ZERO new event
+ * plumbing (decision 4). The composition root (main.ts) feeds this from the
+ * durable project_repos routing; tests inject a plain fake.
+ */
+export interface OverlayPlayUrlSource {
+  current(): string | null;
+}
+
+/**
+ * A no-op play-url source: no active-generation link ever known. Mirrors
+ * NULL_PLAYABLE_SOURCE — the composition root can wire the overlay without
+ * the routing lookup and the phase-banner line simply stays absent
+ * (playUrl: null, no empty shell).
+ */
+const NULL_PLAY_URL_SOURCE: OverlayPlayUrlSource = {
+  current: () => null,
+};
+
+/**
  * The auto-cycle sliver the overlay needs (mirrors OverlayBuildSource): the
  * scheduler snapshot plus an AUTO_CYCLE_CHANGED subscription. The source may
  * carry richer fields (the console sees `enabled`); buildOverlayState narrows
@@ -393,6 +428,8 @@ export interface OverlayServerDeps {
   chaosMode?: OverlayChaosModeSource;
   /** Optional (quick-260716-g8p playable link); defaults to no link ever live. */
   playable?: OverlayPlayableSource;
+  /** Optional (quick-260716-ko2 persistent play link); defaults to no link known. */
+  playUrl?: OverlayPlayUrlSource;
   /** Optional until quick-t5k wires the scheduler; defaults to no phase active. */
   autoCycle?: OverlayAutoCycleSource;
   /** Optional (quick-v4e what's-coming page); defaults to an empty pool. */
@@ -449,6 +486,7 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   const controlWindow = deps.controlWindow ?? NULL_CONTROL_WINDOW_SOURCE;
   const chaosModeSource = deps.chaosMode ?? NULL_CHAOS_MODE_SOURCE;
   const playableSource = deps.playable ?? NULL_PLAYABLE_SOURCE;
+  const playUrlSource = deps.playUrl ?? NULL_PLAY_URL_SOURCE;
   const autoCycle = deps.autoCycle ?? NULL_AUTO_CYCLE_SOURCE;
   const poolSource = deps.pool ?? NULL_POOL_SOURCE;
   const feedSource = deps.builderFeed ?? NULL_BUILDER_FEED_SOURCE;
@@ -494,6 +532,12 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
     // server-composed Pages URL crosses the wire — a richer source could
     // never leak extra keys onto the broadcast.
     const pl = playableSource.snapshot();
+    // PULL-based freshness (quick-260716-ko2, decision 4): current() is read
+    // HERE on every push/connect — a routing flip rides the next existing
+    // push, zero new events. Fail-closed narrowing: only a STRING ever
+    // reaches the wire; a misbehaving/rich source narrows to null so routing/
+    // donor detail can never cross onto the broadcast (T-ko2-01).
+    const pu = playUrlSource.current();
     return {
       pill: PILL_BY_MODE[machine.mode],
       round: round.snapshot(),
@@ -511,6 +555,7 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
         cw === null ? null : { donorDisplayName: cw.donorDisplayName, endsAtMs: cw.endsAtMs },
       chaosMode: cm === null ? null : { endsAtMs: cm.endsAtMs },
       playable: pl === null ? null : { url: pl.url },
+      playUrl: typeof pu === "string" ? pu : null,
       suggestPhase:
         ac.phase === "suggest" && ac.phaseEndsAtMs !== null ? { endsAtMs: ac.phaseEndsAtMs } : null,
       // quick-260716-fdl: a bare boolean narrowed from the snapshot phase —

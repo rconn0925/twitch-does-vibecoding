@@ -396,6 +396,13 @@ describe("build-flow e2e (playable announce) — publish-confirmed play link + o
     return state.playable;
   }
 
+  /** The PERSISTENT phase-banner play link (quick-260716-ko2) — distinct from the transient `playable`. */
+  async function fetchPlayUrl(port: number): Promise<string | null> {
+    const res = await fetch(`http://127.0.0.1:${port}/api/state`);
+    const state = (await res.json()) as { playUrl: string | null };
+    return state.playUrl ?? null;
+  }
+
   /** The announce reads the DURABLE project_repos routing row — seed it like the real publisher would. */
   function seedRepoRow(app: AppHandle, repoName: string): void {
     app.db
@@ -533,6 +540,56 @@ describe("build-flow e2e (playable announce) — publish-confirmed play link + o
       "Play it now: https://twitchvibecodes.github.io/counter-app/",
     ]);
     await app.close();
+  });
+
+  it("playUrl (quick-260716-ko2): the PERSISTENT field carries the active generation's galleryPlayUrl even OUTSIDE the done beat; null with no project_repos row", async () => {
+    const { sent, sink } = capturingChatSink();
+    const publisher: GalleryPublisher = {
+      publishNow: () =>
+        Promise.resolve({ status: "published", commitHash: "hash", detail: "test" }),
+      revertLast: () => Promise.resolve({ status: "failed", commitHash: null, detail: "unused" }),
+      awaitPagesBuilt: async () => "built",
+    };
+    const app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      chatSource: noopChatSource(),
+      chatSink: sink,
+      agentRunner: doneRunner(),
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
+      galleryPublisher: publisher,
+    });
+    seedRepoRow(app, "counter-app");
+
+    // PERSISTENT, pull-based: the durable project_repos row + active generation
+    // alone compose the URL — visible on the FIRST state read, no build-done
+    // beat required ("set it now for this voidfarer project").
+    expect(await fetchPlayUrl(app.overlay.port)).toBe(
+      "https://twitchvibecodes.github.io/counter-app/",
+    );
+
+    drivePooledWinner(app);
+    await waitUntil(() => app.machine.mode === "IDLE");
+    await waitUntil(() => playSends(sent).length > 0);
+
+    // … and still present AFTER the build/announce ran — the field never
+    // expires with the transient 8s done beat.
+    expect(await fetchPlayUrl(app.overlay.port)).toBe(
+      "https://twitchvibecodes.github.io/counter-app/",
+    );
+    await app.close();
+
+    // No project_repos row for the active generation → null (no line, no
+    // empty shell — the fail-closed absent state).
+    const bare = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+    });
+    expect(await fetchPlayUrl(bare.overlay.port)).toBeNull();
+    await bare.close();
   });
 
   it("a confirmed publish with NO project_repos row (EMPTY-01 skip) announces nothing", async () => {
