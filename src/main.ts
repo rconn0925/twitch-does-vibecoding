@@ -2200,6 +2200,15 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     void devServerSupervisor.reroot();
   }
 
+  // quick-260716-ko2: the persistent play-link routing lookup. Identical SQL
+  // to the announce path's playableRepoStmt — that one lives inside the
+  // build-engine composition block and is out of scope here; the durable
+  // project_repos row stays the ONLY repo-name source either way (post-gate
+  // sanitizeRepoName slug, never chat text).
+  const overlayPlayRepoStmt = db.prepare(
+    "SELECT repo_name FROM project_repos WHERE generation = @generation",
+  );
+
   // Public OBS overlay (PRES-01) — a physically separate read-only surface,
   // never the console's app/port (D2-17). Ephemeral port 0 by default so
   // parallel test apps never collide; the entrypoint passes OVERLAY_PORT.
@@ -2233,6 +2242,28 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     playable: {
       snapshot: () => (playableUrl === null ? null : { url: playableUrl }),
       on: (event, handler) => playableEvents.on(event, handler),
+    },
+    // quick-260716-ko2: the PERSISTENT active-generation play link — PULL-based
+    // (OverlayPlayUrlSource), recomputed inside buildOverlayState on every
+    // push/connect, so a project switch/swap/rotation flips the URL on the
+    // next state push with ZERO new event plumbing. Composed through the ONE
+    // URL-construction point (galleryPlayUrl — never duplicated, quick-1ki/g8p
+    // doctrine). One prepared indexed SELECT per push (synchronous µs-scale,
+    // T-ko2-03 accepted); try/catch fail-closed keeps a DB error off the
+    // broadcast path — the line simply stays absent.
+    playUrl: {
+      current: () => {
+        try {
+          if (!db.open) return null;
+          const row = overlayPlayRepoStmt.get({ generation: workspace.generation() }) as
+            | { repo_name: string }
+            | undefined;
+          return row ? galleryPlayUrl(galleryOwner, row.repo_name) : null;
+        } catch (err) {
+          logger.error({ err }, "playUrl lookup failed — phase-banner play line stays absent");
+          return null;
+        }
+      },
     },
     // quick-t5k A2: the suggestion-phase guidance countdown source. The server
     // re-narrows to suggestPhase:{endsAtMs} — the enabled flag stays private.

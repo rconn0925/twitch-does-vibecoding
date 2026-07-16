@@ -268,6 +268,31 @@ body {
   text-overflow: ellipsis;
 }
 
+/*
+ * Persistent play link (quick-260716-ko2) — the ACTIVE project's public Pages
+ * URL, rendered under the phase timer in every live phase. Small monospace
+ * single line; accent like .build-play, never red. DELIBERATELY no
+ * overflow/ellipsis: a truncated URL is useless — the 80-char slug must stay
+ * fully legible at 1080p, so the banner box grows instead (the :has rule
+ * below lifts the 900px cap only while this line is mounted).
+ */
+.phase-play {
+  flex: none;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  margin-top: 6px;
+  white-space: nowrap;
+  color: var(--accent);
+}
+
+/* The play URL is NEVER ellipsized (decision 2): while the play line is
+   mounted the banner may grow past its 900px cap to fit the full slug. */
+.phase-banner:has(.phase-play) {
+  max-width: none;
+}
+
 .phase-countdown {
   flex: none;
   font-size: 36px;

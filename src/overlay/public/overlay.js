@@ -324,11 +324,16 @@
   // streams per-second frames (same contract as the vote clock). The banner is
   // independent of the lower-left slot, so guidance stays visible while a
   // concurrent build occupies the build panel.
+  // quick-260716-ko2: the phase-content branches FALL THROUGH (if/else-if, no
+  // early returns) so every branch shares ONE persistent play-line tail below.
+  // Rendering inside each branch is unchanged.
   function renderPhaseBanner() {
     phaseBanner.replaceChildren();
+    let hasPhaseContent = false;
     const liveRound = latest?.round?.status === "open" ? latest.round : null;
+    const sp = latest?.suggestPhase ?? null;
     if (liveRound) {
-      phaseBanner.hidden = false;
+      hasPhaseContent = true;
       const remaining = roundRemainingMs(liveRound);
       const countdown = el("span", "phase-countdown", formatRemaining(remaining));
       if (!liveRound.frozen && remaining <= FINAL_COUNTDOWN_MS) {
@@ -340,27 +345,22 @@
       top.appendChild(countdown);
       phaseBanner.appendChild(top);
       phaseBanner.appendChild(el("span", "phase-hint", voteHint(liveRound.candidates.length)));
-      return;
-    }
-    const sp = latest?.suggestPhase ?? null;
-    // quick-260716-fdl: the vote is parked behind the in-progress build
-    // (VOTE_WAITS_FOR_BUILD default mode). Priority: VOTE NOW > waiting >
-    // suggestions. While waiting the server sends suggestPhase: null, so
-    // ordering alone suffices — the BUILDING-pill guard is the HALT/window/
-    // chaos suppressor (ON HOLD / FREE REIGN / CHAOS own the show; the banner
-    // renders ONLY while the pill is BUILDING). NO countdown element: the wait
-    // has no deadline. Fixed copy only — never chat-derived (textContent via
-    // el(), this file's discipline).
-    if (latest?.voteWaiting && !sp && latest?.pill === "BUILDING") {
-      phaseBanner.hidden = false;
+    } else if (latest?.voteWaiting && !sp && latest?.pill === "BUILDING") {
+      // quick-260716-fdl: the vote is parked behind the in-progress build
+      // (VOTE_WAITS_FOR_BUILD default mode). Priority: VOTE NOW > waiting >
+      // suggestions. While waiting the server sends suggestPhase: null, so
+      // ordering alone suffices — the BUILDING-pill guard is the HALT/window/
+      // chaos suppressor (ON HOLD / FREE REIGN / CHAOS own the show; the banner
+      // renders ONLY while the pill is BUILDING). NO countdown element: the wait
+      // has no deadline. Fixed copy only — never chat-derived (textContent via
+      // el(), this file's discipline).
+      hasPhaseContent = true;
       const top = el("div", "phase-toprow");
       top.appendChild(el("span", "phase-title", "BUILDING — vote opens when it's done"));
       phaseBanner.appendChild(top);
       phaseBanner.appendChild(el("span", "phase-hint", "keep the !suggest ideas coming"));
-      return;
-    }
-    if (sp) {
-      phaseBanner.hidden = false;
+    } else if (sp) {
+      hasPhaseContent = true;
       const remaining = sp.endsAtMs - Date.now();
       const countdown = el("span", "phase-countdown", formatRemaining(remaining));
       if (remaining <= FINAL_COUNTDOWN_MS) {
@@ -375,9 +375,25 @@
       top.appendChild(countdown);
       phaseBanner.appendChild(top);
       phaseBanner.appendChild(el("span", "phase-hint", "type a command to jump in"));
-      return;
     }
-    phaseBanner.hidden = true;
+    // Persistent play link (quick-260716-ko2): the ACTIVE project's public
+    // Pages URL, shared by EVERY branch above (and shown alone when no phase
+    // content renders — FREE REIGN / CHAOS / standby / winner-beat gaps). The
+    // URL is server-composed (config owner + post-gate repo slug, never chat
+    // text) and rides the closed `playUrl` wire field. ON HOLD gate: never
+    // new UI in HALTED (decision 3). Fail-closed: null/empty → no line, no
+    // placeholder. textContent-only via el(); display drops the scheme for
+    // compactness, trailing path kept whole — never ellipsized.
+    const playUrl =
+      typeof latest?.playUrl === "string" && latest.playUrl.length > 0 && latest?.pill !== "ON HOLD"
+        ? latest.playUrl
+        : null;
+    if (playUrl !== null) {
+      phaseBanner.appendChild(
+        el("div", "phase-play", `▶ PLAY IT: ${playUrl.replace("https://", "")}`),
+      );
+    }
+    phaseBanner.hidden = !hasPhaseContent && playUrl === null;
   }
 
   function renderVotePanel() {
