@@ -1172,15 +1172,31 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       infoLastSentAtMs.set(kind, now);
       const rows = infoRepoRowsStmt.all() as Array<{ generation: number; repo_name: string }>;
       const urlOf = (name: string): string => `https://github.com/${infoOwner}/${name}`;
+      // quick-1ki: the PLAYABLE GitHub Pages URL for a repo — lowercased owner
+      // (Pages hosts are case-insensitive but canonical-lowercase), post-gate
+      // repo slug only.
+      const playUrlOf = (name: string): string =>
+        `https://${infoOwner.toLowerCase()}.github.io/${name}/`;
       if (kind === "projects") {
         narrator.infoProjects(rows.map((r) => ({ name: r.repo_name, url: urlOf(r.repo_name) })));
+        return;
+      }
+      if (kind === "apps") {
+        // quick-1ki: the gallery index site — config-derived URL only.
+        narrator.infoApps(`https://${infoOwner.toLowerCase()}.github.io/`);
         return;
       }
       if (kind === "current" || kind === "repo") {
         const current = rows.find((r) => r.generation === workspace.generation()) ?? null;
         if (kind === "current") {
           narrator.infoCurrent(
-            current ? { name: current.repo_name, url: urlOf(current.repo_name) } : null,
+            current
+              ? {
+                  name: current.repo_name,
+                  url: urlOf(current.repo_name),
+                  playUrl: playUrlOf(current.repo_name),
+                }
+              : null,
           );
         } else {
           narrator.infoRepo(current ? urlOf(current.repo_name) : null);

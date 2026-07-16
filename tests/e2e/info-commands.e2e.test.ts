@@ -122,14 +122,25 @@ describe("info commands e2e: instant replies, per-command cooldown, post-gate da
   it("!current inside the same window still replies — per-command windows are independent", async () => {
     chat.say("3", "asker3", "!current");
     const reply = await until(() => sent.find((m) => m.startsWith("On screen now:")));
-    // Active generation is 1 → snake-game.
-    expect(reply).toBe("On screen now: snake-game — https://github.com/TwitchVibecodes/snake-game");
+    // Active generation is 1 → snake-game. quick-1ki: the reply PREFERS the
+    // playable GitHub Pages URL (lowercased owner), source link second.
+    expect(reply).toBe(
+      "On screen now: snake-game — play: https://twitchvibecodes.github.io/snake-game/ · source: https://github.com/TwitchVibecodes/snake-game",
+    );
   });
 
   it("!repo replies with just the current link", async () => {
     chat.say("4", "asker4", "!repo");
     const reply = await until(() => sent.find((m) => m.startsWith("Current project repo:")));
     expect(reply).toBe("Current project repo: https://github.com/TwitchVibecodes/snake-game");
+  });
+
+  it("!apps replies with the lowercased-owner gallery index URL (quick-1ki)", async () => {
+    chat.say("7", "asker7", "!apps");
+    const reply = await until(() => sent.find((m) => m.startsWith("Play everything")));
+    expect(reply).toBe(
+      "Play everything chat has built: https://twitchvibecodes.github.io/ — every app live-coded by an AI from chat prompts, unreviewed by humans.",
+    );
   });
 
   it("!commands replies with the how-to-interact help copy (alias of !help)", async () => {

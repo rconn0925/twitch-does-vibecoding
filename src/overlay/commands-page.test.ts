@@ -32,6 +32,7 @@ const RECOGNIZED = [
   "!repo",
   "!help",
   "!commands",
+  "!apps",
 ] as const;
 
 // Aliases need not appear on the card (they map onto a primary token):
@@ -53,6 +54,7 @@ const SAMPLE_MESSAGE: Record<string, string> = {
   "!repo": "!repo",
   "!help": "!help",
   "!commands": "!commands",
+  "!apps": "!apps",
 };
 
 function readCommandsHtml(): string {
