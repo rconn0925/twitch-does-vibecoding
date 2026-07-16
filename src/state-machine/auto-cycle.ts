@@ -3,8 +3,21 @@
  *
  * Repeats [suggestPhaseMs suggestion window] → startRound("auto") → (voting
  * runs on ROUND_DURATION_SECONDS inside RoundManager) → on ROUND_CLOSED the
- * next suggestion window begins IMMEDIATELY — the cadence never waits for a
- * build (A1: winners queue; builds drain serially via main.ts drainVoteQueue).
+ * next suggestion window begins IMMEDIATELY.
+ *
+ * Vote-waits-for-build (quick-260716-fdl, DEFAULT ON): while a build is in
+ * progress, a suggest phase that ends does NOT open a vote round — the
+ * scheduler parks in a "waiting" state (no timer; purely event-driven) and the
+ * parked vote opens against the warm pool the moment the machine returns to
+ * IDLE (any terminal: done / failed-resolved / refused-resolved / veto /
+ * halt-recover). !suggest intake keeps pooling during the wait (intake is not
+ * scheduler-gated). Build queue depth naturally stays ~1 in this mode.
+ *
+ * With voteWaitsForBuild=false (VOTE_WAITS_FOR_BUILD="false" exact string) the
+ * original A1 pipelining is restored byte-identically: the cadence never waits
+ * for a build — winners queue and builds drain serially via main.ts
+ * drainVoteQueue, governed by VOTE_QUEUE_MAX / isVoteQueueFull below (that
+ * machinery is fully preserved for pipelining mode; do not remove it).
  *
  * Entirely event-driven: ONE unref'd setTimeout per suggestion phase, plus
  * STATE_CHANGED / HALT_TRIGGERED / ROUND_CLOSED subscriptions. Zero polling —
@@ -48,10 +61,15 @@ import {
 import type { RoundSnapshot, StreamMode } from "../shared/types.js";
 import { RoundStartError } from "./round.js";
 
-/** Point-in-time scheduler state for console/overlay projections. */
+/**
+ * Point-in-time scheduler state for console/overlay projections.
+ * phase "waiting" (quick-260716-fdl): a suggest phase ended while a build was
+ * in progress and the vote is parked until the machine returns to IDLE — no
+ * deadline exists (phaseEndsAtMs stays null while waiting).
+ */
 export interface AutoCycleSnapshot {
   enabled: boolean;
-  phase: "suggest" | null;
+  phase: "suggest" | "waiting" | null;
   phaseEndsAtMs: number | null;
 }
 
@@ -60,6 +78,8 @@ export interface AutoCycleNarrator {
   suggestionsOpen(seconds: number): void;
   stillCollecting(seconds: number): void;
   buildQueueFull(): void;
+  /** The vote is parked behind an in-progress build (quick-260716-fdl) — one beat per park. */
+  waitingForBuild(): void;
 }
 
 export interface AutoCycleDeps {
@@ -84,6 +104,16 @@ export interface AutoCycleDeps {
    * over the cap — the scheduler defers new suggestion phases until it drains.
    */
   isVoteQueueFull?: () => boolean;
+  /**
+   * quick-260716-fdl: when true (the PRODUCTION default — main.ts computes it
+   * from VOTE_WAITS_FOR_BUILD; only the exact trimmed string "false" disables),
+   * a suggest phase ending while machine.mode === "BUILD_IN_PROGRESS" parks the
+   * vote in the "waiting" state instead of opening a round; the parked vote
+   * opens on the STATE_CHANGED that returns the machine to IDLE. REQUIRED (the
+   * enabledAtBoot precedent): no class-level default may betray the production
+   * default — the composition root always passes the computed value.
+   */
+  voteWaitsForBuild: boolean;
   /**
    * OPTIONAL pool sliver (quick-l2a early close): current approved-pool size
    * plus a POOL_CHANGED subscription. When absent, the scheduler behaves
@@ -144,6 +174,16 @@ export class AutoCycleScheduler {
   #timer: NodeJS.Timeout | null = null;
   /** One buildQueueFull beat per park (amendment) — reset when a phase begins. */
   #queueFullNarrated = false;
+  /**
+   * quick-260716-fdl: the vote is parked behind an in-progress build. No timer
+   * exists while this is set — resume is purely event-driven (STATE_CHANGED /
+   * ROUND_CLOSED / start() pokes funnel through #maybeBegin → #resumeFromWait).
+   * #park() (halt) deliberately does NOT clear it: halt-recover resumes the
+   * owed vote. toggle() off DOES clear it (the owed vote dies with the pause).
+   */
+  #waitingForBuild = false;
+  /** One waitingForBuild beat per park (mirrors #queueFullNarrated). */
+  #waitNarrated = false;
 
   constructor(deps: AutoCycleDeps) {
     this.#deps = deps;
@@ -186,6 +226,10 @@ export class AutoCycleScheduler {
     if (!this.#enabled) {
       this.#clearTimer();
       this.#phaseEndsAtMs = null;
+      // The streamer paused the cadence — the owed vote dies with the pause
+      // (quick-260716-fdl): toggling back on opens a FRESH suggest phase.
+      this.#waitingForBuild = false;
+      this.#waitNarrated = false;
     } else {
       this.#maybeBegin("fresh");
     }
@@ -196,7 +240,8 @@ export class AutoCycleScheduler {
   snapshot(): AutoCycleSnapshot {
     return {
       enabled: this.#enabled,
-      phase: this.#phaseEndsAtMs !== null ? "suggest" : null,
+      phase:
+        this.#phaseEndsAtMs !== null ? "suggest" : this.#waitingForBuild ? "waiting" : null,
       phaseEndsAtMs: this.#phaseEndsAtMs,
     };
   }
@@ -216,6 +261,14 @@ export class AutoCycleScheduler {
    */
   #maybeBegin(kind: "fresh" | "restart"): void {
     if (this.#phaseEndsAtMs !== null || this.#timer !== null) return; // already in a phase
+    // quick-260716-fdl resume routing: while a vote is parked behind a build,
+    // EVERY existing poke (STATE_CHANGED, ROUND_CLOSED, start(), the
+    // WINDOW_CLOSED/WINDOW_REVOKED start() pokes) funnels into the wait-resume
+    // check instead of opening a new suggest phase — zero handler changes.
+    if (this.#waitingForBuild) {
+      this.#resumeFromWait();
+      return;
+    }
     if (!this.#enabled) return;
     if (this.#deps.round.snapshot() !== null) return; // a round is open/loaded
     const mode = this.#deps.machine.mode;
@@ -281,22 +334,59 @@ export class AutoCycleScheduler {
     this.#onPhaseEnd();
   }
 
-  #onPhaseEnd(): void {
-    this.#phaseEndsAtMs = null;
-    // Re-check eligibility at fire time: a window/chaos/halt/queue-cap that
-    // arrived mid-phase parks here; the next STATE_CHANGED resumes the cycle.
+  /**
+   * The shared eligibility predicate — #onPhaseEnd and #resumeFromWait run the
+   * IDENTICAL check (quick-260716-fdl: one predicate, never a parallel copy).
+   * A HALTED / window-live / chaos-on / queue-full moment fails here, which is
+   * exactly what keeps a parked vote frozen through a halt.
+   */
+  #isEligible(): boolean {
     const mode = this.#deps.machine.mode;
-    const eligible =
+    return (
       this.#enabled &&
       this.#deps.round.snapshot() === null &&
       (mode === "IDLE" || mode === "BUILD_IN_PROGRESS") &&
       !this.#deps.isControlWindowLive() &&
       !this.#deps.isChaosOn() &&
-      !(this.#deps.isVoteQueueFull?.() ?? false);
-    if (!eligible) {
+      !(this.#deps.isVoteQueueFull?.() ?? false)
+    );
+  }
+
+  #onPhaseEnd(): void {
+    this.#phaseEndsAtMs = null;
+    // Re-check eligibility at fire time: a window/chaos/halt/queue-cap that
+    // arrived mid-phase parks here; the next STATE_CHANGED resumes the cycle.
+    if (!this.#isEligible()) {
       this.#emitChanged(); // parked — overlay clears the countdown
       return;
     }
+    this.#attemptRoundStart();
+  }
+
+  /**
+   * quick-260716-fdl resume: a poke arrived while a vote is parked behind a
+   * build. Re-runs the SAME eligibility predicate #onPhaseEnd uses — failing
+   * it stays waiting (this is what keeps HALT frozen: mode HALTED is not
+   * eligible), as does a machine still in BUILD_IN_PROGRESS. Otherwise the
+   * wait clears FIRST (re-entrancy: #attemptRoundStart's chaos/solo arms call
+   * #maybeBegin, which must not redirect back here — recursion guard) and the
+   * parked vote opens through #attemptRoundStart — the BYTE-IDENTICAL funnel a
+   * phase end uses, never a parallel one.
+   */
+  #resumeFromWait(): void {
+    if (!this.#isEligible()) return; // stay waiting (halt/window/chaos/queue-full)
+    if (this.#deps.machine.mode === "BUILD_IN_PROGRESS") return; // still building
+    this.#waitingForBuild = false;
+    this.#waitNarrated = false;
+    this.#attemptRoundStart();
+  }
+
+  /**
+   * The vote-attempt tail shared by phase end and wait-resume (quick-260716-fdl
+   * extraction): chaosModePick consult → the wait gate → startRound with the
+   * solo/restart arms. Callers have ALREADY passed the eligibility check.
+   */
+  #attemptRoundStart(): void {
     // quick-rs3 chat-activated chaos: while its window is live the vote round
     // is SKIPPED — the pick hook owns this phase end (it runs AFTER the
     // eligibility check above, so halt/window/old-chaos/queue-full parking
@@ -320,6 +410,21 @@ export class AutoCycleScheduler {
     const chaosOutcome = this.#deps.chaosModePick?.() ?? null;
     if (chaosOutcome !== null) {
       this.#maybeBegin(chaosOutcome === "picked" ? "fresh" : "restart");
+      return;
+    }
+    // quick-260716-fdl wait gate — AFTER the chaosModePick consult (chaos picks
+    // must keep firing mid-build: they enqueue FIFO; drainVoteQueue serializes)
+    // and BEFORE startRound: in default mode a vote never opens against a
+    // running build — it parks and opens the moment the machine returns to
+    // IDLE, so chat always votes on the app state the build just produced.
+    if (this.#deps.voteWaitsForBuild && this.#deps.machine.mode === "BUILD_IN_PROGRESS") {
+      this.#waitingForBuild = true;
+      if (!this.#waitNarrated) {
+        this.#waitNarrated = true;
+        this.#deps.narrate?.waitingForBuild();
+      }
+      this.#deps.logger?.info("auto-cycle parked — vote waits for the in-progress build");
+      this.#emitChanged(); // overlay swaps the countdown for the waiting banner
       return;
     }
     try {
@@ -372,7 +477,11 @@ export class AutoCycleScheduler {
     }
   }
 
-  /** Cancel any pending phase and clear state (halt / toggle-off). */
+  /**
+   * Cancel any pending phase and clear state (halt / toggle-off). Deliberately
+   * does NOT clear #waitingForBuild (quick-260716-fdl): a halt mid-wait keeps
+   * the owed vote parked; halt-recover's STATE_CHANGED resumes it.
+   */
   #park(): void {
     this.#clearTimer();
     if (this.#phaseEndsAtMs !== null) {
