@@ -339,6 +339,161 @@ describe("console control-window revoke route (PAID-04 / D-03)", () => {
   });
 });
 
+describe("console pending-window seam (quick-260716-h73)", () => {
+  /** A real ControlWindow banked mid-build + the main.ts-shaped console seam. */
+  function bankedHarness() {
+    db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    const round = new RoundManager({
+      db,
+      machine,
+      pool,
+      enqueueWinner: () => ({ queued: true }),
+    });
+    const controlWindow = new ControlWindow({
+      db,
+      machine,
+      submitDuringWindow: async () => ({ queued: true }) as { queued: true },
+      donationConfig: { ratePerUnit: 12, minSeconds: 30, maxSeconds: 300 },
+      redemptionConfig: { ratePerUnit: 0.03, minSeconds: 30, maxSeconds: 120 },
+      cooldownMs: 120_000,
+    });
+    // The main.ts seam shape: active ?? pending, plus the push-event hook.
+    const seam = {
+      snapshot: () => controlWindow.snapshot() ?? controlWindow.pendingSnapshot(),
+      revoke: () => controlWindow.revoke(),
+      on: (event: string, handler: (...args: unknown[]) => void) =>
+        controlWindow.on(event, handler),
+    };
+    return { machine, pool, round, controlWindow, seam };
+  }
+
+  it("GET /api/state carries the PENDING snapshot (pending:true, endsAtMs 0 sentinel) when only a pending exists", async () => {
+    const { machine, pool, round, controlWindow, seam } = bankedHarness();
+    machine.transition("BUILD_IN_PROGRESS");
+    controlWindow.open({
+      trigger: "donation",
+      donorIdentifier: "alice_stable_id",
+      donorDisplayName: "AliceDisplay",
+      amountOrCost: 5,
+    });
+    if (!db) throw new Error("db not open");
+    handle = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      controlWindow: seam,
+    });
+
+    const state = (await (await fetch(`${base(handle)}/api/state`)).json()) as {
+      controlWindow: ControlWindowSnapshot | null;
+    };
+    expect(state.controlWindow).toMatchObject({
+      donorDisplayName: "AliceDisplay",
+      trigger: "donation",
+      durationMs: 60_000,
+      endsAtMs: 0,
+      pending: true,
+    });
+    controlWindow.dispose();
+  });
+
+  it("POST /api/control-window/revoke cancels a PENDING window: { revoked: true }, pending gone, ONE window_revoked row", async () => {
+    const { machine, pool, round, controlWindow, seam } = bankedHarness();
+    machine.transition("VOTING_ROUND");
+    controlWindow.open({
+      trigger: "donation",
+      donorIdentifier: "alice_stable_id",
+      donorDisplayName: "AliceDisplay",
+      amountOrCost: 5,
+    });
+    if (!db) throw new Error("db not open");
+    handle = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      controlWindow: seam,
+    });
+
+    const res = await postJson(`${base(handle)}/api/control-window/revoke`, {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ revoked: true, controlWindow: null });
+    expect(controlWindow.pendingSnapshot()).toBeNull();
+
+    const audit = listAuditRecords(db, { limit: 10, eventType: "window_revoked" });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]?.twitch_username).toBe("alice_stable_id");
+    controlWindow.dispose();
+  });
+
+  it("WINDOW_PENDING / WINDOW_REVOKED push fresh console state to ws clients (the panel is live, not connect-time-stale)", async () => {
+    const { machine, pool, round, controlWindow, seam } = bankedHarness();
+    if (!db) throw new Error("db not open");
+    handle = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      controlWindow: seam,
+    });
+
+    const { WebSocket } = await import("ws");
+    const socket = new WebSocket(`ws://127.0.0.1:${handle.port}`);
+    const messages: Array<{ controlWindow: ControlWindowSnapshot | null }> = [];
+    socket.on("message", (data) => {
+      messages.push(JSON.parse(String(data)) as { controlWindow: ControlWindowSnapshot | null });
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on("open", () => resolve());
+      socket.on("error", reject);
+    });
+    // Full-state-on-connect arrives first (no window yet).
+    await vi.waitFor(() => expect(messages.length).toBeGreaterThanOrEqual(1));
+    expect(messages[0]?.controlWindow).toBeNull();
+
+    // A bank while the machine is busy happens WITHOUT a mode change — only the
+    // WINDOW_PENDING subscription can push it (pending discards likewise ride
+    // WINDOW_REVOKED outside any STATE_CHANGED).
+    machine.transition("BUILD_IN_PROGRESS"); // pushes via STATE_CHANGED
+    const baseline = messages.length;
+    controlWindow.open({
+      trigger: "donation",
+      donorIdentifier: "alice_stable_id",
+      donorDisplayName: "AliceDisplay",
+      amountOrCost: 5,
+    });
+    await vi.waitFor(() => {
+      const latest = messages[messages.length - 1];
+      expect(messages.length).toBeGreaterThan(baseline);
+      expect(latest?.controlWindow).toMatchObject({ pending: true, endsAtMs: 0 });
+    });
+
+    // Direct revoke of the pending (no HTTP route, no mode change) pushes too.
+    const afterBank = messages.length;
+    controlWindow.revoke();
+    await vi.waitFor(() => {
+      const latest = messages[messages.length - 1];
+      expect(messages.length).toBeGreaterThan(afterBank);
+      expect(latest?.controlWindow).toBeNull();
+    });
+
+    socket.close();
+    controlWindow.dispose();
+  });
+});
+
 describe("console chaos-mode toggle route (CHAOS-01 / D-05)", () => {
   it("POST /api/chaos/toggle flips chaos state via the injected seam and returns it", async () => {
     let on = false;
