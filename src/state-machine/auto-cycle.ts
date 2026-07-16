@@ -240,8 +240,7 @@ export class AutoCycleScheduler {
   snapshot(): AutoCycleSnapshot {
     return {
       enabled: this.#enabled,
-      phase:
-        this.#phaseEndsAtMs !== null ? "suggest" : this.#waitingForBuild ? "waiting" : null,
+      phase: this.#phaseEndsAtMs !== null ? "suggest" : this.#waitingForBuild ? "waiting" : null,
       phaseEndsAtMs: this.#phaseEndsAtMs,
     };
   }
