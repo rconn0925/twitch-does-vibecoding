@@ -108,6 +108,36 @@ describe("overlay fixed copy (quick-ur2)", () => {
     });
   });
 
+  describe("persistent phase-banner play link (quick-260716-ko2)", () => {
+    const PHASE_PLAY_TEMPLATE = "▶ PLAY IT: ";
+
+    it("the template appears exactly once, index-ordered AFTER the suggest hint (phase-banner territory), with the done-beat pin intact", () => {
+      const src = readOverlayJs();
+      const occurrences = src.split(PHASE_PLAY_TEMPLATE).length - 1;
+      expect(occurrences, "phase-banner PLAY IT template must appear exactly once").toBe(1);
+
+      // The FREE_REIGN_HINT scoping idiom: the persistent line lives in
+      // renderPhaseBanner's shared tail — after the suggest-branch hint pin.
+      const suggestHintIdx = src.indexOf("type a command to jump in");
+      const phasePlayIdx = src.indexOf(PHASE_PLAY_TEMPLATE);
+      expect(suggestHintIdx).toBeGreaterThan(-1);
+      expect(phasePlayIdx).toBeGreaterThan(suggestHintIdx);
+
+      // The TRANSIENT done-beat pin (quick-g8p) is a DISTINCT surface and must
+      // ALSO still exist — this task never touches the `playable` path.
+      expect(src).toContain("PLAY IT → ");
+    });
+
+    it("renders via the phase-play class with a scheme-stripped display (https:// dropped, trailing path kept)", () => {
+      const src = readOverlayJs();
+      // el() textContent-only construction; the class name is the CSS hook.
+      expect(src).toContain('"phase-play"');
+      // Display drops the scheme for compactness — the slug/path stays whole
+      // (the URL is NEVER ellipsized on screen).
+      expect(src).toContain('replace("https://", "")');
+    });
+  });
+
   describe("waiting-for-build banner (quick-260716-fdl)", () => {
     const WAITING_TITLE = "BUILDING — vote opens when it's done";
     const WAITING_HINT = "keep the !suggest ideas coming";

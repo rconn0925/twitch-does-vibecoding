@@ -450,6 +450,13 @@ describe("overlay server (read-only broadcast surface)", () => {
       builderFeed?: FakeBuilderFeed;
       chaosMode?: FakeChaosMode;
       playable?: FakePlayable;
+      /**
+       * quick-260716-ko2: the PULL-based persistent play-link source. Typed
+       * `() => unknown` deliberately — the fail-closed narrowing test injects a
+       * MISBEHAVING source returning a rich object; the cast at the deps spread
+       * mirrors the richStatus `as unknown as` trick.
+       */
+      playUrl?: { current: () => unknown };
       queueDisplayMax?: number;
       nextUpTexts?: string[];
       richQueueItems?: RichQueueItem[];
@@ -482,6 +489,9 @@ describe("overlay server (read-only broadcast surface)", () => {
       ...(opts.builderFeed !== undefined ? { builderFeed: opts.builderFeed } : {}),
       ...(opts.chaosMode !== undefined ? { chaosMode: opts.chaosMode } : {}),
       ...(opts.playable !== undefined ? { playable: opts.playable } : {}),
+      ...(opts.playUrl !== undefined
+        ? { playUrl: opts.playUrl as { current(): string | null } }
+        : {}),
       ...(opts.queueDisplayMax !== undefined ? { queueDisplayMax: opts.queueDisplayMax } : {}),
       ...(opts.debounceMs !== undefined ? { debounceMs: opts.debounceMs } : {}),
     });
@@ -1192,6 +1202,88 @@ describe("overlay server (read-only broadcast surface)", () => {
     await until(() => messages.length >= 3, "immediate null push");
     await flushIo();
     expect(messages[2]?.playable).toBeNull();
+  });
+
+  // ── quick-260716-ko2: the PERSISTENT phase-banner play link on the wire ──
+
+  it("playUrl defaults to null with no source — a CLOSED field always present on the wire (quick-260716-ko2)", async () => {
+    const { handle } = await start();
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    // The field is CLOSED: present-and-null, never undefined-dropped from JSON.
+    expect("playUrl" in httpState).toBe(true);
+    expect(httpState.playUrl).toBeNull();
+
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0] !== undefined && "playUrl" in messages[0]).toBe(true);
+    expect(messages[0]?.playUrl).toBeNull();
+  });
+
+  it("playUrl carries the pull source's string — the real 80-char VOIDFARER slug, decision-1 shape (quick-260716-ko2)", async () => {
+    const voidfarer =
+      "https://twitchvibecodes.github.io/a-space-simulation-where-we-fly-around-the-galaxy-exploring-beautiful-planets-st/";
+    const { handle } = await start({ playUrl: { current: () => voidfarer } });
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.playUrl).toBe(voidfarer);
+    // Decision-1 shape assertion: config owner + post-gate sanitizeRepoName
+    // slug only — the exact URL grammar the phase banner renders.
+    expect(httpState.playUrl).toMatch(/^https:\/\/twitchvibecodes\.github\.io\/[a-z0-9-]+\/$/);
+
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.playUrl).toBe(voidfarer);
+  });
+
+  it("playUrl fail-closed narrowing: a MISBEHAVING source returning a rich object yields null — routing/donor bytes never cross the wire (quick-260716-ko2)", async () => {
+    // current() must return a STRING; a rich object (a broken/hostile source)
+    // narrows to null — defence-in-depth, the g8p raw-bytes pattern.
+    const { handle } = await start({
+      playUrl: {
+        current: () => ({
+          url: "https://twitchvibecodes.github.io/rich/",
+          repoRowSecret: "leak-me",
+          donorAmount: 500,
+        }),
+      },
+    });
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.playUrl).toBeNull();
+    const raw = JSON.stringify(httpState);
+    for (const forbidden of ["repoRowSecret", "donorAmount", "leak-me"]) {
+      expect(raw, `"${forbidden}" must never reach the broadcast wire`).not.toContain(forbidden);
+    }
+
+    // The ws connect push narrows identically.
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.playUrl).toBeNull();
+    expect(JSON.stringify(messages[0])).not.toContain("repoRowSecret");
+  });
+
+  it("playUrl is recomputed at EVERY push — a source flip rides the next EXISTING push with zero dedicated events (quick-260716-ko2 decision 4)", async () => {
+    // The closure flip models a project switch/swap/rotation: the durable
+    // routing row changes, and the NEXT state push (any existing path — here
+    // ROUND_OPENED) carries the new URL. No playUrl event exists or is needed.
+    let repo = "repo-a";
+    const round = makeFakeRound(sampleRound());
+    const { handle } = await start({
+      round,
+      playUrl: { current: () => `https://twitchvibecodes.github.io/${repo}/` },
+    });
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.playUrl).toBe("https://twitchvibecodes.github.io/repo-a/");
+
+    repo = "repo-b";
+    round.emit(ROUND_OPENED);
+    await until(() => messages.length >= 2, "next existing-path push");
+    await flushIo();
+    expect(messages[1]?.playUrl).toBe("https://twitchvibecodes.github.io/repo-b/");
   });
 
   it("queue carries the FULL FIFO queue capped at 10 while nextUp stays capped at 3 (quick-v4e)", async () => {
