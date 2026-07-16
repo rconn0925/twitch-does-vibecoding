@@ -5,6 +5,8 @@ import {
   type GalleryConfig,
   type GalleryExec,
   type GalleryFs,
+  galleryIndexUrl,
+  galleryPlayUrl,
   type ProjectRepoStore,
   resolveGalleryConfig,
   sanitizeCommitTitle,
@@ -1259,5 +1261,140 @@ describe("createGalleryPublisher.revertLast — chat-voted rollback (quick-q5n)"
       "git:push",
       "git:rev-parse",
     ]);
+  });
+});
+
+describe("gallery URL helpers (quick-260716-g8p) — the SINGLE URL-construction point", () => {
+  it("galleryPlayUrl lowercases the owner (Pages hosts are canonical-lowercase) and trails a slash", () => {
+    expect(galleryPlayUrl("TwitchVibecodes", "my-app")).toBe(
+      "https://twitchvibecodes.github.io/my-app/",
+    );
+  });
+
+  it("galleryIndexUrl is the lowercased owner site root", () => {
+    expect(galleryIndexUrl("TwitchVibecodes")).toBe("https://twitchvibecodes.github.io/");
+  });
+});
+
+describe("createGalleryPublisher.awaitPagesBuilt — bounded Pages-readiness poll (quick-260716-g8p)", () => {
+  /**
+   * Deterministic poll harness: an injected mutable clock that ONLY advances
+   * when the injected sleep is awaited (no real timers, no network). The exec
+   * fake scripts the successive `gh api …/pages/builds/latest --jq .status`
+   * answers; a thrown entry simulates the 404 before the first Pages build.
+   */
+  function pollHarness(answers: Array<string | Error>) {
+    let clockMs = 1_000_000;
+    const sleeps: number[] = [];
+    const calls: ExecCall[] = [];
+    let i = 0;
+    const exec: GalleryExec = async (file, args, opts) => {
+      calls.push({ file, args: [...args], opts });
+      const answer = answers[Math.min(i, answers.length - 1)];
+      i += 1;
+      if (answer instanceof Error) throw answer;
+      return { stdout: `${answer}\n` };
+    };
+    const { fsx } = captureFs();
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store: fakeStore([[1, "my-app"]]),
+      exec,
+      fsx,
+      now: () => new Date(clockMs),
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clockMs += ms;
+      },
+      pagesPollIntervalMs: 5_000,
+      pagesPollTimeoutMs: 90_000,
+      logger: fakeLogger(),
+    });
+    return { publisher, calls, sleeps };
+  }
+
+  it("resolves 'built' with ZERO sleeps when the first poll answers built (later-push instant path)", async () => {
+    const { publisher, calls, sleeps } = pollHarness(["built"]);
+    await expect(publisher.awaitPagesBuilt?.("my-app")).resolves.toBe("built");
+    expect(sleeps).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("polls again after one sleep(intervalMs) when the status is 'building' first", async () => {
+    const { publisher, calls, sleeps } = pollHarness(["building", "built"]);
+    await expect(publisher.awaitPagesBuilt?.("my-app")).resolves.toBe("built");
+    expect(sleeps).toEqual([5_000]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("a 404 before the first Pages build is NOT fatal — keeps polling to a resolution, never rejects (T-hak-03)", async () => {
+    const { publisher, sleeps } = pollHarness([
+      new Error("HTTP 404: Not Found"),
+      new Error("HTTP 404: Not Found"),
+      "built",
+    ]);
+    await expect(publisher.awaitPagesBuilt?.("my-app")).resolves.toBe("built");
+    expect(sleeps).toEqual([5_000, 5_000]);
+  });
+
+  it("resolves 'timeout' (NEVER rejects) once the injected clock passes the ~90s deadline", async () => {
+    const { publisher, sleeps } = pollHarness([new Error("HTTP 404: Not Found")]);
+    await expect(publisher.awaitPagesBuilt?.("my-app")).resolves.toBe("timeout");
+    // 90s budget / 5s interval → the poll gave up after the deadline, bounded.
+    expect(sleeps.length).toBeGreaterThan(0);
+    expect(sleeps.length).toBeLessThanOrEqual(19);
+  });
+
+  it("every poll is `gh` with an ARG ARRAY and GH_TOKEN ONLY on the env — never argv (T-g8p-03)", async () => {
+    const { publisher, calls } = pollHarness(["building", "built"]);
+    await publisher.awaitPagesBuilt?.("my-app");
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(call.file).toBe("gh");
+      expect(call.args).toEqual([
+        "api",
+        "repos/TwitchVibecodes/my-app/pages/builds/latest",
+        "--jq",
+        ".status",
+      ]);
+      expect(call.opts?.env).toEqual({ GH_TOKEN: TOKEN });
+      for (const arg of call.args) {
+        expect(arg).not.toContain(TOKEN);
+      }
+    }
+  });
+
+  it("does NOT ride the publishNow serialization chain — the poll resolves while a publish is still pending", async () => {
+    // A publishNow blocked forever on its first exec call; the poll must
+    // still answer immediately (read-only gh api, off the mirror chain).
+    let publishExecStarted = false;
+    const exec: GalleryExec = async (_file, args) => {
+      if (args.includes("builds/latest") || args.join(" ").includes("pages/builds/latest")) {
+        return { stdout: "built\n" };
+      }
+      publishExecStarted = true;
+      await new Promise<void>(() => {}); // never resolves — the publish hangs
+      return { stdout: "" };
+    };
+    const { fsx } = captureFs();
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store: fakeStore([[1, "my-app"]]),
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+    const pending = publisher.publishNow({ generation: 1, title: "t", taskId: "task-1" });
+    // Let the hung publish reach its first exec before polling.
+    await new Promise((r) => setImmediate(r));
+    expect(publishExecStarted).toBe(true);
+    await expect(publisher.awaitPagesBuilt?.("my-app")).resolves.toBe("built");
+    // The publish promise is still unresolved — the poll never waited on it.
+    let publishSettled = false;
+    void pending.then(() => {
+      publishSettled = true;
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(publishSettled).toBe(false);
   });
 });

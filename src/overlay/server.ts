@@ -32,6 +32,17 @@ import type { BuildStatusView, CandidateKind, RoundSnapshot, StreamMode } from "
 export const BUILD_STAGE_CHANGED = "build:stage-changed" as const;
 
 /**
+ * Emitted by the OverlayPlayableSource when the just-published build's
+ * playable GitHub Pages URL changes (set after a CONFIRMED publish, cleared
+ * when the next build starts). A low-frequency show beat — at most once per
+ * completed build — so it pushes IMMEDIATELY, never through the vote-tally
+ * debounce. Declared here like BUILD_STAGE_CHANGED (same file-boundary
+ * rationale); the composition root (main.ts) imports the constant from the
+ * overlay contract.
+ */
+export const PLAYABLE_CHANGED = "overlay:playable-changed" as const;
+
+/**
  * Public OBS overlay server (PRES-01) — a PHYSICALLY separate localhost
  * surface from the operator console (D2-17). Read-only by construction: the
  * only routes that exist are express.static and GET /api/state. There is no
@@ -78,6 +89,13 @@ export interface OverlayState {
    * →done/failed/refused stage the overlay stepper renders. `title` is the one
    * chat-derived string on the build panel — rendered textContent-only, 80-char
    * truncated client-side (T-03-15).
+   *
+   * quick-260716-g8p: `suggestedBy` is the ONE new display field — the
+   * vote/chaos suggester's twitchUsername only (already public on the pool
+   * wire), NULL for paid builds; no gate, donor, or internal field ever rides
+   * along. The server re-projects to EXACTLY
+   * {taskId, title, stage, source, suggestedBy} (the controlWindow idiom) in
+   * buildOverlayState, so even a richer source can never leak extra keys.
    */
   buildStatus: BuildStatusView | null;
   /**
@@ -150,6 +168,16 @@ export interface OverlayState {
    * silently — no "expired" text, no red, ever.
    */
   chaosMode: { endsAtMs: number } | null;
+  /**
+   * The just-published build's playable GitHub Pages URL (quick-260716-g8p),
+   * or null. Display-fields-only: the URL is composed SERVER-side from the
+   * config owner + the post-gate sanitizeRepoName slug (the durable
+   * project_repos routing) — never raw chat text. Set only after publishNow
+   * CONFIRMED (published | no-changes with a repo row); cleared when the next
+   * build starts. Nulls collapse the PLAY IT line silently (D2-18) — no error
+   * text, no red, ever.
+   */
+  playable: { url: string } | null;
   /**
    * The builder-view feed (quick-x7d, the /builder page). SAFETY CONTRACT:
    * every line is orchestrator-authored fixed copy (stage captions, the
@@ -255,6 +283,29 @@ const NULL_CHAOS_MODE_SOURCE: OverlayChaosModeSource = {
 };
 
 /**
+ * The playable-link sliver the overlay needs (quick-260716-g8p, mirrors
+ * OverlayChaosModeSource): a {url}|null snapshot plus a PLAYABLE_CHANGED
+ * subscription. The composition root (main.ts) feeds this seam from its
+ * post-publish announce path; tests inject a plain fake. The server
+ * re-projects the snapshot down to exactly {url} regardless of source
+ * richness (defence-in-depth, the chaosMode idiom).
+ */
+export interface OverlayPlayableSource {
+  snapshot(): { url: string } | null;
+  on(event: string, handler: (...args: unknown[]) => void): void;
+}
+
+/**
+ * A no-op playable source: no link ever live, no change events. Mirrors
+ * NULL_CHAOS_MODE_SOURCE — the composition root can wire the overlay without
+ * the announce path and the PLAY IT line simply stays absent (playable: null).
+ */
+const NULL_PLAYABLE_SOURCE: OverlayPlayableSource = {
+  snapshot: () => null,
+  on: () => {},
+};
+
+/**
  * The auto-cycle sliver the overlay needs (mirrors OverlayBuildSource): the
  * scheduler snapshot plus an AUTO_CYCLE_CHANGED subscription. The source may
  * carry richer fields (the console sees `enabled`); buildOverlayState narrows
@@ -340,6 +391,8 @@ export interface OverlayServerDeps {
   controlWindow?: OverlayControlWindowSource;
   /** Optional (quick-rs3 chat-activated chaos); defaults to chaos never live. */
   chaosMode?: OverlayChaosModeSource;
+  /** Optional (quick-260716-g8p playable link); defaults to no link ever live. */
+  playable?: OverlayPlayableSource;
   /** Optional until quick-t5k wires the scheduler; defaults to no phase active. */
   autoCycle?: OverlayAutoCycleSource;
   /** Optional (quick-v4e what's-coming page); defaults to an empty pool. */
@@ -395,6 +448,7 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   const build = deps.build ?? NULL_BUILD_SOURCE;
   const controlWindow = deps.controlWindow ?? NULL_CONTROL_WINDOW_SOURCE;
   const chaosModeSource = deps.chaosMode ?? NULL_CHAOS_MODE_SOURCE;
+  const playableSource = deps.playable ?? NULL_PLAYABLE_SOURCE;
   const autoCycle = deps.autoCycle ?? NULL_AUTO_CYCLE_SOURCE;
   const poolSource = deps.pool ?? NULL_POOL_SOURCE;
   const feedSource = deps.builderFeed ?? NULL_BUILDER_FEED_SOURCE;
@@ -430,13 +484,33 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
     // window's absolute deadline crosses the wire — tally counts, thresholds
     // and chatter ids are chat/console detail that never reach the broadcast.
     const cm = chaosModeSource.snapshot();
+    // Explicit re-projection (quick-260716-g8p, defence-in-depth — the
+    // controlWindow idiom): buildStatus stops passing through whole. Only the
+    // five display fields are ever constructed for the wire; a legacy source
+    // without source/suggestedBy is fine — JSON.stringify drops the undefined
+    // source and the client falls back (`?? "vote"`, no suggester line).
+    const bs = build.snapshot();
+    // Explicit narrowing (quick-260716-g8p, the chaosMode idiom): only the
+    // server-composed Pages URL crosses the wire — a richer source could
+    // never leak extra keys onto the broadcast.
+    const pl = playableSource.snapshot();
     return {
       pill: PILL_BY_MODE[machine.mode],
       round: round.snapshot(),
-      buildStatus: build.snapshot(),
+      buildStatus:
+        bs === null
+          ? null
+          : {
+              taskId: bs.taskId,
+              title: bs.title,
+              stage: bs.stage,
+              source: bs.source,
+              suggestedBy: bs.suggestedBy ?? null,
+            },
       controlWindow:
         cw === null ? null : { donorDisplayName: cw.donorDisplayName, endsAtMs: cw.endsAtMs },
       chaosMode: cm === null ? null : { endsAtMs: cm.endsAtMs },
+      playable: pl === null ? null : { url: pl.url },
       suggestPhase:
         ac.phase === "suggest" && ac.phaseEndsAtMs !== null ? { endsAtMs: ac.phaseEndsAtMs } : null,
       // quick-260716-fdl: a bare boolean narrowed from the snapshot phase —
@@ -578,6 +652,13 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
   // window events above, never through the vote-tally debounce. A null
   // snapshot collapses the badge to DEMOCRATIC silently on the client.
   chaosModeSource.on(CHAOS_MODE_CHANGED, () => {
+    pushState();
+  });
+
+  // Playable-link changes (quick-260716-g8p) are low-frequency show beats —
+  // at most once per completed build (set on publish-confirm, cleared on the
+  // next build start) → push IMMEDIATELY, never the vote-tally debounce.
+  playableSource.on(PLAYABLE_CHANGED, () => {
     pushState();
   });
 

@@ -444,7 +444,23 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
 
   /** Emit one pipeline stage: audit row → overlay push → progress sink. */
   function emitStage(task: QueuedTask, stage: PipelineStage, summary?: string): void {
-    const view: BuildStatusView = { taskId: task.id, title: task.text, stage };
+    // quick-260716-g8p: ACTIVATES the previously-dormant `source` field — the
+    // client's FREE REIGN / CHAOS PICK provenance-chip logic has existed since
+    // Phase 4 but never received it. `currentProvenance` is threaded explicitly
+    // per T-05-03 (never mode-inferred), set at the top of runPipeline before
+    // any emitStage, and preserved across a streamer retry — no ordering hazard.
+    // suggestedBy is the vote/chaos suggester's twitchUsername ONLY: a paid
+    // (donation | channel_points) build nulls it so the coarse T-04-13 public
+    // projection is never widened (T-g8p-01 — the wire has never carried who
+    // issued a paid-window instruction).
+    const paid = currentProvenance === "donation" || currentProvenance === "channel_points";
+    const view: BuildStatusView = {
+      taskId: task.id,
+      title: task.text,
+      stage,
+      source: currentProvenance,
+      suggestedBy: paid ? null : task.twitchUsername,
+    };
     auditIfOpen(() =>
       recordPipelineStage(deps.db, {
         taskId: task.id,

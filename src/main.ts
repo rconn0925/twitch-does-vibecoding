@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -71,6 +72,8 @@ import {
   createProjectRepoStore,
   DEFAULT_GALLERY_OWNER,
   type GalleryPublisher,
+  galleryIndexUrl,
+  galleryPlayUrl,
   resolveGalleryConfig,
 } from "./orchestrator/gallery-publisher.js";
 import { type BuildSession, createBuildSession } from "./orchestrator/index.js";
@@ -82,7 +85,11 @@ import type {
 } from "./orchestrator/types.js";
 import { createWorkspaceState } from "./orchestrator/workspace.js";
 import { createBuilderFeed } from "./overlay/builder-feed.js";
-import { type OverlayServerHandle, startOverlayServer } from "./overlay/server.js";
+import {
+  type OverlayServerHandle,
+  PLAYABLE_CHANGED,
+  startOverlayServer,
+} from "./overlay/server.js";
 import { type ChaosPickResult, submitChaosPick } from "./pipeline/chaos.js";
 import { submitDuringWindow } from "./pipeline/paid-window.js";
 import { enqueueWinner } from "./pipeline/round.js";
@@ -452,6 +459,24 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // generation change — console new-project, project-switch rotation, and
   // swap activation.
   let reRootPreview: () => void = () => {};
+
+  // ── Playable-link state (quick-260716-g8p) ────────────────────────────────
+  // ONE resolved gallery owner for every URL surface (quick-1ki note: never
+  // duplicate URL construction) — the chat info commands and the post-publish
+  // announce both read this. Public data, not a credential.
+  const galleryOwner = (process.env.GALLERY_GITHUB_OWNER ?? "").trim() || DEFAULT_GALLERY_OWNER;
+  // The just-published build's playable Pages URL, or null. Set by the
+  // announce path (build block below) after a CONFIRMED publish; cleared the
+  // moment the NEXT build starts so a stale link never rides into that
+  // build's done beat. An OBS reconnect just resends the current truth.
+  let playableUrl: string | null = null;
+  const playableEvents = new EventEmitter();
+  machine.on(STATE_CHANGED, () => {
+    if (machine.mode === "BUILD_IN_PROGRESS" && playableUrl !== null) {
+      playableUrl = null;
+      playableEvents.emit(PLAYABLE_CHANGED);
+    }
+  });
 
   // ── Chat-voted chaos mode controller (quick-260711-ly4, RS3-01..RS3-05) ──
   // A timed vote-skip window opened when the server-composed CHAOS ballot option
@@ -1170,7 +1195,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         process.env.INFO_COMMAND_COOLDOWN_SECONDS,
         DEFAULT_INFO_COMMAND_COOLDOWN_SECONDS,
       ) * 1_000;
-    const infoOwner = (process.env.GALLERY_GITHUB_OWNER ?? "").trim() || DEFAULT_GALLERY_OWNER;
+    // quick-260716-g8p: the owner is resolved ONCE at createApp scope
+    // (galleryOwner) — shared with the post-publish playable announce.
     const infoRepoRowsStmt = db.prepare(
       "SELECT generation, repo_name FROM project_repos ORDER BY generation DESC",
     );
@@ -1181,19 +1207,18 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       if (now - (infoLastSentAtMs.get(kind) ?? 0) < infoCooldownMs) return; // silent (D2-15)
       infoLastSentAtMs.set(kind, now);
       const rows = infoRepoRowsStmt.all() as Array<{ generation: number; repo_name: string }>;
-      const urlOf = (name: string): string => `https://github.com/${infoOwner}/${name}`;
-      // quick-1ki: the PLAYABLE GitHub Pages URL for a repo — lowercased owner
-      // (Pages hosts are case-insensitive but canonical-lowercase), post-gate
-      // repo slug only.
-      const playUrlOf = (name: string): string =>
-        `https://${infoOwner.toLowerCase()}.github.io/${name}/`;
+      const urlOf = (name: string): string => `https://github.com/${galleryOwner}/${name}`;
+      // quick-1ki: the PLAYABLE GitHub Pages URL for a repo — the shared
+      // gallery-publisher helper (quick-260716-g8p: the SINGLE URL point),
+      // lowercased owner + post-gate repo slug only.
+      const playUrlOf = (name: string): string => galleryPlayUrl(galleryOwner, name);
       if (kind === "projects") {
         narrator.infoProjects(rows.map((r) => ({ name: r.repo_name, url: urlOf(r.repo_name) })));
         return;
       }
       if (kind === "apps") {
         // quick-1ki: the gallery index site — config-derived URL only.
-        narrator.infoApps(`https://${infoOwner.toLowerCase()}.github.io/`);
+        narrator.infoApps(galleryIndexUrl(galleryOwner));
         return;
       }
       if (kind === "current" || kind === "repo") {
@@ -1438,6 +1463,52 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     // resolveGalleryConfig returns null and buildGalleryPublisher yields
     // undefined (publishing stays inert), preserving the injected-fake seam.
     const galleryPublisher = opts.galleryPublisher ?? buildGalleryPublisher(db, logger);
+
+    // ── Playable-link announce (quick-260716-g8p) ─────────────────────────
+    // Fired ONLY from onBuildDone below, AFTER publishNow resolved a CONFIRMED
+    // outcome (published | no-changes). Scope note: the shipThenRotate / swap
+    // "final snapshot" publishes deliberately do NOT announce — they ship the
+    // OUTGOING project mid-transition; the !current / !apps info commands
+    // already cover those links. The durable project_repos row is the ONLY
+    // repo-name source for the URL (prepared once; post-gate slug, never chat
+    // text). FULL try/catch that only ever logger.error's — the T-hak-03
+    // idiom: finalize already returned when this runs; nothing here can delay
+    // or fail it, and a failed poll/send logs loudly and drops.
+    const playableRepoStmt = db.prepare(
+      "SELECT repo_name FROM project_repos WHERE generation = @generation",
+    );
+    const announcePlayable = async (generation: number, taskId: string): Promise<void> => {
+      try {
+        if (!db.open) return;
+        const row = playableRepoStmt.get({ generation }) as { repo_name: string } | undefined;
+        // No row = nothing was ever published for this generation (the
+        // EMPTY-01 no-changes skip) — no link exists, return silently.
+        if (!row) return;
+        // Pages-build-aware gate: a first publish takes ~40-60s to go live.
+        // Fake publishers without the method announce immediately —
+        // deterministic in e2e.
+        const status = galleryPublisher?.awaitPagesBuilt
+          ? await galleryPublisher.awaitPagesBuilt(row.repo_name)
+          : "built";
+        const url = galleryPlayUrl(galleryOwner, row.repo_name);
+        // Guard the overlay push: machine.mode === BUILD_IN_PROGRESS means a
+        // NEW build already started and the STATE_CHANGED clear won the race —
+        // a stale link must not ride into that build's done beat.
+        if (machine.mode !== "BUILD_IN_PROGRESS") {
+          playableUrl = url;
+          playableEvents.emit(PLAYABLE_CHANGED);
+        }
+        // The chat beat posts either way (late-bound narrator idiom;
+        // silent-safe when no chat pipeline is composed).
+        windowNarrator?.buildPlayable(url, status === "built");
+      } catch (err) {
+        logger.error(
+          { err, taskId, generation },
+          "playable-link announce failed — show loop unaffected (T-hak-03 idiom)",
+        );
+      }
+    };
+
     const buildSession = createBuildSession({
       taskQueue,
       db,
@@ -1498,6 +1569,13 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
                 detail: result.detail,
                 streamMode: machine.mode,
               });
+            }
+            // quick-260716-g8p: announce the playable link ONLY on a CONFIRMED
+            // publish — a 'failed' publish NEVER posts a link (T-g8p-05).
+            // Fire-and-forget: finalize returned long ago; announcePlayable
+            // owns its errors (T-hak-03).
+            if (result.status === "published" || result.status === "no-changes") {
+              void announcePlayable(generation, task.id);
             }
           })
           .catch((err) =>
@@ -2081,6 +2159,13 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     chaosMode: {
       snapshot: () => chaosMode.snapshot(),
       on: (event, handler) => chaosMode.on(event, handler),
+    },
+    // quick-260716-g8p: the just-published build's playable Pages URL — set by
+    // the announce path on publish-confirm, cleared on the next build start.
+    // The server re-narrows to exactly {url} defensively.
+    playable: {
+      snapshot: () => (playableUrl === null ? null : { url: playableUrl }),
+      on: (event, handler) => playableEvents.on(event, handler),
     },
     // quick-t5k A2: the suggestion-phase guidance countdown source. The server
     // re-narrows to suggestPhase:{endsAtMs} — the enabled flag stays private.

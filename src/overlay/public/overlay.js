@@ -491,6 +491,19 @@
     // JS-truncated to 80 chars (CSS ellipsis is the backstop) — T-03-15.
     buildPanel.appendChild(el("div", "build-task", truncate(bs.title, BUILD_TITLE_MAX)));
 
+    // Suggester attribution (quick-260716-g8p): the vote/chaos suggester's
+    // username — server-nulled for paid builds (T-g8p-01), so the FREE REIGN
+    // chip never gains a name. textContent-only via el(); JS-truncated to 24
+    // chars (the DONOR_NAME_MAX rule — usernames are viewer-controlled).
+    // Fail-closed: missing/null/empty → no line, no placeholder. Renders in
+    // BOTH the live panel and the 8s BUILT IT beat (the beat holds the done
+    // view, which carries suggestedBy).
+    if (typeof bs.suggestedBy === "string" && bs.suggestedBy.length > 0) {
+      buildPanel.appendChild(
+        el("div", "build-suggester", `suggested by @${truncate(bs.suggestedBy, DONOR_NAME_MAX)}`),
+      );
+    }
+
     const stepper = el("div", "build-stepper");
     const activeIndex = effectiveStepIndex(bs.stage);
     BUILD_STEPS.forEach((step, i) => {
@@ -510,6 +523,18 @@
     const caption = el("div", "build-caption", STAGE_CAPTION[bs.stage] || "");
     if (AMBER_STAGES.has(bs.stage)) caption.classList.add("build-caption-amber");
     buildPanel.appendChild(caption);
+
+    // PLAY IT line (quick-260716-g8p): DONE-BEAT ONLY. The URL is
+    // server-composed (config owner + post-gate repo slug — never chat text)
+    // and arrives on the `playable` wire field after the publish confirms.
+    // Every ws push re-renders, so a playable push landing mid-beat makes the
+    // line appear live; the instant later-push case lands within the 8s beat
+    // in practice. Documented decision: a FIRST publish (~40-60s Pages lag)
+    // misses the beat by design — chat carries the "(going live in ~1 min)"
+    // link; no extra client beat machinery. textContent-only via el().
+    if (beatActive && latest?.playable?.url) {
+      buildPanel.appendChild(el("div", "build-play", `PLAY IT → ${latest.playable.url}`));
+    }
   }
 
   function startDoneBeat(doneStatus) {

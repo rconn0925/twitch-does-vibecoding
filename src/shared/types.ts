@@ -225,6 +225,16 @@ export interface BuildStatusView {
    * absent value as "vote".
    */
   source?: "vote" | "donation" | "channel_points" | "chaos";
+  /**
+   * Display-only attribution (quick-260716-g8p): the suggester's
+   * twitchUsername — ALREADY public on the pool wire ({text, username}) — so
+   * the NOW BUILDING panel can credit the idea. SERVER-NULLED for paid-window
+   * builds (donation | channel_points): the T-04-13 coarse public projection
+   * has never carried WHO issued a paid-window instruction, and this field
+   * must not widen it (T-g8p-01). Also null for operator-injected tasks.
+   * Optional so legacy producers/fakes stay valid; absent renders no line.
+   */
+  suggestedBy?: string | null;
 }
 
 /**

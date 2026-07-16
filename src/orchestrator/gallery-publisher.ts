@@ -82,6 +82,16 @@ export interface GalleryPublisher {
    * successful cp), and push. Serializes on the SAME chain as publishNow.
    */
   revertLast(input: RevertInput): Promise<RevertResult>;
+  /**
+   * quick-260716-g8p: bounded (~90s) poll of the repo's GitHub Pages build
+   * status — the play-link announce gate. Resolves "built" the moment the
+   * latest Pages build reports built; resolves "timeout" past the deadline.
+   * NEVER rejects (T-hak-03) and never touches the mirror or the publish
+   * serialization chain (read-only `gh api`) — it runs concurrently with the
+   * next build's publish. OPTIONAL so every existing fake stays type-valid;
+   * absent ⇒ callers announce immediately.
+   */
+  awaitPagesBuilt?(repoName: string): Promise<"built" | "timeout">;
 }
 
 /**
@@ -128,6 +138,26 @@ export interface GalleryConfig {
  * configured token — the owner string is public data, not a credential.
  */
 export const DEFAULT_GALLERY_OWNER = "TwitchVibecodes";
+
+/**
+ * The playable GitHub Pages URL for one project repo (quick-260716-g8p) — the
+ * SINGLE URL-construction point (main.ts must not duplicate this template).
+ * Inputs are ONLY the config-derived owner and the post-gate sanitizeRepoName
+ * slug ([a-z0-9-]) — never raw chat text. Pages hosts are case-insensitive
+ * but canonical-lowercase, so the owner is lowercased here.
+ */
+export function galleryPlayUrl(owner: string, repoName: string): string {
+  return `https://${owner.toLowerCase()}.github.io/${repoName}/`;
+}
+
+/**
+ * The gallery index site root (the `<owner>.github.io` user site,
+ * quick-260716-g8p). Same input discipline as galleryPlayUrl: the
+ * config-derived owner only, lowercased.
+ */
+export function galleryIndexUrl(owner: string): string {
+  return `https://${owner.toLowerCase()}.github.io/`;
+}
 
 /**
  * Fixed commit identity (EMPTY-01 live-run finding): the mirror repos are fresh
@@ -274,6 +304,17 @@ export function resolveGalleryConfig(env: NodeJS.ProcessEnv): GalleryConfig | nu
  * Construct the per-project publisher. All touch-points injectable; production
  * defaults are node builtins + the host gh/git CLIs (zero new dependencies).
  */
+/** Default Pages-poll cadence/budget (quick-260716-g8p): 5s checks, ~90s cap. */
+const DEFAULT_PAGES_POLL_INTERVAL_MS = 5_000;
+const DEFAULT_PAGES_POLL_TIMEOUT_MS = 90_000;
+
+/** Production sleep default: promise-wrapped UNREF'd setTimeout (never holds the process open). */
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    t.unref?.();
+  });
+
 export function createGalleryPublisher(deps: {
   config: GalleryConfig;
   store: ProjectRepoStore;
@@ -285,12 +326,19 @@ export function createGalleryPublisher(deps: {
    * → index publishing is OFF entirely (existing compositions unchanged).
    */
   indexEntries?: () => GalleryIndexEntry[];
+  /** quick-260716-g8p poll seams — injectable for deterministic tests. */
+  sleep?: (ms: number) => Promise<void>;
+  pagesPollIntervalMs?: number;
+  pagesPollTimeoutMs?: number;
   logger: Logger;
 }): GalleryPublisher {
   const { config, store, logger } = deps;
   const exec = deps.exec ?? defaultExec;
   const fsx = deps.fsx ?? defaultFs;
   const now = deps.now ?? (() => new Date());
+  const sleep = deps.sleep ?? defaultSleep;
+  const pagesPollIntervalMs = deps.pagesPollIntervalMs ?? DEFAULT_PAGES_POLL_INTERVAL_MS;
+  const pagesPollTimeoutMs = deps.pagesPollTimeoutMs ?? DEFAULT_PAGES_POLL_TIMEOUT_MS;
 
   /** The plain https origin for a repo — NO token ever embedded (T-hak-01). */
   const originUrl = (name: string): string => `https://github.com/${config.owner}/${name}.git`;
@@ -776,6 +824,40 @@ export function createGalleryPublisher(deps: {
         () => undefined,
       );
       return result;
+    },
+
+    /**
+     * quick-260716-g8p: bounded Pages-readiness poll. Deliberately OFF the
+     * serialization `chain` and mirror-free — a read-only `gh api` status
+     * check that must run concurrently with the next build's publish and can
+     * never block the show loop (T-hak-03/T-g8p-04). The METHOD never rejects:
+     * every iteration is try/caught (a 404 = the first Pages build hasn't
+     * started yet on a brand-new repo — expected, not fatal) and the loop
+     * hard-resolves "timeout" past the deadline.
+     */
+    async awaitPagesBuilt(repoName: string): Promise<"built" | "timeout"> {
+      const deadlineMs = now().getTime() + pagesPollTimeoutMs;
+      for (;;) {
+        try {
+          const out = await exec(
+            "gh",
+            ["api", `repos/${config.owner}/${repoName}/pages/builds/latest`, "--jq", ".status"],
+            withToken,
+          );
+          if (out.stdout.trim() === "built") return "built";
+        } catch (err) {
+          // Not-ready (404 pre-first-build) or transient gh hiccup — poll on.
+          logger.debug({ err, repoName }, "Pages build status not ready yet — polling on");
+        }
+        if (now().getTime() >= deadlineMs) {
+          logger.warn(
+            { repoName, pagesPollTimeoutMs },
+            "Pages build never reported built inside the poll budget — announcing with the honest timeout phrasing",
+          );
+          return "timeout";
+        }
+        await sleep(pagesPollIntervalMs);
+      }
     },
   };
 }

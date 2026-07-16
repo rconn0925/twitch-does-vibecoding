@@ -4,9 +4,11 @@ import { openDb } from "../audit/db.js";
 import { listAuditRecords, listBuildHistory } from "../audit/record.js";
 import { AbortRegistry } from "../kill-switch/abort.js";
 import { type BuilderFeedSink, createBuilderFeed } from "../overlay/builder-feed.js";
+import { BUILD_STAGE_CHANGED } from "../overlay/server.js";
 import { TaskQueue } from "../queue/task-queue.js";
 import type {
   BuildNarrator,
+  BuildProvenance,
   BuildStatusView,
   GateResult,
   PipelineStage,
@@ -2309,5 +2311,113 @@ describe("createBuildSession — source discipline (single funnel)", () => {
     expect(stripped).not.toMatch(/\.enqueue\(/);
     expect(stripped).not.toMatch(/toQueuedTask/);
     expect(stripped).not.toMatch(/submitCandidate/);
+  });
+});
+
+describe("createBuildSession — suggester attribution on the overlay view (quick-260716-g8p)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  /**
+   * Run one happy-path build with the given provenance/username and capture
+   * every pushed BuildStatusView AND every snapshot() taken at each
+   * BUILD_STAGE_CHANGED emission — both surfaces must agree on the new
+   * source/suggestedBy fields.
+   */
+  async function runAttributedBuild(opts: {
+    provenance?: BuildProvenance;
+    username?: string | null;
+  }): Promise<{ views: BuildStatusView[]; snapshots: BuildStatusView[] }> {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const candidate: SuggestionCandidate = {
+      id: "task-attr",
+      source: "chat",
+      kind: "suggestion",
+      twitchUsername: opts.username === undefined ? "viewer" : opts.username,
+      text: "make a page",
+      submittedAtMs: 1_700_000_000_000,
+    };
+    const task = candidate as unknown as QueuedTask;
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    const session = createBuildSession(deps);
+    const snapshots: BuildStatusView[] = [];
+    session.on(BUILD_STAGE_CHANGED, () => {
+      const snap = session.snapshot();
+      if (snap) snapshots.push(snap);
+    });
+    if (opts.provenance !== undefined) {
+      await session.startBuild(task, opts.provenance);
+    } else {
+      await session.startBuild(task);
+    }
+    return { views, snapshots };
+  }
+
+  it("a 'vote' build carries source 'vote' + suggestedBy=<task.twitchUsername> on EVERY view (push + snapshot)", async () => {
+    const { views, snapshots } = await runAttributedBuild({ provenance: "vote" });
+    expect(views.length).toBeGreaterThan(0);
+    for (const view of views) {
+      expect(view.source).toBe("vote");
+      expect(view.suggestedBy).toBe("viewer");
+    }
+    for (const snap of snapshots) {
+      expect(snap.source).toBe("vote");
+      expect(snap.suggestedBy).toBe("viewer");
+    }
+  });
+
+  it("a 'chaos' build carries the suggester too — chaos picks come from the chat pool", async () => {
+    const { views } = await runAttributedBuild({ provenance: "chaos" });
+    expect(views.length).toBeGreaterThan(0);
+    for (const view of views) {
+      expect(view.source).toBe("chaos");
+      expect(view.suggestedBy).toBe("viewer");
+    }
+  });
+
+  it("a 'donation' build NULLS suggestedBy while source still carries the provenance (coarse projection, T-g8p-01)", async () => {
+    const { views, snapshots } = await runAttributedBuild({ provenance: "donation" });
+    expect(views.length).toBeGreaterThan(0);
+    for (const view of views) {
+      expect(view.source).toBe("donation");
+      expect(view.suggestedBy).toBeNull();
+    }
+    for (const snap of snapshots) {
+      expect(snap.suggestedBy).toBeNull();
+    }
+  });
+
+  it("a 'channel_points' build NULLS suggestedBy while source still carries the provenance", async () => {
+    const { views } = await runAttributedBuild({ provenance: "channel_points" });
+    expect(views.length).toBeGreaterThan(0);
+    for (const view of views) {
+      expect(view.source).toBe("channel_points");
+      expect(view.suggestedBy).toBeNull();
+    }
+  });
+
+  it("a task with twitchUsername null (operator-injected) yields suggestedBy null", async () => {
+    const { views } = await runAttributedBuild({ provenance: "vote", username: null });
+    expect(views.length).toBeGreaterThan(0);
+    for (const view of views) {
+      expect(view.source).toBe("vote");
+      expect(view.suggestedBy).toBeNull();
+    }
   });
 });

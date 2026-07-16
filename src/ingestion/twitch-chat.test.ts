@@ -128,6 +128,8 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     infoRepo: vi.fn(),
     infoHelp: vi.fn(),
     infoApps: vi.fn(),
+    // quick-260716-g8p playable-link beat (unused by the chat listener).
+    buildPlayable: vi.fn(),
     // Swap beats (quick-t8k; unused by the chat listener).
     swapActivated: vi.fn(),
     swapShipFailed: vi.fn(),

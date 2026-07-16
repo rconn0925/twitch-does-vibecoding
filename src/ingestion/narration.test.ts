@@ -305,6 +305,9 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "infoHelp",
         // quick-1ki: the playable-gallery link (fixed copy + config URL).
         "infoApps",
+        // quick-260716-g8p: the post-publish playable-link beat — a
+        // server-composed Pages URL + a readiness boolean; never a tally.
+        "buildPlayable",
         // Swap beats (quick-t8k) — the resolved repo slug at most; never a tally.
         "swapActivated",
         "swapShipFailed",
@@ -865,5 +868,23 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       expect(sent).toHaveLength(2);
       expect(sent[1]).toContain("@late ");
     });
+  });
+});
+
+describe("createNarrator — buildPlayable post-publish link beat (quick-260716-g8p)", () => {
+  it("ready=true sends exactly one 'Play it now: <url>' message", () => {
+    const { sent, sender } = capturingSender();
+    const narrator = createNarrator({ sender });
+    narrator.buildPlayable("https://twitchvibecodes.github.io/my-app/", true);
+    expect(sent).toEqual(["Play it now: https://twitchvibecodes.github.io/my-app/"]);
+  });
+
+  it("ready=false sends exactly one honest '(going live in ~1 min)' variant", () => {
+    const { sent, sender } = capturingSender();
+    const narrator = createNarrator({ sender });
+    narrator.buildPlayable("https://twitchvibecodes.github.io/my-app/", false);
+    expect(sent).toEqual([
+      "Play it: https://twitchvibecodes.github.io/my-app/ (going live in ~1 min)",
+    ]);
   });
 });

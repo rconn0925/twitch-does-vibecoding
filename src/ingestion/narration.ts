@@ -193,6 +193,18 @@ export interface Narrator extends BuildNarrator {
    * the config-derived owner.github.io URL — never chat text.
    */
   infoApps(url: string): void;
+
+  // ── Post-publish playable-link beat (quick-260716-g8p) ───────────────────
+  /**
+   * The just-completed build's playable GitHub Pages link — fired only after
+   * publishNow CONFIRMED (published | no-changes with a repo row). ONE extra
+   * transition beat per completed build through the same rate-limited sender
+   * (buildDone already posts exactly one). The ONLY dynamic token is the
+   * config-owner + sanitized-slug Pages URL — never chat text. `ready=false`
+   * is the honest first-publish variant (the Pages build hadn't reported
+   * built inside the poll budget). Copy-separation safe: no chance/money words.
+   */
+  buildPlayable(url: string, ready: boolean): void;
 }
 
 /** UI-SPEC: titles inside chat messages truncate to 60 chars (incl. the ellipsis). */
@@ -726,6 +738,18 @@ export function createNarrator(deps: {
       void deps.sender.send(
         `Play everything chat has built: ${url} — every app live-coded by an AI from chat prompts, unreviewed by humans.`,
       );
+    },
+
+    // quick-260716-g8p: the post-publish playable-link beat. Two PINNED copy
+    // variants (narration.test.ts exact-string contract); the URL is the only
+    // dynamic token — server-composed from the config owner + the post-gate
+    // repo slug, never chat text.
+    buildPlayable(url: string, ready: boolean): void {
+      if (ready) {
+        void deps.sender.send(`Play it now: ${url}`);
+        return;
+      }
+      void deps.sender.send(`Play it: ${url} (going live in ~1 min)`);
     },
   };
 }
