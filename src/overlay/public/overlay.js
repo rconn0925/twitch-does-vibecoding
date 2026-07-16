@@ -491,6 +491,19 @@
     // JS-truncated to 80 chars (CSS ellipsis is the backstop) — T-03-15.
     buildPanel.appendChild(el("div", "build-task", truncate(bs.title, BUILD_TITLE_MAX)));
 
+    // Suggester attribution (quick-260716-g8p): the vote/chaos suggester's
+    // username — server-nulled for paid builds (T-g8p-01), so the FREE REIGN
+    // chip never gains a name. textContent-only via el(); JS-truncated to 24
+    // chars (the DONOR_NAME_MAX rule — usernames are viewer-controlled).
+    // Fail-closed: missing/null/empty → no line, no placeholder. Renders in
+    // BOTH the live panel and the 8s BUILT IT beat (the beat holds the done
+    // view, which carries suggestedBy).
+    if (typeof bs.suggestedBy === "string" && bs.suggestedBy.length > 0) {
+      buildPanel.appendChild(
+        el("div", "build-suggester", `suggested by @${truncate(bs.suggestedBy, DONOR_NAME_MAX)}`),
+      );
+    }
+
     const stepper = el("div", "build-stepper");
     const activeIndex = effectiveStepIndex(bs.stage);
     BUILD_STEPS.forEach((step, i) => {

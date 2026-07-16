@@ -78,6 +78,13 @@ export interface OverlayState {
    * →done/failed/refused stage the overlay stepper renders. `title` is the one
    * chat-derived string on the build panel — rendered textContent-only, 80-char
    * truncated client-side (T-03-15).
+   *
+   * quick-260716-g8p: `suggestedBy` is the ONE new display field — the
+   * vote/chaos suggester's twitchUsername only (already public on the pool
+   * wire), NULL for paid builds; no gate, donor, or internal field ever rides
+   * along. The server re-projects to EXACTLY
+   * {taskId, title, stage, source, suggestedBy} (the controlWindow idiom) in
+   * buildOverlayState, so even a richer source can never leak extra keys.
    */
   buildStatus: BuildStatusView | null;
   /**
@@ -430,10 +437,25 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
     // window's absolute deadline crosses the wire — tally counts, thresholds
     // and chatter ids are chat/console detail that never reach the broadcast.
     const cm = chaosModeSource.snapshot();
+    // Explicit re-projection (quick-260716-g8p, defence-in-depth — the
+    // controlWindow idiom): buildStatus stops passing through whole. Only the
+    // five display fields are ever constructed for the wire; a legacy source
+    // without source/suggestedBy is fine — JSON.stringify drops the undefined
+    // source and the client falls back (`?? "vote"`, no suggester line).
+    const bs = build.snapshot();
     return {
       pill: PILL_BY_MODE[machine.mode],
       round: round.snapshot(),
-      buildStatus: build.snapshot(),
+      buildStatus:
+        bs === null
+          ? null
+          : {
+              taskId: bs.taskId,
+              title: bs.title,
+              stage: bs.stage,
+              source: bs.source,
+              suggestedBy: bs.suggestedBy ?? null,
+            },
       controlWindow:
         cw === null ? null : { donorDisplayName: cw.donorDisplayName, endsAtMs: cw.endsAtMs },
       chaosMode: cm === null ? null : { endsAtMs: cm.endsAtMs },

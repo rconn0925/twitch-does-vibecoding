@@ -528,6 +528,20 @@ body {
   text-overflow: ellipsis;
 }
 
+/* Suggester attribution (quick-260716-g8p): muted secondary line under the
+ * task title — smaller than .build-task, never red. CSS ellipsis is the
+ * backstop behind the JS-side 24-char username truncation. */
+.build-suggester {
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .build-stepper {
   display: flex;
   align-items: center;
