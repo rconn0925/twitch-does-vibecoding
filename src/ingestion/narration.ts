@@ -124,6 +124,13 @@ export interface Narrator extends BuildNarrator {
    * rounds until the queue drains (user amendment). Emitted ONCE per park.
    */
   buildQueueFull(): void;
+  /**
+   * quick-260716-fdl: the vote is parked behind an in-progress build
+   * (VOTE_WAITS_FOR_BUILD default mode). Emitted ONCE per park. This beat
+   * POSTS to chat (the buildQueueFull precedent) — it fires at most once per
+   * build, and chat needs to know why no vote countdown is running.
+   */
+  waitingForBuild(): void;
 
   // ── Single-suggestion auto-build beats (quick-260711-ly4 — server-composed) ─
   // A DISTINCT beat from a vote win (roundClosed) and a chaos pick
@@ -560,6 +567,16 @@ export function createNarrator(deps: {
 
     buildQueueFull(): void {
       void deps.sender.send("Build queue full — pausing new rounds until it drains.");
+    },
+
+    // quick-260716-fdl: the vote-waits-for-build park beat. POSTS (the
+    // buildQueueFull precedent, once per park) — NOT one of the anti-spam
+    // no-ops above: it fires at most once per build, and chat needs to know
+    // why no vote countdown is running.
+    waitingForBuild(): void {
+      void deps.sender.send(
+        "Build in progress — the vote opens the moment it's done. Keep the !suggest ideas coming.",
+      );
     },
 
     // ── Single-suggestion auto-build beats (quick-260711-ly4 — VERBATIM) ──────

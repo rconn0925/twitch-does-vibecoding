@@ -10,6 +10,8 @@ import { describe, expect, it } from "vitest";
  * Covers:
  *  - T4: the shortened suggestions phase-hint (one line at 1080p, no mid-word cut)
  *  - T5: the FREE REIGN usage hint, scoped to the control-window branch only
+ *  - quick-260716-fdl: the waiting-for-build banner copy + its voteWaiting /
+ *    BUILDING-pill gating (no waiting banner during HALT/window/chaos)
  */
 
 const FREE_REIGN_HINT = "!build or !suggest — straight to the queue";
@@ -53,5 +55,51 @@ describe("overlay fixed copy (quick-ur2)", () => {
     expect(hintIdx).toBeGreaterThan(democraticIdx);
     // … and after the FREE REIGN label append (i.e. in the cw-only tail).
     expect(hintIdx).toBeGreaterThan(freeReignLabelIdx);
+  });
+
+  describe("waiting-for-build banner (quick-260716-fdl)", () => {
+    const WAITING_TITLE = "BUILDING — vote opens when it's done";
+    const WAITING_HINT = "keep the !suggest ideas coming";
+
+    it("pins the exact waiting copy — fixed title and hint, never chat-derived", () => {
+      const src = readOverlayJs();
+      expect(src).toContain(WAITING_TITLE);
+      expect(src).toContain(WAITING_HINT);
+    });
+
+    it("the branch is gated on voteWaiting AND the BUILDING pill, sits between VOTE NOW and the suggest banner (priority: VOTE NOW > waiting > suggestions)", () => {
+      const src = readOverlayJs();
+      const titleIdx = src.indexOf(WAITING_TITLE);
+      expect(titleIdx).toBeGreaterThan(-1);
+
+      // Gated on the wire boolean AND the BUILDING pill: while HALTED the pill
+      // reads ON HOLD (and FREE REIGN / CHAOS own the show), so the waiting
+      // banner never renders outside a live build.
+      const gateIdx = src.indexOf("voteWaiting");
+      const pillGateIdx = src.indexOf('pill === "BUILDING"');
+      expect(gateIdx, "banner must be gated on latest.voteWaiting").toBeGreaterThan(-1);
+      expect(pillGateIdx, "banner must be gated on the BUILDING pill").toBeGreaterThan(-1);
+      expect(gateIdx).toBeLessThan(titleIdx);
+      expect(pillGateIdx).toBeLessThan(titleIdx);
+
+      // Slot priority inside renderPhaseBanner: the live-round VOTE NOW branch
+      // returns first, the waiting branch second, the suggest countdown third.
+      const voteNowIdx = src.indexOf('"VOTE NOW"');
+      const suggestTitleIdx = src.indexOf('"Suggestions open:"');
+      expect(voteNowIdx).toBeGreaterThan(-1);
+      expect(suggestTitleIdx).toBeGreaterThan(-1);
+      expect(voteNowIdx).toBeLessThan(titleIdx);
+      expect(titleIdx).toBeLessThan(suggestTitleIdx);
+    });
+
+    it("the existing suggest-banner and T4 hint pins are undisturbed by the new branch", () => {
+      const src = readOverlayJs();
+      expect(src).toContain('"Suggestions open:"');
+      expect(src).toContain("type a command to jump in");
+      // The waiting banner renders NO countdown element (no deadline exists) —
+      // exactly one hint per banner branch, fixed copy only.
+      const occurrences = src.split(WAITING_HINT).length - 1;
+      expect(occurrences, "waiting hint must appear exactly once").toBe(1);
+    });
   });
 });

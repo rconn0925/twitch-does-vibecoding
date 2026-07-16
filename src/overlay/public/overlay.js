@@ -343,6 +343,22 @@
       return;
     }
     const sp = latest?.suggestPhase ?? null;
+    // quick-260716-fdl: the vote is parked behind the in-progress build
+    // (VOTE_WAITS_FOR_BUILD default mode). Priority: VOTE NOW > waiting >
+    // suggestions. While waiting the server sends suggestPhase: null, so
+    // ordering alone suffices — the BUILDING-pill guard is the HALT/window/
+    // chaos suppressor (ON HOLD / FREE REIGN / CHAOS own the show; the banner
+    // renders ONLY while the pill is BUILDING). NO countdown element: the wait
+    // has no deadline. Fixed copy only — never chat-derived (textContent via
+    // el(), this file's discipline).
+    if (latest?.voteWaiting && !sp && latest?.pill === "BUILDING") {
+      phaseBanner.hidden = false;
+      const top = el("div", "phase-toprow");
+      top.appendChild(el("span", "phase-title", "BUILDING — vote opens when it's done"));
+      phaseBanner.appendChild(top);
+      phaseBanner.appendChild(el("span", "phase-hint", "keep the !suggest ideas coming"));
+      return;
+    }
     if (sp) {
       phaseBanner.hidden = false;
       const remaining = sp.endsAtMs - Date.now();

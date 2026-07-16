@@ -112,6 +112,7 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     suggestionsOpen: vi.fn(),
     stillCollecting: vi.fn(),
     buildQueueFull: vi.fn(),
+    waitingForBuild: vi.fn(),
     // Single-suggestion auto-build beats (quick-260711-ly4; unused here).
     soloPicked: vi.fn(),
     soloPickRecheck: vi.fn(),

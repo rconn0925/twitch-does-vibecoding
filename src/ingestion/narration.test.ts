@@ -283,6 +283,9 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "suggestionsOpen",
         "stillCollecting",
         "buildQueueFull",
+        // quick-260716-fdl: the vote-waits-for-build park beat — fixed line,
+        // one per park, never a tally.
+        "waitingForBuild",
         // Single-suggestion auto-build beats (quick-260711-ly4) — a title string
         // at most and a fixed recheck line; never a tally.
         "soloPicked",
@@ -593,6 +596,18 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       const narrator = createNarrator({ sender });
       narrator.buildQueueFull();
       expect(sent).toEqual(["Build queue full — pausing new rounds until it drains."]);
+    });
+
+    it("waitingForBuild POSTS exactly one pinned chat line (quick-260716-fdl — the buildQueueFull precedent, NOT an anti-spam no-op)", () => {
+      // This beat fires at most once per build (one per park), and chat needs
+      // to know why no vote countdown is running — so unlike the per-window
+      // suggestionsOpen/stillCollecting no-ops, it posts.
+      const { sent, sender } = capturingSender();
+      const narrator = createNarrator({ sender });
+      narrator.waitingForBuild();
+      expect(sent).toEqual([
+        "Build in progress — the vote opens the moment it's done. Keep the !suggest ideas coming.",
+      ]);
     });
   });
 
