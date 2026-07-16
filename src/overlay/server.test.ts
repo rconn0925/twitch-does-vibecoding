@@ -21,6 +21,7 @@ import {
   type OverlayControlWindowSource,
   type OverlayServerHandle,
   type OverlayState,
+  PLAYABLE_CHANGED,
   startOverlayServer,
 } from "./server.js";
 
@@ -308,6 +309,45 @@ function makeFakeChaosMode(initial: RichChaosSnapshot | null = null): FakeChaosM
 }
 
 /**
+ * Minimal playable-link source (quick-260716-g8p, mirrors makeFakeChaosMode's
+ * rich-snapshot trick): snapshot() may carry MORE than {url} — publish detail
+ * and routing keys are orchestrator detail that must NEVER reach the broadcast
+ * wire — proving the server narrows down to exactly {url} (the chaosMode
+ * idiom). setPlayable() mutates then emits PLAYABLE_CHANGED.
+ */
+interface RichPlayableSnapshot {
+  url: string;
+  // Orchestrator detail that must NEVER reach the public wire:
+  repoRowSecret: string;
+  publishDetail: string;
+}
+
+interface FakePlayable {
+  snapshot(): RichPlayableSnapshot | null;
+  on(event: string, handler: (...args: unknown[]) => void): void;
+  setPlayable(next: RichPlayableSnapshot | null): void;
+}
+
+function makeFakePlayable(initial: RichPlayableSnapshot | null = null): FakePlayable {
+  const emitter = new EventEmitter();
+  let current = initial;
+  return {
+    snapshot: () => current,
+    on: (event, handler) => {
+      emitter.on(event, handler);
+    },
+    setPlayable: (next) => {
+      current = next;
+      emitter.emit(PLAYABLE_CHANGED);
+    },
+  };
+}
+
+function richPlayable(url: string): RichPlayableSnapshot {
+  return { url, repoRowSecret: "generation-7-routing", publishDetail: "pushed-by-host-pat" };
+}
+
+/**
  * A DELIBERATELY-RICH queue item (quick-ur2, mirrors RichPoolItem): the real
  * TaskQueue.list() returns QueuedTask items that carry vote provenance (ids,
  * originating round) alongside {text, kind}. The extra keys below must NEVER
@@ -409,6 +449,7 @@ describe("overlay server (read-only broadcast surface)", () => {
       pool?: FakePool;
       builderFeed?: FakeBuilderFeed;
       chaosMode?: FakeChaosMode;
+      playable?: FakePlayable;
       queueDisplayMax?: number;
       nextUpTexts?: string[];
       richQueueItems?: RichQueueItem[];
@@ -440,6 +481,7 @@ describe("overlay server (read-only broadcast surface)", () => {
       port: 0,
       ...(opts.builderFeed !== undefined ? { builderFeed: opts.builderFeed } : {}),
       ...(opts.chaosMode !== undefined ? { chaosMode: opts.chaosMode } : {}),
+      ...(opts.playable !== undefined ? { playable: opts.playable } : {}),
       ...(opts.queueDisplayMax !== undefined ? { queueDisplayMax: opts.queueDisplayMax } : {}),
       ...(opts.debounceMs !== undefined ? { debounceMs: opts.debounceMs } : {}),
     });
@@ -1100,6 +1142,56 @@ describe("overlay server (read-only broadcast surface)", () => {
     await until(() => messages.length >= 3, "immediate null push");
     await flushIo();
     expect(messages[2]?.chaosMode).toBeNull();
+  });
+
+  it("playable defaults to null with no source (quick-260716-g8p)", async () => {
+    const { handle } = await start();
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.playable).toBeNull();
+
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.playable).toBeNull();
+  });
+
+  it("playable narrows to EXACTLY {url} from a richer source — routing/publish detail never crosses the wire (quick-260716-g8p)", async () => {
+    const playable = makeFakePlayable(richPlayable("https://twitchvibecodes.github.io/my-app/"));
+    const { handle } = await start({ playable });
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.playable).toEqual({ url: "https://twitchvibecodes.github.io/my-app/" });
+    expect(Object.keys(httpState.playable ?? {})).toEqual(["url"]);
+    const raw = JSON.stringify(httpState);
+    for (const forbidden of ["repoRowSecret", "publishDetail", "generation-7-routing"]) {
+      expect(raw, `"${forbidden}" must never reach the broadcast wire`).not.toContain(forbidden);
+    }
+
+    // The ws connect push carries the same narrowed projection.
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.playable).toEqual({ url: "https://twitchvibecodes.github.io/my-app/" });
+    expect(JSON.stringify(messages[0])).not.toContain("repoRowSecret");
+  });
+
+  it("PLAYABLE_CHANGED triggers an IMMEDIATE push (never the tally debounce), and null collapses it silently", async () => {
+    const playable = makeFakePlayable();
+    const { handle } = await start({ playable });
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.playable).toBeNull();
+
+    // No fake timers, no debounce advance: the push must land on its own.
+    playable.setPlayable(richPlayable("https://twitchvibecodes.github.io/snake/"));
+    await until(() => messages.length >= 2, "immediate PLAYABLE_CHANGED push");
+    expect(messages[1]?.playable).toEqual({ url: "https://twitchvibecodes.github.io/snake/" });
+
+    // The next-build clear pushes null — the PLAY IT line collapses silently.
+    playable.setPlayable(null);
+    await until(() => messages.length >= 3, "immediate null push");
+    await flushIo();
+    expect(messages[2]?.playable).toBeNull();
   });
 
   it("queue carries the FULL FIFO queue capped at 10 while nextUp stays capped at 3 (quick-v4e)", async () => {

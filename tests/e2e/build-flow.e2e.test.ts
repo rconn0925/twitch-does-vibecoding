@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { listAuditRecords, listBuildHistory } from "../../src/audit/record.js";
+import type { ChatMessageSink } from "../../src/ingestion/chat-sender.js";
+import type { ChatEventSource } from "../../src/ingestion/twitch-chat.js";
 import { createApp } from "../../src/main.js";
 import type {
   GalleryPublisher,
@@ -349,6 +351,221 @@ describe("build-flow e2e (gallery publish wiring) — done-only, failure-isolate
     await new Promise((r) => setTimeout(r, 20));
 
     expect(listAuditRecords(app.db, { limit: 10, eventType: "gallery_publish" })).toHaveLength(0);
+    await app.close();
+  });
+});
+
+describe("build-flow e2e (playable announce) — publish-confirmed play link + overlay playable (quick-260716-g8p)", () => {
+  const doneRunner = (): AgentRunner => ({
+    run() {
+      return (async function* () {
+        yield writeBatch("index.html", "<p>hi</p>") as never;
+        yield resultSuccess as never;
+      })();
+    },
+  });
+
+  /** No-op chat source: the chat block composes (narrator exists) — nothing drives messages. */
+  const noopChatSource = (): ChatEventSource =>
+    ({
+      onChannelChatMessage: () => ({}),
+      onUserSocketReady: () => ({}),
+      onUserSocketDisconnect: () => ({}),
+      start() {},
+      stop() {},
+    }) as unknown as ChatEventSource;
+
+  function capturingChatSink(): { sent: string[]; sink: ChatMessageSink } {
+    const sent: string[] = [];
+    return {
+      sent,
+      sink: {
+        sendChatMessage(_broadcasterId: string, text: string): Promise<unknown> {
+          sent.push(text);
+          return Promise.resolve({});
+        },
+      },
+    };
+  }
+
+  const playSends = (sent: string[]): string[] => sent.filter((m) => m.startsWith("Play it"));
+
+  async function fetchPlayable(port: number): Promise<{ url: string } | null> {
+    const res = await fetch(`http://127.0.0.1:${port}/api/state`);
+    const state = (await res.json()) as { playable: { url: string } | null };
+    return state.playable;
+  }
+
+  /** The announce reads the DURABLE project_repos routing row — seed it like the real publisher would. */
+  function seedRepoRow(app: AppHandle, repoName: string): void {
+    app.db
+      .prepare(
+        "INSERT INTO project_repos (generation, repo_name, created_at_ms) VALUES (1, @repoName, 1)",
+      )
+      .run({ repoName });
+  }
+
+  it("published + awaitPagesBuilt 'built' → exactly ONE 'Play it now:' send AND the overlay playable carries the slug URL", async () => {
+    const { sent, sink } = capturingChatSink();
+    const publisher: GalleryPublisher = {
+      publishNow: () =>
+        Promise.resolve({ status: "published", commitHash: "hash", detail: "test" }),
+      revertLast: () => Promise.resolve({ status: "failed", commitHash: null, detail: "unused" }),
+      awaitPagesBuilt: async () => "built",
+    };
+    const app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      chatSource: noopChatSource(),
+      chatSink: sink,
+      agentRunner: doneRunner(),
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
+      galleryPublisher: publisher,
+    });
+    seedRepoRow(app, "counter-app");
+
+    drivePooledWinner(app);
+    await waitUntil(() => app.machine.mode === "IDLE");
+    await waitUntil(() => playSends(sent).length > 0);
+
+    expect(playSends(sent)).toEqual([
+      "Play it now: https://twitchvibecodes.github.io/counter-app/",
+    ]);
+    expect(await fetchPlayable(app.overlay.port)).toEqual({
+      url: "https://twitchvibecodes.github.io/counter-app/",
+    });
+    await app.close();
+  });
+
+  it("awaitPagesBuilt 'timeout' → the honest '(going live in ~1 min)' variant posts", async () => {
+    const { sent, sink } = capturingChatSink();
+    const publisher: GalleryPublisher = {
+      publishNow: () =>
+        Promise.resolve({ status: "published", commitHash: "hash", detail: "test" }),
+      revertLast: () => Promise.resolve({ status: "failed", commitHash: null, detail: "unused" }),
+      awaitPagesBuilt: async () => "timeout",
+    };
+    const app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      chatSource: noopChatSource(),
+      chatSink: sink,
+      agentRunner: doneRunner(),
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
+      galleryPublisher: publisher,
+    });
+    seedRepoRow(app, "counter-app");
+
+    drivePooledWinner(app);
+    await waitUntil(() => app.machine.mode === "IDLE");
+    await waitUntil(() => playSends(sent).length > 0);
+
+    expect(playSends(sent)).toEqual([
+      "Play it: https://twitchvibecodes.github.io/counter-app/ (going live in ~1 min)",
+    ]);
+    await app.close();
+  });
+
+  it("a FAILED publish → ZERO play-link sends AND overlay playable stays null (the NEVER-on-failed gate)", async () => {
+    const { sent, sink } = capturingChatSink();
+    let published = false;
+    const publisher: GalleryPublisher = {
+      publishNow: () => {
+        published = true;
+        return Promise.resolve({ status: "failed", commitHash: null, detail: "boom" });
+      },
+      revertLast: () => Promise.resolve({ status: "failed", commitHash: null, detail: "unused" }),
+      awaitPagesBuilt: async () => "built",
+    };
+    const app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      chatSource: noopChatSource(),
+      chatSink: sink,
+      agentRunner: doneRunner(),
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
+      galleryPublisher: publisher,
+    });
+    seedRepoRow(app, "counter-app");
+
+    drivePooledWinner(app);
+    await waitUntil(() => app.machine.mode === "IDLE");
+    await waitUntil(() => published);
+    // Give any (wrong) announce path a beat to run before asserting silence.
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(playSends(sent)).toEqual([]);
+    expect(await fetchPlayable(app.overlay.port)).toBeNull();
+    await app.close();
+  });
+
+  it("a fake WITHOUT awaitPagesBuilt announces immediately (absent method ⇒ ready)", async () => {
+    const { sent, sink } = capturingChatSink();
+    const publisher: GalleryPublisher = {
+      publishNow: () =>
+        Promise.resolve({ status: "published", commitHash: "hash", detail: "test" }),
+      revertLast: () => Promise.resolve({ status: "failed", commitHash: null, detail: "unused" }),
+    };
+    const app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      chatSource: noopChatSource(),
+      chatSink: sink,
+      agentRunner: doneRunner(),
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
+      galleryPublisher: publisher,
+    });
+    seedRepoRow(app, "counter-app");
+
+    drivePooledWinner(app);
+    await waitUntil(() => app.machine.mode === "IDLE");
+    await waitUntil(() => playSends(sent).length > 0);
+
+    expect(playSends(sent)).toEqual([
+      "Play it now: https://twitchvibecodes.github.io/counter-app/",
+    ]);
+    await app.close();
+  });
+
+  it("a confirmed publish with NO project_repos row (EMPTY-01 skip) announces nothing", async () => {
+    const { sent, sink } = capturingChatSink();
+    let published = false;
+    const publisher: GalleryPublisher = {
+      publishNow: () => {
+        published = true;
+        return Promise.resolve({ status: "no-changes", commitHash: null, detail: "skip" });
+      },
+      revertLast: () => Promise.resolve({ status: "failed", commitHash: null, detail: "unused" }),
+      awaitPagesBuilt: async () => "built",
+    };
+    const app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      fakeClassifier: () => approved,
+      chatSource: noopChatSource(),
+      chatSink: sink,
+      agentRunner: doneRunner(),
+      sandboxAdapter: fakeSandbox(),
+      devServerProbe: fakeProbe,
+      galleryPublisher: publisher,
+    });
+    // NO seedRepoRow: nothing was ever published for this generation.
+
+    drivePooledWinner(app);
+    await waitUntil(() => app.machine.mode === "IDLE");
+    await waitUntil(() => published);
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(playSends(sent)).toEqual([]);
+    expect(await fetchPlayable(app.overlay.port)).toBeNull();
     await app.close();
   });
 });

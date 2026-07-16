@@ -83,6 +83,31 @@ describe("overlay fixed copy (quick-ur2)", () => {
     });
   });
 
+  describe("done-beat PLAY IT line (quick-260716-g8p)", () => {
+    const PLAY_TEMPLATE = "PLAY IT → ";
+
+    it("the template appears exactly once, index-ordered AFTER the done-beat BUILT IT header (done-beat scoping)", () => {
+      const src = readOverlayJs();
+      const occurrences = src.split(PLAY_TEMPLATE).length - 1;
+      expect(occurrences, "PLAY IT template must appear exactly once").toBe(1);
+
+      // The FREE_REIGN_HINT scoping idiom: the line lives in renderBuildPanel's
+      // done-beat tail — after the beat's "BUILT IT" header string.
+      const builtItIdx = src.indexOf('"BUILT IT"');
+      const playIdx = src.indexOf(PLAY_TEMPLATE);
+      expect(builtItIdx).toBeGreaterThan(-1);
+      expect(playIdx).toBeGreaterThan(builtItIdx);
+    });
+
+    it("renders ONLY on the done beat, gated on beatActive AND a playable url (fail-closed)", () => {
+      const src = readOverlayJs();
+      // The exact guard: beatActive (the 8s BUILT IT beat) AND a non-null
+      // playable url — a live build or a null playable renders nothing.
+      expect(src).toContain("beatActive && latest?.playable?.url");
+      expect(src).toContain('"build-play"');
+    });
+  });
+
   describe("waiting-for-build banner (quick-260716-fdl)", () => {
     const WAITING_TITLE = "BUILDING — vote opens when it's done";
     const WAITING_HINT = "keep the !suggest ideas coming";

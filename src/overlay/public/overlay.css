@@ -612,6 +612,19 @@ body {
   color: var(--urgency); /* honest but calm — amber, never red */
 }
 
+/* PLAY IT line (quick-260716-g8p): the done-beat playable link — accent
+ * emphasis (the panel's celebratory beat), never red. CSS ellipsis is the
+ * backstop behind the fixed-template server-composed URL. */
+.build-play {
+  margin-top: 12px;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Queue strip — bottom-right, hidden entirely when empty ─────────── */
 
 .queue-strip {

@@ -523,6 +523,18 @@
     const caption = el("div", "build-caption", STAGE_CAPTION[bs.stage] || "");
     if (AMBER_STAGES.has(bs.stage)) caption.classList.add("build-caption-amber");
     buildPanel.appendChild(caption);
+
+    // PLAY IT line (quick-260716-g8p): DONE-BEAT ONLY. The URL is
+    // server-composed (config owner + post-gate repo slug — never chat text)
+    // and arrives on the `playable` wire field after the publish confirms.
+    // Every ws push re-renders, so a playable push landing mid-beat makes the
+    // line appear live; the instant later-push case lands within the 8s beat
+    // in practice. Documented decision: a FIRST publish (~40-60s Pages lag)
+    // misses the beat by design — chat carries the "(going live in ~1 min)"
+    // link; no extra client beat machinery. textContent-only via el().
+    if (beatActive && latest?.playable?.url) {
+      buildPanel.appendChild(el("div", "build-play", `PLAY IT → ${latest.playable.url}`));
+    }
   }
 
   function startDoneBeat(doneStatus) {
