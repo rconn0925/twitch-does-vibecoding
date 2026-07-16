@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openDb } from "../audit/db.js";
 import { listAuditRecords } from "../audit/record.js";
-import { WINDOW_CLOSED, WINDOW_OPENED, WINDOW_REVOKED } from "../shared/events.js";
+import { WINDOW_CLOSED, WINDOW_OPENED, WINDOW_PENDING, WINDOW_REVOKED } from "../shared/events.js";
 import type { ControlWindowSnapshot, HaltContext, SuggestionCandidate } from "../shared/types.js";
 import { StreamModeMachine } from "../state-machine/stream-mode.js";
 import {
@@ -195,9 +195,13 @@ describe("ControlWindow.open (PAID-01/02, D-04/D-05)", () => {
     expect(h.machine.mode).toBe("FREE_REIGN_WINDOW");
   });
 
-  it("refuses opening when the stream is not IDLE (precedence): not-idle + window_denied(not-idle)", () => {
+  it("HALTED still refuses outright: not-idle + window_denied(not-idle) — the kill switch outranks money", () => {
+    // quick-260716-h73: VOTING_ROUND / BUILD_IN_PROGRESS / CHAOS_MODE now BANK a
+    // pending window (see the pending-slot suite below) — HALTED is the ONLY
+    // mode left on the outright-denial path, keeping the "not-idle" reason
+    // vocabulary (the audit row's stream_mode HALTED distinguishes it).
     h = makeHarness();
-    h.machine.transition("VOTING_ROUND");
+    h.machine.forceTransition("HALTED", haltCtx(h.machine));
     let caught: ControlWindowError | null = null;
     try {
       h.manager.open(donationRequest());
@@ -205,14 +209,344 @@ describe("ControlWindow.open (PAID-01/02, D-04/D-05)", () => {
       caught = err as ControlWindowError;
     }
     expect(caught?.reason).toBe("not-idle");
-    expect(h.machine.mode).toBe("VOTING_ROUND");
+    expect(h.machine.mode).toBe("HALTED");
+    expect(h.manager.pendingSnapshot()).toBeNull(); // never banked out of a halt
 
-    // CR-01: a not-idle denial is NOT silent — it leaves a durable window_denied
-    // row (reason "not-idle", captured in the mode the tip arrived in).
+    // CR-01/never-silent: the denial leaves a durable window_denied row
+    // (reason "not-idle", captured in the HALTED mode the tip arrived in).
     const denied = listAuditRecords(h.db, { limit: 10, eventType: "window_denied" });
     expect(denied).toHaveLength(1);
     expect(denied[0]?.category).toBe("not-idle");
-    expect(denied[0]?.stream_mode).toBe("VOTING_ROUND");
+    expect(denied[0]?.stream_mode).toBe("HALTED");
+  });
+});
+
+describe("ControlWindow pending slot (quick-260716-h73: bank mid-busy, promote on IDLE)", () => {
+  let h: Harness;
+  afterEach(() => {
+    h?.manager.dispose();
+    h?.db.close();
+  });
+
+  it("banks a PENDING window mid-build: no transition, durable pending row, window_pending audit, WINDOW_PENDING emit", () => {
+    h = makeHarness();
+    h.machine.transition("BUILD_IN_PROGRESS");
+    const pendingEvents: ControlWindowSnapshot[] = [];
+    h.manager.on(WINDOW_PENDING, (s) => pendingEvents.push(s as ControlWindowSnapshot));
+
+    const snap = h.manager.open(donationRequest());
+
+    // The bank returns a PENDING snapshot: console-only flag + the documented
+    // endsAtMs 0 no-deadline sentinel (the clock starts at OPEN, not at bank).
+    expect(snap.pending).toBe(true);
+    expect(snap.endsAtMs).toBe(0);
+    expect(snap.durationMs).toBe(60_000); // $5 * 12 — the UNCHANGED D-04 mapping
+    expect(snap.donorDisplayName).toBe("Viewer A");
+    // NO machine transition, NO active window: pending grants nothing yet.
+    expect(h.machine.mode).toBe("BUILD_IN_PROGRESS");
+    expect(h.manager.snapshot()).toBeNull(); // snapshot() stays ACTIVE-only
+    expect(h.manager.pendingSnapshot()?.pending).toBe(true);
+
+    const row = h.db
+      .prepare("SELECT * FROM control_windows WHERE status = 'pending'")
+      .get() as Record<string, unknown>;
+    expect(row.duration_ms).toBe(60_000);
+    expect(row.opened_at_ms).toBe(1_000); // provisional bank time
+
+    // Never-silent: ONE window_pending row, ZERO window_denied rows.
+    expect(listAuditRecords(h.db, { limit: 10, eventType: "window_pending" })).toHaveLength(1);
+    expect(listAuditRecords(h.db, { limit: 10, eventType: "window_denied" })).toHaveLength(0);
+    expect(pendingEvents).toHaveLength(1);
+    expect(pendingEvents[0]?.pending).toBe(true);
+  });
+
+  it("banks from VOTING_ROUND and CHAOS_MODE too (every busy mode except HALTED)", () => {
+    for (const mode of ["VOTING_ROUND", "CHAOS_MODE"] as const) {
+      const harness = makeHarness();
+      harness.machine.transition(mode);
+      const snap = harness.manager.open(donationRequest());
+      expect(snap.pending).toBe(true);
+      expect(harness.machine.mode).toBe(mode);
+      expect(harness.manager.pendingSnapshot()).not.toBeNull();
+      expect(
+        listAuditRecords(harness.db, { limit: 10, eventType: "window_pending" }),
+      ).toHaveLength(1);
+      harness.manager.dispose();
+      harness.db.close();
+    }
+  });
+
+  it("one slot: a second trigger while one is PENDING is denied window-pending + window_denied(window-pending)", () => {
+    h = makeHarness();
+    h.machine.transition("BUILD_IN_PROGRESS");
+    h.manager.open(donationRequest());
+
+    let caught: ControlWindowError | null = null;
+    try {
+      h.manager.open(donationRequest({ donorIdentifier: "viewer_b" }));
+    } catch (err) {
+      caught = err as ControlWindowError;
+    }
+    expect(caught?.reason).toBe("window-pending");
+
+    // Never silent: a durable window_denied row with the NEW reason.
+    const denied = listAuditRecords(h.db, { limit: 10, eventType: "window_denied" });
+    expect(denied).toHaveLength(1);
+    expect(denied[0]?.category).toBe("window-pending");
+    // The first pending is unaffected — still exactly one pending row.
+    const rows = h.db
+      .prepare("SELECT COUNT(*) AS n FROM control_windows WHERE status = 'pending'")
+      .get() as { n: number };
+    expect(rows.n).toBe(1);
+  });
+
+  it("cooldown is stamped at GRANT (bank) time: a discarded pending still consumed the donor's cooldown", () => {
+    h = makeHarness();
+    h.machine.transition("BUILD_IN_PROGRESS");
+    h.manager.open(donationRequest()); // banks at t=1000 — cooldown stamped HERE
+    h.manager.revoke(); // discards the pending (streamer's call)
+    h.machine.transition("IDLE");
+
+    // Same donor re-tips from IDLE, still inside cooldownMs of the BANK.
+    let caught: ControlWindowError | null = null;
+    try {
+      h.manager.open(donationRequest());
+    } catch (err) {
+      caught = err as ControlWindowError;
+    }
+    expect(caught?.reason).toBe("cooldown");
+    const denied = listAuditRecords(h.db, { limit: 10, eventType: "window_denied" });
+    expect(denied.some((r) => r.category === "cooldown")).toBe(true);
+  });
+
+  it("a donor already in cooldown tipping mid-build is denied 'cooldown', NOT banked (guard runs before the bank branch)", () => {
+    h = makeHarness();
+    h.manager.open(donationRequest()); // opens at IDLE, stamps cooldown
+    h.manager.revoke();
+    h.machine.transition("BUILD_IN_PROGRESS");
+
+    let caught: ControlWindowError | null = null;
+    try {
+      h.manager.open(donationRequest()); // same donor, inside cooldown, mid-build
+    } catch (err) {
+      caught = err as ControlWindowError;
+    }
+    expect(caught?.reason).toBe("cooldown");
+    expect(h.manager.pendingSnapshot()).toBeNull(); // never banked
+    const denied = listAuditRecords(h.db, { limit: 10, eventType: "window_denied" });
+    expect(denied.some((r) => r.category === "cooldown")).toBe(true);
+  });
+
+  it("promotes on the return to IDLE: FULL duration from promote-time, durable promote, WINDOW_OPENED { fromPending: true }", () => {
+    vi.useFakeTimers();
+    try {
+      h = makeHarness();
+      const openedArgs: unknown[][] = [];
+      h.manager.on(WINDOW_OPENED, (...args) => openedArgs.push(args));
+      h.machine.transition("BUILD_IN_PROGRESS");
+      h.manager.open(donationRequest()); // banked at t=1000 ($5 → 60s)
+
+      h.setNow(50_000); // the build ran 49s; the machine returns to IDLE now
+      h.machine.transition("IDLE");
+
+      // The window opened SYNCHRONOUSLY on the STATE_CHANGED to IDLE.
+      expect(h.machine.mode).toBe("FREE_REIGN_WINDOW");
+      const snap = h.manager.snapshot();
+      expect(snap).not.toBeNull();
+      // FULL paid duration from promote-time — NEVER bank-time + duration.
+      expect(snap?.endsAtMs).toBe(110_000); // 50000 + 60000
+      expect(h.manager.pendingSnapshot()).toBeNull();
+
+      const row = h.db
+        .prepare("SELECT * FROM control_windows ORDER BY id DESC LIMIT 1")
+        .get() as Record<string, unknown>;
+      expect(row.status).toBe("active");
+      expect(row.opened_at_ms).toBe(50_000);
+      expect(row.ends_at_ms).toBe(110_000);
+
+      // window_opened audit written at promote (streamMode = the pre-open IDLE).
+      const opened = listAuditRecords(h.db, { limit: 10, eventType: "window_opened" });
+      expect(opened).toHaveLength(1);
+      expect(opened[0]?.stream_mode).toBe("IDLE");
+
+      // The composition-root discriminator: promoted opens carry a second arg.
+      expect(openedArgs).toHaveLength(1);
+      expect(openedArgs[0]?.[1]).toEqual({ fromPending: true });
+
+      // Expiry timer armed for the FULL duration — advancing 60s expires it.
+      vi.advanceTimersByTime(59_999);
+      expect(h.machine.mode).toBe("FREE_REIGN_WINDOW");
+      vi.advanceTimersByTime(1);
+      expect(h.machine.mode).toBe("IDLE");
+      expect(
+        h.db.prepare("SELECT status FROM control_windows ORDER BY id DESC LIMIT 1").get(),
+      ).toEqual({ status: "expired" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("WR-02: a non-USD donation banks with only the FLOOR duration (least-favorable, actual currency label)", () => {
+    h = makeHarness();
+    h.machine.transition("BUILD_IN_PROGRESS");
+    const snap = h.manager.open(donationRequest({ amountOrCost: 5, currency: "JPY" }));
+    expect(snap.pending).toBe(true);
+    expect(snap.durationMs).toBe(30_000); // floor (minSeconds 30), NOT 60s
+    expect(snap.amountLabel).toContain("JPY");
+  });
+
+  it("halt discard: a HALT while PENDING discards it on recover-to-IDLE — a window NEVER auto-opens out of a halt", () => {
+    h = makeHarness();
+    const revoked: ControlWindowSnapshot[] = [];
+    h.manager.on(WINDOW_REVOKED, (s) => revoked.push(s as ControlWindowSnapshot));
+    h.machine.transition("BUILD_IN_PROGRESS");
+    h.manager.open(donationRequest()); // banks
+
+    h.machine.forceTransition("HALTED", haltCtx(h.machine));
+    expect(h.manager.pendingSnapshot()).not.toBeNull(); // still banked while frozen
+
+    h.machine.recoverTo("IDLE");
+    // Discarded, never opened: machine stays IDLE, row revoked, audit + emit.
+    expect(h.machine.mode).toBe("IDLE");
+    expect(h.manager.pendingSnapshot()).toBeNull();
+    expect(h.manager.snapshot()).toBeNull();
+    const row = h.db
+      .prepare("SELECT status FROM control_windows ORDER BY id DESC LIMIT 1")
+      .get() as { status: string };
+    expect(row.status).toBe("revoked");
+    expect(listAuditRecords(h.db, { limit: 10, eventType: "window_revoked" })).toHaveLength(1);
+    expect(listAuditRecords(h.db, { limit: 10, eventType: "window_opened" })).toHaveLength(0);
+    // The WINDOW_REVOKED payload is the PENDING snapshot (pending:true rides
+    // along so the composition root narrates the pending-cancelled beat).
+    expect(revoked).toHaveLength(1);
+    expect(revoked[0]?.pending).toBe(true);
+  });
+
+  it("revoke() cancels a PENDING window exactly like an active one (row revoked + audit + emit); machine untouched", () => {
+    h = makeHarness();
+    const revoked: ControlWindowSnapshot[] = [];
+    h.manager.on(WINDOW_REVOKED, (s) => revoked.push(s as ControlWindowSnapshot));
+    h.machine.transition("VOTING_ROUND");
+    h.manager.open(donationRequest()); // banks
+
+    h.manager.revoke();
+
+    expect(h.manager.pendingSnapshot()).toBeNull();
+    expect(h.machine.mode).toBe("VOTING_ROUND"); // pending never held the mode
+    const row = h.db
+      .prepare("SELECT status FROM control_windows ORDER BY id DESC LIMIT 1")
+      .get() as { status: string };
+    expect(row.status).toBe("revoked");
+    expect(listAuditRecords(h.db, { limit: 10, eventType: "window_revoked" })).toHaveLength(1);
+    expect(revoked).toHaveLength(1);
+    expect(revoked[0]?.pending).toBe(true);
+
+    // With neither active nor pending, revoke() stays a harmless no-op.
+    expect(() => h.manager.revoke()).not.toThrow();
+    expect(listAuditRecords(h.db, { limit: 10, eventType: "window_revoked" })).toHaveLength(1);
+  });
+});
+
+describe("ControlWindow pending restore (quick-260716-h73 crash safety: never lost, never double-opened)", () => {
+  function makeManager(
+    db: ReturnType<typeof openDb>,
+    machine: StreamModeMachine,
+    nowMs: number,
+  ): ControlWindow {
+    return new ControlWindow({
+      db,
+      machine,
+      submitDuringWindow: vi.fn(async () => ({ queued: true }) as { queued: true }),
+      donationConfig: DONATION_CFG,
+      redemptionConfig: REDEMPTION_CFG,
+      cooldownMs: COOLDOWN_MS,
+      now: () => nowMs,
+    });
+  }
+
+  it("a pending row + IDLE machine at restore(): opens IMMEDIATELY with the FULL duration from restore-time", () => {
+    const db = openDb(":memory:");
+    db.prepare(
+      `INSERT INTO control_windows
+         (trigger_type, donor_identifier, amount_or_cost, duration_ms, opened_at_ms, ends_at_ms, status)
+       VALUES ('donation', 'viewer_a', 5, 60000, 1000, 61000, 'pending')`,
+    ).run();
+
+    const machine = new StreamModeMachine();
+    const manager = makeManager(db, machine, 200_000);
+    manager.restore();
+
+    expect(machine.mode).toBe("FREE_REIGN_WINDOW");
+    expect(manager.pendingSnapshot()).toBeNull();
+    const snap = manager.snapshot();
+    // FULL duration from restore-time — the provisional bank-time deadline is dead.
+    expect(snap?.endsAtMs).toBe(260_000); // 200000 + 60000
+    const row = db
+      .prepare("SELECT status, opened_at_ms, ends_at_ms FROM control_windows LIMIT 1")
+      .get() as { status: string; opened_at_ms: number; ends_at_ms: number };
+    expect(row.status).toBe("active");
+    expect(row.opened_at_ms).toBe(200_000);
+    expect(row.ends_at_ms).toBe(260_000);
+    manager.dispose();
+    db.close();
+  });
+
+  it("a pending row + BUSY machine at restore(): restores as in-memory pending, opens on the LATER return to IDLE", () => {
+    const db = openDb(":memory:");
+    db.prepare(
+      `INSERT INTO control_windows
+         (trigger_type, donor_identifier, amount_or_cost, duration_ms, opened_at_ms, ends_at_ms, status)
+       VALUES ('donation', 'viewer_a', 5, 60000, 1000, 61000, 'pending')`,
+    ).run();
+
+    const machine = new StreamModeMachine();
+    machine.transition("VOTING_ROUND"); // boot restored into a busy mode
+    const manager = makeManager(db, machine, 200_000);
+    manager.restore();
+
+    // Still pending: no open, no transition, nothing lost.
+    expect(machine.mode).toBe("VOTING_ROUND");
+    expect(manager.snapshot()).toBeNull();
+    expect(manager.pendingSnapshot()).not.toBeNull();
+
+    machine.transition("IDLE"); // the round ends → promote fires
+    expect(machine.mode).toBe("FREE_REIGN_WINDOW");
+    expect(manager.snapshot()?.endsAtMs).toBe(260_000);
+    expect(manager.pendingSnapshot()).toBeNull();
+    manager.dispose();
+    db.close();
+  });
+
+  it("never double-opened: after a promote, a fresh restore() reads the row as ACTIVE with the promoted deadline", () => {
+    const db = openDb(":memory:");
+    const machine1 = new StreamModeMachine();
+    machine1.transition("BUILD_IN_PROGRESS");
+    let t = 1_000;
+    const manager1 = new ControlWindow({
+      db,
+      machine: machine1,
+      submitDuringWindow: vi.fn(async () => ({ queued: true }) as { queued: true }),
+      donationConfig: DONATION_CFG,
+      redemptionConfig: REDEMPTION_CFG,
+      cooldownMs: COOLDOWN_MS,
+      now: () => t,
+    });
+    manager1.open(donationRequest()); // banks at 1000
+    t = 2_000;
+    machine1.transition("IDLE"); // promotes: opened 2000, ends 62000
+    expect(manager1.snapshot()?.endsAtMs).toBe(62_000);
+    manager1.dispose();
+
+    // Crash + restart: a fresh FSM on the SAME db finds NO pending row —
+    // only the promoted ACTIVE row with its authoritative deadline.
+    const machine2 = new StreamModeMachine();
+    const manager2 = makeManager(db, machine2, 10_000);
+    manager2.restore();
+    expect(manager2.pendingSnapshot()).toBeNull();
+    expect(manager2.snapshot()?.endsAtMs).toBe(62_000); // the PROMOTED deadline, not a fresh one
+    expect(machine2.mode).toBe("FREE_REIGN_WINDOW");
+    manager2.dispose();
+    db.close();
   });
 });
 
