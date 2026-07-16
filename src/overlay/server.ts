@@ -104,6 +104,15 @@ export interface OverlayState {
    */
   suggestPhase: { endsAtMs: number } | null;
   /**
+   * True while the auto-cycle vote is parked behind an in-progress build
+   * (quick-260716-fdl, VOTE_WAITS_FOR_BUILD default mode). A BARE boolean by
+   * design — the wait has no known end time, so no deadline field exists, and
+   * following the suggestPhase T-04-13 narrowing idiom no richer scheduler
+   * field (enabled flag, internals) ever rides along (T-fdl-01). Narrowed
+   * server-side from the snapshot phase === "waiting" only.
+   */
+  voteWaiting: boolean;
+  /**
    * The approved-suggestion pool awaiting the next vote round (quick-v4e,
    * the what's-coming page). DISPLAY FIELDS ONLY — this projection is the
    * narrowing EXEMPLAR (per the STATE.md residual about RoundSnapshot
@@ -252,7 +261,7 @@ const NULL_CHAOS_MODE_SOURCE: OverlayChaosModeSource = {
  * the wire shape down to suggestPhase:{endsAtMs} only (quick-t5k A2).
  */
 export interface OverlayAutoCycleSource {
-  snapshot(): { phase: "suggest" | null; phaseEndsAtMs: number | null };
+  snapshot(): { phase: "suggest" | "waiting" | null; phaseEndsAtMs: number | null };
   on(event: string, handler: (...args: unknown[]) => void): void;
 }
 
@@ -430,6 +439,9 @@ export function startOverlayServer(deps: OverlayServerDeps): Promise<OverlayServ
       chaosMode: cm === null ? null : { endsAtMs: cm.endsAtMs },
       suggestPhase:
         ac.phase === "suggest" && ac.phaseEndsAtMs !== null ? { endsAtMs: ac.phaseEndsAtMs } : null,
+      // quick-260716-fdl: a bare boolean narrowed from the snapshot phase —
+      // no deadline (none exists while waiting), no richer field (T-fdl-01).
+      voteWaiting: ac.phase === "waiting",
       nextUp: taskQueue
         .list()
         .slice(0, 3)

@@ -128,9 +128,18 @@ export interface ConsoleServerDeps {
   logger?: Logger;
 }
 
-/** Auto-cycle seam (quick-t5k): scheduler snapshot + toggle + change events. */
+/**
+ * Auto-cycle seam (quick-t5k): scheduler snapshot + toggle + change events.
+ * phase "waiting" (quick-260716-fdl): the vote is parked behind an in-progress
+ * build. console.js's `=== "suggest"` ternary already fails safe to the
+ * generic "Auto-cycle: on" label for it — type-only widening here.
+ */
 export interface ConsoleAutoCycleSource {
-  snapshot(): { enabled: boolean; phase: "suggest" | null; phaseEndsAtMs: number | null };
+  snapshot(): {
+    enabled: boolean;
+    phase: "suggest" | "waiting" | null;
+    phaseEndsAtMs: number | null;
+  };
   toggle(): void;
   on(event: string, handler: (...args: unknown[]) => void): void;
 }
@@ -207,8 +216,13 @@ export interface ConsoleState extends StateSnapshot {
   controlWindow: ControlWindowSnapshot | null;
   /** Chaos mode on/off — drives the round-panel toggle + precedence (CHAOS-01/D-05). */
   chaos: boolean;
-  /** Auto-cycle scheduler state — drives the pause/resume toggle + pill (quick-t5k). */
-  autoCycle: { enabled: boolean; phase: "suggest" | null };
+  /**
+   * Auto-cycle scheduler state — drives the pause/resume toggle + pill
+   * (quick-t5k). phase "waiting" (quick-260716-fdl): the vote is parked behind
+   * an in-progress build; console.js falls to the generic "Auto-cycle: on"
+   * label for it (fail-safe ternary).
+   */
+  autoCycle: { enabled: boolean; phase: "suggest" | "waiting" | null };
   /** Donation-feed connection health for the console pill (04-RESEARCH OQ1). */
   donations: DonationsStatus;
 }

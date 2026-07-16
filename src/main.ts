@@ -943,6 +943,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // auto-cycle is ON at boot unless the EXACT trimmed string "false" — any
   // other value (including "0"/"FALSE"/blank) leaves it enabled.
   const autoRoundEnabled = (process.env.AUTO_ROUND_ENABLED ?? "").trim() !== "false";
+  // quick-260716-fdl strict-string (the AUTO_ROUND_ENABLED idiom above): the
+  // vote WAITS for an in-progress build by default — only the EXACT trimmed
+  // string "false" restores voting-while-building pipelining (VOTE_QUEUE_MAX
+  // then governs, as before).
+  const voteWaitsForBuild = (process.env.VOTE_WAITS_FOR_BUILD ?? "").trim() !== "false";
   const voteQueueMax = envPositive(process.env.VOTE_QUEUE_MAX, DEFAULT_VOTE_QUEUE_MAX);
   // Vote-origin tasks came through the pool/round loop ("chat"/"operator" —
   // dev submits included). Window instructions carry their window's trigger
@@ -967,6 +972,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     },
     isChaosOn: () => chaos.enabled(),
     isVoteQueueFull,
+    // quick-260716-fdl: default ON — the suggest phase ending mid-build parks
+    // the vote until the machine returns to IDLE (keyed off machine.mode, so
+    // decision-pending freezes inherit the right semantics for free).
+    voteWaitsForBuild,
     // quick-rs3: the chat-activated vote-skip hook — consulted at phase end
     // AFTER the eligibility check above (FREE REIGN > CHAOS, HALT parks all).
     chaosModePick,
@@ -992,6 +1001,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       suggestionsOpen: (s) => windowNarrator?.suggestionsOpen(s),
       stillCollecting: (s) => windowNarrator?.stillCollecting(s),
       buildQueueFull: () => windowNarrator?.buildQueueFull(),
+      waitingForBuild: () => windowNarrator?.waitingForBuild(),
     },
     onToggled: (enabled) => recordAutoCycleToggled(db, { enabled, streamMode: machine.mode }),
     logger,
@@ -2127,7 +2137,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // window right here — zero console clicks.
   autoCycle.start();
   logger.info(
-    { enabled: autoRoundEnabled, suggestPhaseSeconds, voteQueueMax },
+    { enabled: autoRoundEnabled, suggestPhaseSeconds, voteQueueMax, voteWaitsForBuild },
     "auto-cycle scheduler started (enabled=%s)",
     autoRoundEnabled,
   );

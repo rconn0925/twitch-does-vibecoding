@@ -467,6 +467,7 @@ describe("EventSub disconnect → ready reconciliation (INFRA-02, D2-14)", () =>
         suggestionsOpen() {},
         stillCollecting() {},
         buildQueueFull() {},
+        waitingForBuild() {},
         soloPicked() {},
         soloPickRecheck() {},
         revertApplied() {},
