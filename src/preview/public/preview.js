@@ -85,7 +85,7 @@
   let visible = document.getElementById("app-frame");
   let buffer = document.getElementById("app-frame-buffer");
 
-  // Cache-busting counter. OBS/CEF caches the app-under-construction's page by
+  // Cache-busting value. OBS/CEF caches the app-under-construction's page by
   // its URL, and a JS-initiated iframe navigation to the SAME fixed dev-server
   // URL (127.0.0.1:5555) is served from that cache — so a NEW build published
   // on the same URL would keep rendering the PREVIOUS app on stream even though
@@ -94,10 +94,20 @@
   // param per load forces CEF to refetch, so the frame always shows what the
   // dev server serves right now. http.server ignores the query and still serves
   // the directory's index.html.
+  //
+  // Confirmed failure mode (live, 2026-07-16 — quick-k3x): a bare counter
+  // restarted at 0 every page session, while CEF's DISK cache persisted across
+  // OBS "refresh (no cache)" reloads — so a fresh session's `?_cb=1`, `?_cb=2`…
+  // replayed the exact URLs a PREVIOUS session cached back when the OLD app
+  // was live, and the "bust" served the stale app straight from cache (OBS
+  // showed app-5 while 5555 verifiably served app-6). Date.now() makes the
+  // value globally unique across page sessions, so no session can ever
+  // re-request a URL any prior session cached; the counter stays as an
+  // intra-session tiebreaker for same-millisecond refreshes.
   let cacheBust = 0;
   function frameUrl(url) {
     const sep = url.indexOf("?") === -1 ? "?" : "&";
-    return `${url}${sep}_cb=${++cacheBust}`;
+    return `${url}${sep}_cb=${Date.now()}-${++cacheBust}`;
   }
 
   function swapFrames() {
