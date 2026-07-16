@@ -85,6 +85,15 @@ export function assembleSandboxedBuildOptions(
     strictMcpConfig: true,
     mcpServers: {},
     settings: lockdownSettings(),
+    // Explicit Fable pin (quick-260716-9mk): replaces the former reliance on
+    // the builder account's session default — the model policy is a boundary
+    // and may not depend on ambient account config (CR-02 / WR-01). Read at
+    // assembly-call-time (GATE_MODEL idiom, classifier-runner.ts) so
+    // vi.stubEnv tests stay deterministic; `?.trim() ||` (not `??`) so a
+    // blank `BUILD_MODEL=` .env entry cannot silently un-pin. The D-1 Sonnet
+    // classifier gate (GATE_MODEL) is a separate, untouched surface, and
+    // chat-derived AgentRunSpec still carries no model field.
+    model: process.env.BUILD_MODEL?.trim() || "claude-fable-5",
   };
   if (sandboxOptions !== undefined) options.sandbox = sandboxOptions;
   if (spec.spawnClaudeCodeProcess) options.spawnClaudeCodeProcess = spec.spawnClaudeCodeProcess;
@@ -108,5 +117,12 @@ export function assembleHostTurnOptions(spec: AgentRunSpec): Options {
     strictMcpConfig: true,
     mcpServers: {},
     settings: lockdownSettings(),
+    // Pinned even on this unreachable branch: the host branch is structural
+    // defense-in-depth, and CR-02 / WR-01 doctrine says no boundary —
+    // including the Fable model policy — may depend on an SDK/account
+    // default, exactly the argument the lockdown-triple comment above makes
+    // for MCP config. Pinning is harmless and keeps both assembly functions
+    // under one doctrine.
+    model: process.env.BUILD_MODEL?.trim() || "claude-fable-5",
   };
 }
