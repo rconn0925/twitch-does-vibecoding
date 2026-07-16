@@ -444,7 +444,7 @@ describe("createSandboxAdapter — preview dev-server lifecycle (quick-t8k, exec
     expect(script).toContain("|| true");
   });
 
-  it("startPreviewDevServer runs mkdir+cd+nohup python3 http.server with the port argv-final (matches the stop anchor)", async () => {
+  it("startPreviewDevServer runs mkdir+cd+nohup with the inline no-store python server, port argv-final (matches the stop anchor)", async () => {
     const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
     const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
 
@@ -458,8 +458,58 @@ describe("createSandboxAdapter — preview dev-server lifecycle (quick-t8k, exec
       "--",
       "sh",
       "-lc",
-      "mkdir -p /home/builder/projects/app-3 && cd /home/builder/projects/app-3 && nohup python3 -m http.server 5555 >/dev/null 2>&1 & sleep 2",
+      'mkdir -p /home/builder/projects/app-3 && cd /home/builder/projects/app-3 && nohup python3 -c \'import http.server as h,sys;H=type("H",(h.SimpleHTTPRequestHandler,),{"end_headers":lambda s:(s.send_header("Cache-Control","no-store"),h.SimpleHTTPRequestHandler.end_headers(s))});h.test(HandlerClass=H,port=int(sys.argv[1]),bind="127.0.0.1") #http.server\' 5555 >/dev/null 2>&1 & sleep 2',
     ]);
+  });
+
+  it("quick-k3x anchor invariant: the python payload ends `#http.server' 5555` before the redirect, carries no-store, and holds ZERO single quotes (sh string can't terminate early)", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await adapter.startPreviewDevServer?.("/home/builder/projects/app-3", 5555);
+
+    const script = (execFileFn.mock.calls[0]?.[1] ?? []).at(-1) as string;
+    // The trailing `#http.server` python comment keeps the joined in-distro
+    // cmdline ending in `http.server 5555` — removing it silently breaks
+    // stopPreviewDevServer's end-anchored pkill (the likeliest regression).
+    expect(script.includes("#http.server' 5555 >/dev/null")).toBe(true);
+    // The payload is sh single-quoted: extract the bytes between `-c '` and
+    // the closing `' 5555` and prove no `'` can terminate the string early
+    // (T-k3x-01) while the no-store header is present.
+    const payload = script.slice(script.indexOf("-c '") + 4, script.indexOf("' 5555"));
+    expect(payload).toContain("Cache-Control");
+    expect(payload).toContain("no-store");
+    expect(payload).not.toContain("'");
+  });
+
+  it("quick-k3x transition safety: the UNCHANGED stop pattern kills BOTH the old `-m http.server` and the new inline-`-c` cmdlines", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await adapter.stopPreviewDevServer?.(5555);
+    const stopScript = (execFileFn.mock.calls[0]?.[1] ?? []).at(-1) as string;
+    // BYTE-IDENTICAL to pre-k3x — the deploy-transition guarantee hangs on it.
+    expect(stopScript).toBe("pkill -f 'http\\.server 5555$' || true");
+
+    // The pattern pkill -f evaluates (ERE end anchor; multiline OFF, same as
+    // the JS default) against the space-joined /proc cmdline.
+    const pkillPattern = /http\.server 5555$/;
+
+    // A pre-deploy old-style server must still be killed by the first
+    // post-deploy reroot — otherwise it holds port 5555 forever and the new
+    // server can never bind.
+    expect(pkillPattern.test("python3 -m http.server 5555")).toBe(true);
+
+    // The new joined-argv form: sh strips the single quotes before exec, so
+    // /proc/<pid>/cmdline reads `python3 -c <payload> 5555` — derived from the
+    // ACTUAL assembled script, not a hand-written fixture.
+    await adapter.startPreviewDevServer?.("/home/builder/projects/app-3", 5555);
+    const startScript = (execFileFn.mock.calls[1]?.[1] ?? []).at(-1) as string;
+    const payload = startScript.slice(
+      startScript.indexOf("-c '") + 4,
+      startScript.indexOf("' 5555"),
+    );
+    expect(pkillPattern.test(`python3 -c ${payload} 5555`)).toBe(true);
   });
 
   it("startPreviewDevServer REJECTS on wsl exec failure (the supervisor catches — adapter stays honest like ensureWorkspaceDir)", async () => {
