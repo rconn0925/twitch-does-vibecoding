@@ -364,6 +364,55 @@ export function createGalleryPublisher(deps: {
   }
 
   /**
+   * quick-1ki: enable GitHub Pages (deploy-from-branch, root path) on a repo
+   * that was JUST pushed. Called after every successful push (NOT at scaffold
+   * time — the create-Pages API 422s when the source branch does not yet exist
+   * on the remote, and at scaffold time nothing has been pushed). Idempotent:
+   * an already-enabled repo answers 409 Conflict, treated as a quiet no-op.
+   *
+   * NEVER throws and NEVER changes the publish result — the publish is already
+   * `published` when this runs; a Pages failure is a loud warn, nothing more.
+   * The branch name is read from the mirror (fresh `git init`s may be master OR
+   * main depending on host config — never hardcode). All through the GalleryExec
+   * seam, arg arrays only, PAT only via the existing withToken env (T-hak-01/02).
+   */
+  async function ensurePagesEnabled(repoName: string, mirrorDir: string): Promise<void> {
+    try {
+      const branchOut = await exec("git", ["-C", mirrorDir, "rev-parse", "--abbrev-ref", "HEAD"]);
+      const branch = branchOut.stdout.trim();
+      await exec(
+        "gh",
+        [
+          "api",
+          "--method",
+          "POST",
+          `repos/${config.owner}/${repoName}/pages`,
+          "-f",
+          `source[branch]=${branch}`,
+          "-f",
+          "source[path]=/",
+        ],
+        withToken,
+      );
+      logger.info({ repoName, branch }, "GitHub Pages enabled (deploy-from-branch, root)");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/409|already exists|conflict/i.test(msg)) {
+        // Pages already enabled — the expected steady-state on every push
+        // after the first. Quiet no-op (debug, never warn).
+        logger.debug({ repoName }, "GitHub Pages already enabled — no-op (409)");
+        return;
+      }
+      // Loud but NON-FATAL: the snapshot push already succeeded; a Pages
+      // hiccup must never surface as a publish failure (T-1ki-04).
+      logger.warn(
+        { err, repoName },
+        "GitHub Pages enablement FAILED — publish result unchanged (non-fatal)",
+      );
+    }
+  }
+
+  /**
    * Replace the mirror's tracked working tree with the current workspace
    * snapshot so DELETED workspace files actually disappear from each push (W1).
    * `.git` lives at `mirrorDir/.git` — clearing NON-.git entries then copying
@@ -453,6 +502,10 @@ export function createGalleryPublisher(deps: {
         ],
         withToken,
       );
+      // quick-1ki: right after every successful push, make the repo PLAYABLE —
+      // enable Pages (tolerant of already-enabled, non-fatal on any error).
+      const repoName = store.lookup(generation);
+      if (repoName !== null) await ensurePagesEnabled(repoName, mirrorDir);
       const rev = await exec("git", ["-C", mirrorDir, "rev-parse", "HEAD"]);
       return {
         status: "published",

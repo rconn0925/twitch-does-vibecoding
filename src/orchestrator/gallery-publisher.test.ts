@@ -28,7 +28,7 @@ import {
  */
 
 const fakeLogger = (): Logger =>
-  ({ error: vi.fn(), warn: vi.fn(), info: vi.fn() }) as unknown as Logger;
+  ({ error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() }) as unknown as Logger;
 
 const TOKEN = "ghp_SECRETTOKEN123";
 const TEST_CONFIG: GalleryConfig = {
@@ -275,8 +275,9 @@ describe("createGalleryPublisher.publishNow — per-project routing", () => {
     });
 
     expect(result.status).toBe("published");
-    // Never created (or re-created) a repo; never recorded a new name.
-    expect(calls.some((c) => c.file === "gh")).toBe(false);
+    // Never created (or re-created) a repo; never recorded a new name. (The
+    // only gh call allowed here is the quick-1ki Pages enablement, `gh api`.)
+    expect(calls.some((c) => c.file === "gh" && c.args.includes("create"))).toBe(false);
     expect(store.records).toEqual([]);
     // Pushed to the SAME per-project mirror.
     const push = calls.find((c) => c.args.includes("push"));
@@ -299,7 +300,7 @@ describe("createGalleryPublisher.publishNow — per-project routing", () => {
     await publisher.publishNow({ generation: 2, title: "snake game", taskId: "t2" });
 
     const creates = calls
-      .filter((c) => c.file === "gh")
+      .filter((c) => c.file === "gh" && c.args.includes("create"))
       .map((c) => c.args.find((a) => a.startsWith("TwitchVibecodes/")));
     expect(creates).toEqual(["TwitchVibecodes/counter-app", "TwitchVibecodes/snake-game"]);
     expect(store.records).toEqual([
@@ -459,7 +460,8 @@ describe("createGalleryPublisher.publishNow — safety invariants", () => {
       "data/gallery-mirror/my-repo",
     ]);
     expect(clone?.opts?.env?.GH_TOKEN).toBe(TOKEN);
-    expect(calls.some((c) => c.file === "gh")).toBe(false);
+    // No repo re-create on the continue path (gh api Pages calls are allowed).
+    expect(calls.some((c) => c.file === "gh" && c.args.includes("create"))).toBe(false);
   });
 
   it("W2: a gh repo create name-collision ('already exists') is non-fatal — proceeds to push", async () => {
@@ -607,19 +609,147 @@ describe("createGalleryPublisher.publishNow — safety invariants", () => {
     ]);
     expect(first.status).toBe("published");
     expect(second.status).toBe("published");
-    // The first project's full git sequence precedes the second's — no interleave.
+    // The first project's full git sequence precedes the second's — no
+    // interleave. (quick-1ki: each publish now carries the Pages enablement
+    // pair after its push — rev-parse --abbrev-ref, then gh api.)
     expect(labels).toEqual([
       "git:add",
       "git:status",
       "git:commit",
       "git:push",
       "git:rev-parse",
+      "gh:api",
+      "git:rev-parse",
       "git:add",
       "git:status",
       "git:commit",
       "git:push",
       "git:rev-parse",
+      "gh:api",
+      "git:rev-parse",
     ]);
+  });
+});
+
+// ── quick-1ki Task 1: ensurePagesEnabled — every pushed publish gets Pages ──
+
+describe("createGalleryPublisher — GitHub Pages enablement (quick-1ki)", () => {
+  it("after a successful publish, ONE gh api …/pages call fires with the ACTUAL branch + root path; token on env ONLY", async () => {
+    const { exec, calls } = captureExec((call) =>
+      call.args.includes("--abbrev-ref") ? Promise.resolve({ stdout: "master\n" }) : undefined,
+    );
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.publishNow({ generation: 1, title: "update", taskId: "t1" });
+    expect(result.status).toBe("published");
+
+    const pages = calls.filter((c) => c.args.some((a) => a.endsWith("/pages")));
+    expect(pages).toHaveLength(1);
+    const page = pages[0];
+    expect(page?.file).toBe("gh");
+    expect(page?.args).toEqual([
+      "api",
+      "--method",
+      "POST",
+      "repos/TwitchVibecodes/my-repo/pages",
+      "-f",
+      "source[branch]=master",
+      "-f",
+      "source[path]=/",
+    ]);
+    // The branch came from the rev-parse --abbrev-ref fake, never hardcoded.
+    expect(page?.args).toContain("source[branch]=master");
+    // PAT on the env of that call only — never in any argv element anywhere.
+    expect(page?.opts?.env?.GH_TOKEN).toBe(TOKEN);
+    for (const call of calls) {
+      for (const arg of call.args) {
+        expect(arg).not.toContain(TOKEN);
+      }
+    }
+    // Fires AFTER the push (the repo's branch must exist on the remote first).
+    const pushIdx = calls.findIndex((c) => c.args.includes("push"));
+    const pagesIdx = calls.findIndex((c) => c.args.some((a) => a.endsWith("/pages")));
+    expect(pushIdx).toBeGreaterThanOrEqual(0);
+    expect(pagesIdx).toBeGreaterThan(pushIdx);
+  });
+
+  it("a Pages call rejecting with 409 Conflict leaves the result 'published' with NO error log (quiet no-op)", async () => {
+    const logger = fakeLogger();
+    const { exec } = captureExec((call) =>
+      call.args.some((a) => a.endsWith("/pages"))
+        ? Promise.reject(new Error("HTTP 409: Conflict — Pages already enabled"))
+        : undefined,
+    );
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({ config: TEST_CONFIG, store, exec, fsx, logger });
+
+    const result = await publisher.publishNow({ generation: 1, title: "update", taskId: "t1" });
+    expect(result.status).toBe("published");
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("a Pages call rejecting with ANY other error ALSO leaves 'published' — warn logged, non-fatal (T-1ki-04)", async () => {
+    const logger = fakeLogger();
+    const { exec } = captureExec((call) =>
+      call.args.some((a) => a.endsWith("/pages"))
+        ? Promise.reject(new Error("HTTP 500: server exploded"))
+        : undefined,
+    );
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({ config: TEST_CONFIG, store, exec, fsx, logger });
+
+    const result = await publisher.publishNow({ generation: 1, title: "update", taskId: "t1" });
+    expect(result).toMatchObject({ status: "published", commitHash: "abc1234def" });
+    expect(logger.warn).toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("a rejecting rev-parse --abbrev-ref (branch read) is ALSO non-fatal — still 'published'", async () => {
+    const logger = fakeLogger();
+    const { exec, calls } = captureExec((call) =>
+      call.args.includes("--abbrev-ref")
+        ? Promise.reject(new Error("fatal: not a git repository"))
+        : undefined,
+    );
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({ config: TEST_CONFIG, store, exec, fsx, logger });
+
+    const result = await publisher.publishNow({ generation: 1, title: "update", taskId: "t1" });
+    expect(result.status).toBe("published");
+    expect(logger.warn).toHaveBeenCalled();
+    // The gh api call never ran (no branch to point it at).
+    expect(calls.some((c) => c.args.some((a) => a.endsWith("/pages")))).toBe(false);
+  });
+
+  it("NO Pages call on the no-changes path — nothing was pushed", async () => {
+    const { exec, calls } = captureExec((call) =>
+      call.args.includes("--porcelain") ? Promise.resolve({ stdout: "" }) : undefined,
+    );
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.publishNow({ generation: 1, title: "t", taskId: "t1" });
+    expect(result.status).toBe("no-changes");
+    expect(calls.some((c) => c.args.some((a) => a.endsWith("/pages")))).toBe(false);
   });
 });
 
@@ -898,12 +1028,15 @@ describe("createGalleryPublisher.revertLast — chat-voted rollback (quick-q5n)"
     ]);
     expect(pub.status).toBe("published");
     expect(rev.status).toBe("reverted");
-    // The publish's full sequence precedes the revert's — no interleave.
+    // The publish's full sequence (incl. its quick-1ki Pages pair) precedes
+    // the revert's — no interleave. Reverts do NOT re-enable Pages.
     expect(labels).toEqual([
       "git:add",
       "git:status",
       "git:commit",
       "git:push",
+      "git:rev-parse",
+      "gh:api",
       "git:rev-parse",
       "git:rev-list",
       "git:revert",
