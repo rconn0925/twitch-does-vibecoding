@@ -86,6 +86,24 @@ describe("buildBuildPrompt — zero-interpolation delimited boundary (both modes
     expect(userPrompt).toContain(tricky);
   });
 
+  // quick-1ki: the static-app contract — every build must produce a plain
+  // static HTML/CSS/JS app (index.html at the workspace root, no build step,
+  // no backend) because the gallery publishes each repo to GitHub Pages.
+  it.each(MODES)("$mode: carries the static-app (GitHub Pages) contract", ({ fixed }) => {
+    expect(fixed).toContain("static");
+    expect(fixed).toContain("index.html");
+    expect(fixed).toContain("GitHub Pages");
+    expect(fixed.toLowerCase()).toContain("build step");
+    expect(fixed.toLowerCase()).toContain("backend");
+  });
+
+  it("both build system prompts stay ZERO-interpolation template literals (SAND-04 guard shape)", () => {
+    // The constants must never contain a template-substitution artifact — the
+    // source-level guard lives in tests/invariants/prompt-injection-boundary.
+    expect(BUILD_SYSTEM_PROMPT_SCAFFOLD).not.toContain("${");
+    expect(BUILD_SYSTEM_PROMPT_CONTINUE).not.toContain("${");
+  });
+
   it("scaffold and continue system prompts are DISTINCT fixed constants", () => {
     expect(BUILD_SYSTEM_PROMPT_SCAFFOLD).not.toBe(BUILD_SYSTEM_PROMPT_CONTINUE);
     expect(buildBuildPrompt(BENIGN, "scaffold").systemPrompt).not.toBe(

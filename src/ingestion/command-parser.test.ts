@@ -220,12 +220,17 @@ describe("parseCommand — tier-2 info commands (quick-t8k: instant, read-only)"
     expect(parseCommand("!commands")).toEqual({ kind: "info", info: "help" });
   });
 
+  it("parses !apps to the playable-gallery info kind (quick-1ki)", () => {
+    expect(parseCommand("!apps")).toEqual({ kind: "info", info: "apps" });
+  });
+
   it("is case-insensitive on the command word", () => {
     expect(parseCommand("!PROJECTS")).toEqual({ kind: "info", info: "projects" });
     expect(parseCommand("!Current")).toEqual({ kind: "info", info: "current" });
     expect(parseCommand("!REPO")).toEqual({ kind: "info", info: "repo" });
     expect(parseCommand("!Help")).toEqual({ kind: "info", info: "help" });
     expect(parseCommand("!COMMANDS")).toEqual({ kind: "info", info: "help" });
+    expect(parseCommand("!APPS")).toEqual({ kind: "info", info: "apps" });
   });
 
   it("trims surrounding whitespace on the message", () => {
@@ -238,6 +243,7 @@ describe("parseCommand — tier-2 info commands (quick-t8k: instant, read-only)"
     expect(parseCommand("!repo url")).toBeNull();
     expect(parseCommand("!help me")).toBeNull();
     expect(parseCommand("!commands all")).toBeNull();
+    expect(parseCommand("!apps x")).toBeNull();
   });
 
   it("leaves every existing command parsing byte-identically", () => {

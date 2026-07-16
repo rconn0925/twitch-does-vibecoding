@@ -478,6 +478,7 @@ describe("EventSub disconnect → ready reconciliation (INFRA-02, D2-14)", () =>
         infoCurrent() {},
         infoRepo() {},
         infoHelp() {},
+        infoApps() {},
         swapActivated() {},
         swapShipFailed() {},
         swapUnresolved() {},

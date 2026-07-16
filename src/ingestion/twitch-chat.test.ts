@@ -126,6 +126,7 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     infoCurrent: vi.fn(),
     infoRepo: vi.fn(),
     infoHelp: vi.fn(),
+    infoApps: vi.fn(),
     // Swap beats (quick-t8k; unused by the chat listener).
     swapActivated: vi.fn(),
     swapShipFailed: vi.fn(),

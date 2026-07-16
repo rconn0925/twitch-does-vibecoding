@@ -171,12 +171,21 @@ export interface Narrator extends BuildNarrator {
   // or prompt text NEVER reaches these methods (T-t8k-03).
   /** !projects — slug + link list, greedily packed to the 500-char cap with a "(+N more)" tail. */
   infoProjects(entries: Array<{ name: string; url: string }>): void;
-  /** !current — the ACTIVE generation's repo, or the fixed not-shipped-yet line. */
-  infoCurrent(entry: { name: string; url: string } | null): void;
+  /**
+   * !current — the ACTIVE generation's repo, or the fixed not-shipped-yet
+   * line. quick-1ki: when `playUrl` (the GitHub Pages URL) is present the
+   * message PREFERS it; without it the message is byte-identical to before.
+   */
+  infoCurrent(entry: { name: string; url: string; playUrl?: string } | null): void;
   /** !repo — just the current repo link (same null fallback as infoCurrent). */
   infoRepo(url: string | null): void;
   /** !help / !commands — the FIXED-COPY command list, zero interpolation. */
   infoHelp(): void;
+  /**
+   * !apps (quick-1ki) — the playable-gallery link. The ONLY dynamic token is
+   * the config-derived owner.github.io URL — never chat text.
+   */
+  infoApps(url: string): void;
 }
 
 /** UI-SPEC: titles inside chat messages truncate to 60 chars (incl. the ellipsis). */
@@ -659,10 +668,18 @@ export function createNarrator(deps: {
       void deps.sender.send(message);
     },
 
-    infoCurrent(entry: { name: string; url: string } | null): void {
+    infoCurrent(entry: { name: string; url: string; playUrl?: string } | null): void {
       if (entry === null) {
         void deps.sender.send(
           "The current project hasn't shipped yet — its page appears after the first finished build.",
+        );
+        return;
+      }
+      // quick-1ki: prefer the PLAYABLE GitHub Pages URL when present; the
+      // no-playUrl message stays byte-identical (backwards compatible).
+      if (entry.playUrl !== undefined) {
+        void deps.sender.send(
+          `On screen now: ${entry.name} — play: ${entry.playUrl} · source: ${entry.url}`,
         );
         return;
       }
@@ -682,6 +699,15 @@ export function createNarrator(deps: {
     infoHelp(): void {
       void deps.sender.send(
         "How it works: chat decides what this AI builds, live. Pitch a change with !suggest <idea> or start a new app with !build <idea>, then !vote when a round opens — chat's top pick gets built on stream. The full command list is on the COMMANDS panel on screen.",
+      );
+    },
+
+    // quick-1ki: the playable-gallery link. Fixed server-composed copy; the
+    // config-derived URL is the only dynamic token (copy-separation safe: no
+    // chance words, no money words).
+    infoApps(url: string): void {
+      void deps.sender.send(
+        `Play everything chat has built: ${url} — every app live-coded by an AI from chat prompts, unreviewed by humans.`,
       );
     },
   };

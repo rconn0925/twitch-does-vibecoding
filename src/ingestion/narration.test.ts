@@ -300,6 +300,8 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "infoCurrent",
         "infoRepo",
         "infoHelp",
+        // quick-1ki: the playable-gallery link (fixed copy + config URL).
+        "infoApps",
         // Swap beats (quick-t8k) — the resolved repo slug at most; never a tally.
         "swapActivated",
         "swapShipFailed",
@@ -715,6 +717,27 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       ]);
     });
 
+    it("infoCurrent WITH a playUrl PREFERS it (quick-1ki) — play link first, source second", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.infoCurrent({
+        ...entry("snake-game"),
+        playUrl: "https://twitchvibecodes.github.io/snake-game/",
+      });
+      expect(sent).toEqual([
+        "On screen now: snake-game — play: https://twitchvibecodes.github.io/snake-game/ · source: https://github.com/TwitchVibecodes/snake-game",
+      ]);
+    });
+
+    it("infoApps sends the gallery URL through the shared sender (quick-1ki)", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.infoApps("https://twitchvibecodes.github.io/");
+      expect(sent).toEqual([
+        "Play everything chat has built: https://twitchvibecodes.github.io/ — every app live-coded by an AI from chat prompts, unreviewed by humans.",
+      ]);
+    });
+
     it("infoRepo replies with just the current link; null gets the same not-shipped fallback", () => {
       const { sent, sender } = capturingSender();
       const n = createNarrator({ sender });
@@ -745,6 +768,11 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       n.infoRepo("https://github.com/TwitchVibecodes/snake-game");
       n.infoRepo(null);
       n.infoHelp();
+      n.infoApps("https://twitchvibecodes.github.io/");
+      n.infoCurrent({
+        ...entry("snake-game"),
+        playUrl: "https://twitchvibecodes.github.io/snake-game/",
+      });
       const CHANCE = /\b(chance|luck|odds|roll|lottery|gamble)\b/i;
       const MONEY = /\b(money|tip|donation|points|pay)\b/i;
       for (const message of sent) {

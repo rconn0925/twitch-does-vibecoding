@@ -88,15 +88,16 @@ const SwapbuildCommand = z.object({
 
 /**
  * quick-t8k tier-2 instant info commands: !projects / !current / !repo /
- * !help (!commands aliases to help). STRICT no-arg (RevertCommand idiom) —
- * trailing text → null. Read-only: dispatch calls an optional seam and
- * returns; NO gate call, NO vote, NO state change ever rides one of these.
+ * !help (!commands aliases to help) / !apps (quick-1ki — the playable-gallery
+ * link). STRICT no-arg (RevertCommand idiom) — trailing text → null.
+ * Read-only: dispatch calls an optional seam and returns; NO gate call, NO
+ * vote, NO state change ever rides one of these.
  */
-export type InfoCommandKind = "projects" | "current" | "repo" | "help";
+export type InfoCommandKind = "projects" | "current" | "repo" | "help" | "apps";
 
 const InfoCommand = z.object({
   kind: z.literal("info"),
-  info: z.enum(["projects", "current", "repo", "help"]),
+  info: z.enum(["projects", "current", "repo", "help", "apps"]),
 });
 
 /** Discriminated result of parsing a chat message as a command. No fork command exists (quick-q5n scope gate). */
@@ -165,7 +166,7 @@ export function parseCommand(messageText: string): ParsedCommand | null {
 
   // quick-t8k tier-2 info commands — strict no-arg; "!projects list" is NOT a
   // command (null). "!commands" is an alias of "!help".
-  const infoMatch = /^!(projects|current|repo|help|commands)$/i.exec(trimmed);
+  const infoMatch = /^!(projects|current|repo|help|commands|apps)$/i.exec(trimmed);
   if (infoMatch?.[1]) {
     const token = infoMatch[1].toLowerCase();
     const parsed = InfoCommand.safeParse({

@@ -499,6 +499,7 @@ describe("swap repo reuse: the REAL publisher never scaffolds for a generation w
       mkdir: async () => ({}),
       access: async () => {}, // every mirror already has .git
       readdir: async () => ["index.html"],
+      writeFile: async () => {}, // quick-1ki index-site seam — unused here
     };
     const db = openDb(":memory:");
     const store = createProjectRepoStore(db);
