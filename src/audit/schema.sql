@@ -113,8 +113,16 @@ CREATE INDEX IF NOT EXISTS idx_round_votes_round ON round_votes(round_id);
 --   amount_or_cost + duration_ms persist the D-04 amount→duration mapping that backs
 --   PAID-04's "logged with the mapping" requirement; the audit_log narration rows
 --   (recordWindow* in record.ts) carry the human-readable mapping text alongside.
---   status is 'active' | 'expired' | 'revoked' (D-12: full-duration lifetime; a
---   window is not closed on first build). closed_at_ms is null while active.
+--   status is 'pending' | 'active' | 'expired' | 'revoked' (D-12: full-duration
+--   lifetime; a window is not closed on first build). closed_at_ms is null while
+--   pending/active.
+--   quick-260716-h73: 'pending' = a window BANKED while the machine was busy
+--   (mid-build / mid-round / chaos) that auto-opens on the return to IDLE. A
+--   pending row's opened_at_ms/ends_at_ms are PROVISIONAL (bank time / bank +
+--   duration) and are REWRITTEN at promote (promotePendingWindow: opened_at_ms =
+--   promote time, ends_at_ms = promote + FULL duration) — ends_at_ms becomes
+--   authoritative only once status='active'. A discarded pending (halt recovery /
+--   streamer revoke) closes as 'revoked' without ever having been active.
 --   D-11: an OPEN sponsored slot — no donor-ownership/exclusivity column exists BY
 --   DESIGN; every submission during the window is still gated + vetoable.
 CREATE TABLE IF NOT EXISTS control_windows (
@@ -123,10 +131,10 @@ CREATE TABLE IF NOT EXISTS control_windows (
   donor_identifier TEXT NOT NULL,                   -- donor display name / redeemer handle (untrusted upstream, validated at ingestion 04-02)
   amount_or_cost   REAL NOT NULL,                   -- WR-05: whole-currency tip amount (e.g. 4.50 dollars, NOT cents) or channel-points cost — the D-04 mapping input. REAL because tip amounts are fractional dollars.
   duration_ms      INTEGER NOT NULL,                -- amount→duration result (linear, floored, capped)
-  opened_at_ms     INTEGER NOT NULL,                -- Date.now() at open
-  ends_at_ms       INTEGER NOT NULL,                -- ABSOLUTE close time — single source of truth, crash-safe (D-06/D-12)
-  status           TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'expired' | 'revoked'
-  closed_at_ms     INTEGER                          -- null while active; set on expiry/revoke
+  opened_at_ms     INTEGER NOT NULL,                -- Date.now() at open (PROVISIONAL bank time while status='pending' — rewritten at promote)
+  ends_at_ms       INTEGER NOT NULL,                -- ABSOLUTE close time — single source of truth, crash-safe (D-06/D-12); PROVISIONAL while status='pending'
+  status           TEXT NOT NULL DEFAULT 'active',  -- 'pending' | 'active' | 'expired' | 'revoked'
+  closed_at_ms     INTEGER                          -- null while pending/active; set on expiry/revoke
 );
 CREATE INDEX IF NOT EXISTS idx_control_windows_status ON control_windows(status);
 

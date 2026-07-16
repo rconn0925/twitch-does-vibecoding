@@ -27,25 +27,34 @@ export interface ControlWindowRow {
   closed_at_ms: number | null;
 }
 
-/** Args for opening a durable window row. status defaults to 'active' in the schema. */
+/** Args for opening a durable window row. status defaults to 'active' when absent. */
 export interface InsertWindowArgs {
   trigger: WindowTrigger;
   donorIdentifier: string;
   amountOrCost: number;
   durationMs: number;
   openedAtMs: number;
-  /** ABSOLUTE close time (opened + duration) — the crash-safety linchpin (D-06). */
+  /**
+   * ABSOLUTE close time (opened + duration) — the crash-safety linchpin (D-06).
+   * quick-260716-h73: PROVISIONAL for a 'pending' insert (bank time + duration);
+   * promotePendingWindow rewrites it at open.
+   */
   endsAtMs: number;
+  /**
+   * quick-260716-h73: 'pending' banks a window awaiting the return to IDLE.
+   * Absent → 'active' (existing call sites/tests stay byte-compatible).
+   */
+  status?: WindowStatus;
 }
 
-/** Insert one active window row; returns its autoincrement id. */
+/** Insert one window row (active by default, or a banked pending); returns its autoincrement id. */
 export function insertWindow(db: Database.Database, args: InsertWindowArgs): number {
   const info = db
     .prepare(
       `INSERT INTO control_windows
-         (trigger_type, donor_identifier, amount_or_cost, duration_ms, opened_at_ms, ends_at_ms)
+         (trigger_type, donor_identifier, amount_or_cost, duration_ms, opened_at_ms, ends_at_ms, status)
        VALUES
-         (@trigger, @donorIdentifier, @amountOrCost, @durationMs, @openedAtMs, @endsAtMs)`,
+         (@trigger, @donorIdentifier, @amountOrCost, @durationMs, @openedAtMs, @endsAtMs, @status)`,
     )
     .run({
       trigger: args.trigger,
@@ -54,8 +63,38 @@ export function insertWindow(db: Database.Database, args: InsertWindowArgs): num
       durationMs: args.durationMs,
       openedAtMs: args.openedAtMs,
       endsAtMs: args.endsAtMs,
+      status: args.status ?? "active",
     });
   return Number(info.lastInsertRowid);
+}
+
+/**
+ * The most-recent still-pending window row (quick-260716-h73; D-05: only one can
+ * ever be banked), or undefined. The restore-on-boot pending read-back — its
+ * timestamps are PROVISIONAL: the FSM re-derives the FULL duration from
+ * duration_ms at promote time, never from the banked ends_at_ms.
+ */
+export function readPendingWindow(db: Database.Database): ControlWindowRow | undefined {
+  return db
+    .prepare("SELECT * FROM control_windows WHERE status = 'pending' ORDER BY id DESC LIMIT 1")
+    .get() as ControlWindowRow | undefined;
+}
+
+/**
+ * Promote a banked pending row to ACTIVE (quick-260716-h73): the single durable
+ * pending→active transition. Rewrites opened_at_ms/ends_at_ms with the
+ * promote-time clock (FULL paid duration starts at OPEN, never at bank) — after
+ * this, ends_at_ms is the authoritative crash-safe deadline (D-06).
+ */
+export function promotePendingWindow(
+  db: Database.Database,
+  id: number,
+  openedAtMs: number,
+  endsAtMs: number,
+): void {
+  db.prepare(
+    "UPDATE control_windows SET status = 'active', opened_at_ms = @openedAtMs, ends_at_ms = @endsAtMs WHERE id = @id",
+  ).run({ openedAtMs, endsAtMs, id });
 }
 
 /**
