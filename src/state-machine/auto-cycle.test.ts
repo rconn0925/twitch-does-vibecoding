@@ -42,6 +42,7 @@ interface Harness {
     suggestionsOpen: ReturnType<typeof vi.fn>;
     stillCollecting: ReturnType<typeof vi.fn>;
     buildQueueFull: ReturnType<typeof vi.fn>;
+    waitingForBuild: ReturnType<typeof vi.fn>;
   };
   onToggled: ReturnType<typeof vi.fn>;
   changed: ReturnType<typeof vi.fn>;
@@ -65,6 +66,13 @@ function make(
     chaosModePick?: () => "picked" | "empty" | null;
     /** Wire the optional single-suggestion auto-build hook (quick-260711-ly4). */
     soloPick?: () => "picked" | "empty" | null;
+    /**
+     * quick-260716-fdl vote-waits-for-build. LOUD NOTE: the PRODUCTION default
+     * is TRUE — main.ts computes it from VOTE_WAITS_FOR_BUILD (only the exact
+     * trimmed string "false" disables). The HARNESS defaults to false so every
+     * pre-fdl pipelining test stays byte-identical; the wait tests opt in.
+     */
+    voteWaitsForBuild?: boolean;
   } = {},
 ): Harness {
   const machine = new StreamModeMachine();
@@ -87,6 +95,7 @@ function make(
     suggestionsOpen: vi.fn(),
     stillCollecting: vi.fn(),
     buildQueueFull: vi.fn(),
+    waitingForBuild: vi.fn(),
   };
   const onToggled = vi.fn();
 
@@ -102,6 +111,9 @@ function make(
     isControlWindowLive: () => windowLive,
     isChaosOn: () => chaosOn,
     isVoteQueueFull: () => queueFull,
+    // quick-260716-fdl: HARNESS default false (pre-fdl pipelining tests stay
+    // byte-identical) — production default is TRUE, computed in main.ts.
+    voteWaitsForBuild: opts.voteWaitsForBuild ?? false,
     suggestPhaseMs: SUGGEST_MS,
     enabledAtBoot: opts.enabledAtBoot ?? true,
     narrate,
@@ -621,6 +633,230 @@ describe("AutoCycleScheduler (fake-timer matrix, quick-t5k)", () => {
       vi.advanceTimersByTime(SUGGEST_MS);
       expect(soloPick).toHaveBeenCalledTimes(2);
       expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  // ── quick-260716-fdl: vote rounds wait for builds (default mode) ──────────
+  // With voteWaitsForBuild: true (the PRODUCTION default), the suggest phase
+  // ending mid-build parks the scheduler in a "waiting" state instead of
+  // opening a vote round. EVERY BUILD_IN_PROGRESS→IDLE transition un-parks it
+  // — done, failed-resolved, refused-resolved, veto and halt-recover are all
+  // the SAME machine edge, so one flip-to-IDLE test covers them uniformly
+  // (plus one explicit veto-shaped duplicate below). Resume is purely
+  // event-driven off STATE_CHANGED / ROUND_CLOSED / start() pokes — no timer
+  // exists while waiting. These tests double as the COMP/chaos-bypass and
+  // window-interplay assertions referenced by Task 3 (unaffected surfaces).
+  describe("vote-waits-for-build park state (quick-260716-fdl)", () => {
+    /** Boot into a suggest phase, move to BUILD_IN_PROGRESS, expire the phase → parked. */
+    function parkMidBuild(h: Harness): void {
+      h.scheduler.start();
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+      h.machine.transition("BUILD_IN_PROGRESS");
+      vi.advanceTimersByTime(SUGGEST_MS);
+    }
+
+    it("default wait: suggest expiry mid-build parks — NO startRound, snapshot phase 'waiting', AUTO_CYCLE_CHANGED, exactly ONE waitingForBuild beat", () => {
+      const h = track(make({ voteWaitsForBuild: true }));
+      h.scheduler.start();
+      h.machine.transition("BUILD_IN_PROGRESS");
+      h.changed.mockClear();
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot()).toEqual({
+        enabled: true,
+        phase: "waiting",
+        phaseEndsAtMs: null,
+      });
+      expect(h.changed).toHaveBeenCalled(); // overlay learns about the park
+      expect(h.narrate.waitingForBuild).toHaveBeenCalledTimes(1);
+      expect(h.narrate.stillCollecting).not.toHaveBeenCalled();
+    });
+
+    it("build terminal un-parks: mode → IDLE opens the parked vote IMMEDIATELY (no new suggest phase, no suggestionsOpen beat first)", () => {
+      const h = track(make({ voteWaitsForBuild: true }));
+      parkMidBuild(h);
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(1); // boot phase only
+
+      // done / failed-resolved / refused-resolved / halt-recovered all reach
+      // the scheduler as this SAME BUILD_IN_PROGRESS→IDLE edge.
+      h.machine.transition("IDLE");
+
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledWith("auto");
+      // NO fresh suggest window opened between the park and the vote.
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(1);
+      expect(h.scheduler.snapshot().phase).toBeNull(); // a round is open now
+    });
+
+    it("veto un-parks: a vetoed build is the same BUILD_IN_PROGRESS→IDLE flip — the parked vote opens", () => {
+      const h = track(make({ voteWaitsForBuild: true }));
+      parkMidBuild(h);
+
+      // finalizeAborted (veto) transitions BUILD_IN_PROGRESS→IDLE like any
+      // other terminal — asserted here as its own named case.
+      h.machine.transition("IDLE");
+
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledWith("auto");
+    });
+
+    it("pipelining restored: voteWaitsForBuild false → phase end mid-BUILD_IN_PROGRESS calls startRound exactly as today", () => {
+      const h = track(make({ voteWaitsForBuild: false }));
+      h.scheduler.start();
+      h.machine.transition("BUILD_IN_PROGRESS");
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledWith("auto");
+      expect(h.narrate.waitingForBuild).not.toHaveBeenCalled();
+    });
+
+    it("early close parks too: pool hits earlyCloseSize mid-build → 'waiting' (no startRound); build end → the vote opens", () => {
+      const CAP = 5;
+      const h = track(make({ voteWaitsForBuild: true, earlyCloseSize: CAP }));
+      h.scheduler.start();
+      h.machine.transition("BUILD_IN_PROGRESS");
+
+      h.setPoolSize(CAP);
+      h.emitPoolChanged(); // early close funnels through #onPhaseEnd
+
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBe("waiting");
+
+      h.machine.transition("IDLE");
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+    });
+
+    it("HALT mid-wait stays frozen: nothing fires while HALTED; recover to IDLE opens the parked vote (warm pool)", () => {
+      const h = track(make({ voteWaitsForBuild: true }));
+      parkMidBuild(h);
+
+      h.machine.forceTransition("HALTED", haltCtx(h.machine));
+
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBe("waiting"); // the owed vote survives the halt
+      vi.advanceTimersByTime(SUGGEST_MS * 3);
+      expect(h.startRound).not.toHaveBeenCalled();
+
+      h.machine.recoverTo("IDLE");
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledWith("auto");
+    });
+
+    it("toggle-off mid-wait clears the wait; toggle back on opens a FRESH suggest phase — the owed vote is NOT resurrected", () => {
+      const h = track(make({ voteWaitsForBuild: true }));
+      parkMidBuild(h);
+      expect(h.scheduler.snapshot().phase).toBe("waiting");
+
+      h.scheduler.toggle(); // streamer paused the cadence — the owed vote dies
+      expect(h.scheduler.snapshot()).toEqual({ enabled: false, phase: null, phaseEndsAtMs: null });
+
+      h.scheduler.toggle(); // back on (mode is still BUILD_IN_PROGRESS)
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBe("suggest"); // fresh window
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(2); // boot + fresh
+    });
+
+    it("chaos ordering: chaosModePick owns a mid-build phase end — the pick fires, NO waiting park (chaos bypass keeps working mid-build)", () => {
+      // COMP/chaos-bypass assertion (also referenced by Task 3): chaos picks
+      // enqueue FIFO and drain via drainVoteQueue independent of the wait.
+      const chaosModePick = vi.fn(() => "picked" as const);
+      const h = track(make({ voteWaitsForBuild: true, chaosModePick }));
+      h.scheduler.start();
+      h.machine.transition("BUILD_IN_PROGRESS");
+
+      vi.advanceTimersByTime(SUGGEST_MS);
+
+      expect(chaosModePick).toHaveBeenCalledTimes(1);
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBe("suggest"); // fresh window, not waiting
+      expect(h.narrate.waitingForBuild).not.toHaveBeenCalled();
+    });
+
+    it("window live at resume time: mode → IDLE stays waiting; the WINDOW_CLOSED poke (start()) after it clears opens the vote", () => {
+      // Window-interplay assertion (also referenced by Task 3): paid-window
+      // direct queueing bypasses the scheduler; the wait only defers to it.
+      const h = track(make({ voteWaitsForBuild: true }));
+      parkMidBuild(h);
+
+      h.setWindowLive(true);
+      h.machine.transition("IDLE");
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBe("waiting");
+
+      // main.ts pokes start() on WINDOW_CLOSED/WINDOW_REVOKED.
+      h.setWindowLive(false);
+      h.scheduler.start();
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledWith("auto");
+    });
+
+    it("vote queue full at resume time: stays waiting; the next STATE_CHANGED after it drains opens the vote", () => {
+      const h = track(make({ voteWaitsForBuild: true }));
+      parkMidBuild(h);
+
+      h.setQueueFull(true);
+      h.machine.transition("IDLE");
+      expect(h.startRound).not.toHaveBeenCalled();
+      expect(h.scheduler.snapshot().phase).toBe("waiting");
+
+      h.setQueueFull(false);
+      h.machine.transition("BUILD_IN_PROGRESS"); // still building elsewhere → stays waiting
+      expect(h.startRound).not.toHaveBeenCalled();
+      h.machine.transition("IDLE");
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+    });
+
+    it("ROUND_CLOSED while waiting does NOT open a new suggest phase — still waiting while the build runs", () => {
+      const h = track(make({ voteWaitsForBuild: true }));
+      parkMidBuild(h);
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(1);
+
+      h.emitRoundClosed(); // a manual round closed mid-park
+
+      expect(h.scheduler.snapshot().phase).toBe("waiting");
+      expect(h.narrate.suggestionsOpen).toHaveBeenCalledTimes(1); // no new window
+      expect(h.startRound).not.toHaveBeenCalled();
+    });
+
+    it("one beat per park: resume pokes while the build still runs narrate ZERO additional waitingForBuild beats", () => {
+      const h = track(make({ voteWaitsForBuild: true }));
+      parkMidBuild(h);
+      expect(h.narrate.waitingForBuild).toHaveBeenCalledTimes(1);
+
+      // Every poke funnel (ROUND_CLOSED, start()) re-checks and stays parked.
+      h.emitRoundClosed();
+      h.scheduler.start();
+      h.emitRoundClosed();
+
+      expect(h.narrate.waitingForBuild).toHaveBeenCalledTimes(1);
+      expect(h.startRound).not.toHaveBeenCalled();
+    });
+
+    it("deadlock proof (crash-restore shape): boot mid-build → suggest phase → waiting with ZERO timers → IDLE opens the vote", () => {
+      const h = track(make({ voteWaitsForBuild: true }));
+      // The machine is already mid-build when the scheduler ignites (the
+      // crash-restore shape). BUILD_IN_PROGRESS is begin-eligible (unchanged
+      // today), so a suggest phase opens…
+      h.machine.transition("BUILD_IN_PROGRESS");
+      h.scheduler.start();
+      expect(h.scheduler.snapshot().phase).toBe("suggest");
+
+      // …then expiry parks it.
+      vi.advanceTimersByTime(SUGGEST_MS);
+      expect(h.scheduler.snapshot().phase).toBe("waiting");
+      // Resume is PURELY event-driven: no timer of any kind exists while
+      // waiting (the existing no-orphaned-timer idiom) — nothing to deadlock.
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(SUGGEST_MS * 5);
+      expect(h.startRound).not.toHaveBeenCalled();
+
+      h.machine.transition("IDLE");
+      expect(h.startRound).toHaveBeenCalledTimes(1);
+      expect(h.startRound).toHaveBeenCalledWith("auto");
     });
   });
 
