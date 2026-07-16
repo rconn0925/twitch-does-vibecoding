@@ -38,10 +38,11 @@
  */
 
 import { execFile } from "node:child_process";
-import { access, cp, mkdir, readdir, rm } from "node:fs/promises";
+import { access, cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import type Database from "better-sqlite3";
 import type { Logger } from "pino";
+import { type GalleryIndexEntry, renderGalleryIndexHtml } from "./gallery-index.js";
 
 /** What a `done` build hands the publisher. `title` is chat-derived — hostile. */
 export interface PublishInput {
@@ -106,6 +107,8 @@ export interface GalleryFs {
   mkdir(path: string, opts: { recursive: boolean }): Promise<unknown>;
   access(path: string): Promise<void>;
   readdir(path: string): Promise<string[]>;
+  /** quick-1ki: the index-site mirror writes its rendered index.html here. */
+  writeFile(path: string, content: string): Promise<void>;
 }
 
 export interface GalleryConfig {
@@ -241,7 +244,7 @@ const defaultExec: GalleryExec = async (file, args, opts) => {
   return { stdout };
 };
 
-const defaultFs: GalleryFs = { rm, cp, mkdir, access, readdir };
+const defaultFs: GalleryFs = { rm, cp, mkdir, access, readdir, writeFile };
 
 /**
  * Resolve publisher config from env. Enabled unless GALLERY_PUBLISH_ENABLED is
@@ -277,6 +280,11 @@ export function createGalleryPublisher(deps: {
   now?: () => Date;
   exec?: GalleryExec;
   fsx?: GalleryFs;
+  /**
+   * quick-1ki: supplies the public gallery entries for the index site. ABSENT
+   * → index publishing is OFF entirely (existing compositions unchanged).
+   */
+  indexEntries?: () => GalleryIndexEntry[];
   logger: Logger;
 }): GalleryPublisher {
   const { config, store, logger } = deps;
@@ -521,6 +529,81 @@ export function createGalleryPublisher(deps: {
   }
 
   /**
+   * quick-1ki: regenerate + push the public gallery INDEX site to the
+   * `<owner-lowercased>.github.io` user-site repo after each successful project
+   * publish. NEVER rejects (the T-hak-03 idiom: full try/catch, loud
+   * logger.error, resolve void) — an index failure is invisible to the show
+   * loop and never alters the project publish's result (T-1ki-04).
+   *
+   * The mirror lives at `<mirrorRootDir>/_index-site`: the leading underscore
+   * is unreachable by sanitizeRepoName's [a-z0-9-] output, so it can never
+   * collide with a project mirror. All git/gh through the exec seam (arg
+   * arrays, PAT on env only — T-1ki-03/05); the commit message is a fixed
+   * server-composed string, never chat text.
+   */
+  async function doPublishIndex(entriesFn: () => GalleryIndexEntry[]): Promise<void> {
+    try {
+      const indexRepoName = `${config.owner.toLowerCase()}.github.io`;
+      const mirrorDir = `${config.mirrorRootDir}/_index-site`;
+      // Create-or-tolerate the user-site repo (scaffoldRepo's W2 idiom).
+      try {
+        await exec(
+          "gh",
+          ["repo", "create", `${config.owner}/${indexRepoName}`, "--public"],
+          withToken,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/already exists/i.test(msg)) throw err;
+      }
+      await fsx.mkdir(mirrorDir, { recursive: true });
+      if (!(await hasGit(mirrorDir))) {
+        await exec("git", ["-C", mirrorDir, "init"]);
+        await exec("git", ["-C", mirrorDir, "remote", "add", "origin", originUrl(indexRepoName)]);
+      }
+      await fsx.writeFile(
+        `${mirrorDir}/index.html`,
+        renderGalleryIndexHtml(entriesFn(), config.owner),
+      );
+      await exec("git", ["-C", mirrorDir, "add", "-A"]);
+      const status = await exec("git", ["-C", mirrorDir, "status", "--porcelain"]);
+      if (status.stdout.trim() === "") return; // index unchanged — nothing to push
+      await exec("git", [
+        "-C",
+        mirrorDir,
+        "-c",
+        `user.name=${COMMIT_USER_NAME}`,
+        "-c",
+        `user.email=${COMMIT_USER_EMAIL}`,
+        "commit",
+        "-m",
+        "update gallery index",
+      ]);
+      await exec(
+        "git",
+        [
+          "-c",
+          "credential.helper=",
+          "-c",
+          "credential.helper=!gh auth git-credential",
+          "-C",
+          mirrorDir,
+          "push",
+          "-u",
+          "origin",
+          "HEAD",
+        ],
+        withToken,
+      );
+      // User-site repos usually auto-enable Pages — the call stays tolerant.
+      await ensurePagesEnabled(indexRepoName, mirrorDir);
+    } catch (err) {
+      // T-1ki-04: LOUD, never thrown — the show loop continues untouched.
+      logger.error({ err }, "gallery index publish FAILED — show loop unaffected");
+    }
+  }
+
+  /**
    * quick-q5n chat-voted rollback. Ordering guarantee (safety invariant #7):
    * the workspace is not touched until the mirror revert commit succeeds — a
    * failed revert leaves the workspace bit-for-bit as it was. The distro
@@ -664,7 +747,19 @@ export function createGalleryPublisher(deps: {
 
   return {
     publishNow(input: PublishInput): Promise<PublishResult> {
-      const result = chain.then(() => doPublish(input));
+      // quick-1ki: a confirmed "published" project publish is FOLLOWED (on the
+      // SAME serialization chain, before it releases) by the gallery index
+      // regeneration + push — index pushes never interleave with project
+      // pushes. doPublishIndex never rejects and can never alter the returned
+      // PublishResult; absent indexEntries → index publishing OFF.
+      const indexEntries = deps.indexEntries;
+      const result = chain.then(async () => {
+        const publishResult = await doPublish(input);
+        if (publishResult.status === "published" && indexEntries !== undefined) {
+          await doPublishIndex(indexEntries);
+        }
+        return publishResult;
+      });
       chain = result.then(
         () => undefined,
         () => undefined,

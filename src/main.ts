@@ -65,6 +65,7 @@ import {
   startConsoleServer,
   type TwitchConnectionStatus,
 } from "./operator-console/server.js";
+import { listGalleryIndexEntries } from "./orchestrator/gallery-index.js";
 import {
   createGalleryPublisher,
   createProjectRepoStore,
@@ -2502,7 +2503,14 @@ function buildGalleryPublisher(
     "GALLERY PUBLISHER ARMED — done builds push one public repo per project under %s via host-side git/gh",
     config.owner,
   );
-  return createGalleryPublisher({ config, store: createProjectRepoStore(db), logger });
+  return createGalleryPublisher({
+    config,
+    store: createProjectRepoStore(db),
+    // quick-1ki: each confirmed publish also regenerates + pushes the public
+    // gallery index site to <owner-lowercased>.github.io (same chain).
+    indexEntries: () => listGalleryIndexEntries(db),
+    logger,
+  });
 }
 
 // Run-as-entrypoint branch (npm run dev): tsx executes this file directly.

@@ -68,10 +68,12 @@ function captureFs(over?: { hasGit?: boolean; entries?: string[] }): {
   rmCalls: string[];
   cpCalls: Array<{ src: string; dest: string }>;
   mkdirCalls: string[];
+  writeFileCalls: Array<{ path: string; content: string }>;
 } {
   const rmCalls: string[] = [];
   const cpCalls: Array<{ src: string; dest: string }> = [];
   const mkdirCalls: string[] = [];
+  const writeFileCalls: Array<{ path: string; content: string }> = [];
   const hasGit = over?.hasGit ?? true;
   const entries = over?.entries ?? [".git", "index.html", "old.js"];
   const fsx: GalleryFs = {
@@ -88,8 +90,11 @@ function captureFs(over?: { hasGit?: boolean; entries?: string[] }): {
       if (!hasGit) throw new Error("ENOENT");
     },
     readdir: async () => entries,
+    writeFile: async (path, content) => {
+      writeFileCalls.push({ path, content });
+    },
   };
-  return { fsx, rmCalls, cpCalls, mkdirCalls };
+  return { fsx, rmCalls, cpCalls, mkdirCalls, writeFileCalls };
 }
 
 /** In-memory ProjectRepoStore fake — no SQLite. */
@@ -750,6 +755,217 @@ describe("createGalleryPublisher — GitHub Pages enablement (quick-1ki)", () =>
     const result = await publisher.publishNow({ generation: 1, title: "t", taskId: "t1" });
     expect(result.status).toBe("no-changes");
     expect(calls.some((c) => c.args.some((a) => a.endsWith("/pages")))).toBe(false);
+  });
+});
+
+// ── quick-1ki Task 2: index-site publish chained after each project publish ──
+
+describe("createGalleryPublisher — gallery index publish (quick-1ki)", () => {
+  const INDEX_ENTRIES = [
+    {
+      title: "make a counter app",
+      repoName: "make-a-counter-app",
+      nightLabel: "Tuesday, July 8, 2026",
+      provenance: "vote" as const,
+    },
+  ];
+
+  it("a 'published' publish is FOLLOWED on the SAME chain by the index repo create/commit/push (project push first)", async () => {
+    const { exec, calls } = captureExec();
+    const { fsx, writeFileCalls } = captureFs({ hasGit: false });
+    const store = fakeStore();
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      indexEntries: () => INDEX_ENTRIES,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.publishNow({ generation: 1, title: "counter", taskId: "t1" });
+    expect(result.status).toBe("published");
+
+    // The index-site repo was created under the LOWERCASED-owner user-site name.
+    const indexCreate = calls.find(
+      (c) => c.file === "gh" && c.args.includes("TwitchVibecodes/twitchvibecodes.github.io"),
+    );
+    expect(indexCreate?.args).toEqual([
+      "repo",
+      "create",
+      "TwitchVibecodes/twitchvibecodes.github.io",
+      "--public",
+    ]);
+    // The rendered page was written into the underscore mirror (unreachable by
+    // sanitizeRepoName — no collision with project mirrors), disclaimer intact.
+    expect(writeFileCalls).toHaveLength(1);
+    expect(writeFileCalls[0]?.path).toBe("data/gallery-mirror/_index-site/index.html");
+    expect(writeFileCalls[0]?.content).toContain("unreviewed by humans");
+    expect(writeFileCalls[0]?.content).toContain("make a counter app");
+    // Ordering: the PROJECT push strictly precedes the INDEX push.
+    const pushes = calls.filter((c) => c.args.includes("push"));
+    expect(pushes).toHaveLength(2);
+    expect(pushes[0]?.args).toContain("data/gallery-mirror/counter");
+    expect(pushes[1]?.args).toContain("data/gallery-mirror/_index-site");
+    // The index push carries the SAME credential-helper invocation + env token.
+    expect(pushes[1]?.args.slice(0, 4)).toEqual([
+      "-c",
+      "credential.helper=",
+      "-c",
+      "credential.helper=!gh auth git-credential",
+    ]);
+    expect(pushes[1]?.opts?.env?.GH_TOKEN).toBe(TOKEN);
+    // The index mirror's origin is a PLAIN https URL — token never on disk.
+    const indexRemote = calls.find(
+      (c) => c.args.includes("remote") && c.args.includes("data/gallery-mirror/_index-site"),
+    );
+    expect(indexRemote?.args.at(-1)).toBe(
+      "https://github.com/TwitchVibecodes/twitchvibecodes.github.io.git",
+    );
+    // Token NEVER in any argv element of any call (T-1ki-03).
+    for (const call of calls) {
+      for (const arg of call.args) {
+        expect(arg).not.toContain(TOKEN);
+      }
+    }
+  });
+
+  it("an index-side exec failure still resolves the ORIGINAL 'published' result + logger.error fired (T-1ki-04)", async () => {
+    const logger = fakeLogger();
+    const { exec } = captureExec((call) =>
+      call.args.includes("push") && call.args.includes("data/gallery-mirror/_index-site")
+        ? Promise.reject(new Error("index remote hung up"))
+        : undefined,
+    );
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      indexEntries: () => INDEX_ENTRIES,
+      logger,
+    });
+
+    const result = await publisher.publishNow({ generation: 1, title: "t", taskId: "t1" });
+    expect(result).toMatchObject({ status: "published", commitHash: "abc1234def" });
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it("an 'already exists' index repo create is tolerated (user-site repo persists across publishes)", async () => {
+    const { exec, calls } = captureExec((call) =>
+      call.file === "gh" &&
+      call.args.includes("create") &&
+      call.args.includes("TwitchVibecodes/twitchvibecodes.github.io")
+        ? Promise.reject(new Error("Name already exists on this account"))
+        : undefined,
+    );
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const logger = fakeLogger();
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      indexEntries: () => INDEX_ENTRIES,
+      logger,
+    });
+
+    const result = await publisher.publishNow({ generation: 1, title: "t", taskId: "t1" });
+    expect(result.status).toBe("published");
+    // The index push still went out despite the create collision.
+    const indexPush = calls.find(
+      (c) => c.args.includes("push") && c.args.includes("data/gallery-mirror/_index-site"),
+    );
+    expect(indexPush).toBeDefined();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("an unchanged index (empty porcelain in the index mirror) skips commit/push silently", async () => {
+    const { exec, calls } = captureExec((call) =>
+      call.args.includes("--porcelain") && call.args.includes("data/gallery-mirror/_index-site")
+        ? Promise.resolve({ stdout: "" })
+        : undefined,
+    );
+    const { fsx } = captureFs({ hasGit: true });
+    const store = fakeStore([[1, "my-repo"]]);
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store,
+      exec,
+      fsx,
+      indexEntries: () => INDEX_ENTRIES,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.publishNow({ generation: 1, title: "t", taskId: "t1" });
+    expect(result.status).toBe("published");
+    const indexCommit = calls.find(
+      (c) => c.args.includes("commit") && c.args.includes("data/gallery-mirror/_index-site"),
+    );
+    const indexPush = calls.find(
+      (c) => c.args.includes("push") && c.args.includes("data/gallery-mirror/_index-site"),
+    );
+    expect(indexCommit).toBeUndefined();
+    expect(indexPush).toBeUndefined();
+  });
+
+  it("'no-changes' and 'failed' publishes trigger ZERO index activity", async () => {
+    // no-changes: dotfiles-only workspace (EMPTY-01 preflight short-circuits).
+    {
+      const { exec, calls } = captureExec();
+      const { fsx, writeFileCalls } = captureFs({ hasGit: false, entries: [".claude"] });
+      const publisher = createGalleryPublisher({
+        config: TEST_CONFIG,
+        store: fakeStore(),
+        exec,
+        fsx,
+        indexEntries: () => INDEX_ENTRIES,
+        logger: fakeLogger(),
+      });
+      const result = await publisher.publishNow({ generation: 1, title: "t", taskId: "t1" });
+      expect(result.status).toBe("no-changes");
+      expect(calls).toHaveLength(0);
+      expect(writeFileCalls).toEqual([]);
+    }
+    // failed: the project push rejects — the index step never starts.
+    {
+      const { exec, calls } = captureExec((call) =>
+        call.args.includes("push") ? Promise.reject(new Error("remote hung up")) : undefined,
+      );
+      const { fsx, writeFileCalls } = captureFs({ hasGit: true });
+      const publisher = createGalleryPublisher({
+        config: TEST_CONFIG,
+        store: fakeStore([[2, "repo"]]),
+        exec,
+        fsx,
+        indexEntries: () => INDEX_ENTRIES,
+        logger: fakeLogger(),
+      });
+      const result = await publisher.publishNow({ generation: 2, title: "t", taskId: "t2" });
+      expect(result.status).toBe("failed");
+      expect(writeFileCalls).toEqual([]);
+      expect(calls.some((c) => c.args.some((a) => a.includes("_index-site")))).toBe(false);
+    }
+  });
+
+  it("ABSENT indexEntries → index publishing entirely OFF (existing compositions unchanged)", async () => {
+    const { exec, calls } = captureExec();
+    const { fsx, writeFileCalls } = captureFs({ hasGit: true });
+    const publisher = createGalleryPublisher({
+      config: TEST_CONFIG,
+      store: fakeStore([[1, "my-repo"]]),
+      exec,
+      fsx,
+      logger: fakeLogger(),
+    });
+
+    const result = await publisher.publishNow({ generation: 1, title: "t", taskId: "t1" });
+    expect(result.status).toBe("published");
+    expect(writeFileCalls).toEqual([]);
+    expect(calls.some((c) => c.args.some((a) => a.includes("_index-site")))).toBe(false);
   });
 });
 
