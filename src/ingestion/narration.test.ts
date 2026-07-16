@@ -305,6 +305,9 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "infoHelp",
         // quick-1ki: the playable-gallery link (fixed copy + config URL).
         "infoApps",
+        // quick-260716-g8p: the post-publish playable-link beat — a
+        // server-composed Pages URL + a readiness boolean; never a tally.
+        "buildPlayable",
         // Swap beats (quick-t8k) — the resolved repo slug at most; never a tally.
         "swapActivated",
         "swapShipFailed",
