@@ -41,8 +41,9 @@ export type AgentMessage = SDKMessage | SubagentStartHookInput | SubagentStopHoo
 export interface AgentRunSpec {
   /**
    * D3-03 model policy (updated quick-0iu): research turns no longer exist in
-   * the live pipeline — every pipeline turn is the sandboxed BUILD turn, which
-   * inherits the Fable session default. No `model` field exists, so the
+   * the live pipeline — every pipeline turn is the sandboxed BUILD turn; the
+   * orchestrator pins the model explicitly in turn-options.ts (BUILD_MODEL
+   * override, default claude-fable-5). No `model` field exists, so the
    * pipeline structurally cannot request an override. The Sonnet compliance
    * gate (classifier-runner.ts, documented D-1 exception) is a SEPARATE
    * surface, untouched by this narrowing.

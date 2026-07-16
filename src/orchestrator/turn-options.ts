@@ -86,7 +86,7 @@ export function assembleSandboxedBuildOptions(
     mcpServers: {},
     settings: lockdownSettings(),
     // Explicit Fable pin (quick-260716-9mk): replaces the former reliance on
-    // the builder account's session default — the model policy is a boundary
+    // the builder account's ambient default — the model policy is a boundary
     // and may not depend on ambient account config (CR-02 / WR-01). Read at
     // assembly-call-time (GATE_MODEL idiom, classifier-runner.ts) so
     // vi.stubEnv tests stay deterministic; `?.trim() ||` (not `??`) so a

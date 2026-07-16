@@ -318,7 +318,8 @@ describe("createBuildSession — straight-to-build pipeline (BUILD-01, quick-0iu
     expect(session.snapshot()).toBeNull();
 
     // EXACTLY ONE agent turn ran — the sandboxed build turn. Model policy is
-    // structural: the spec carries NO model key at all (Fable session default).
+    // structural: the spec carries NO model key at all — the Fable pin lives
+    // in options assembly (assembleSandboxedBuildOptions, BUILD_MODEL knob).
     expect(calls).toHaveLength(1);
     const spec = calls[0];
     expect(spec?.agent).toBe("build");
