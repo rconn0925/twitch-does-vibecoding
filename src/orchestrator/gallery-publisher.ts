@@ -19,8 +19,10 @@
  *   - workspaceCopyFilter rejects node_modules segments and every dot-basename
  *     (.env, .git, .cache, .config — dotfiles AND dotdirs), so nothing from the
  *     workspace's dotfiles can enter a commit;
- *   - sanitizeRepoName reduces a hostile first prompt to a safe [a-z0-9-] slug
- *     (or a dated fallback) — a repo name can never be a shell invocation;
+ *   - sanitizeRepoName reduces a hostile first prompt to a safe, CONCISE
+ *     [a-z0-9-] slug (filler drop + 4-word/32-char word-boundary condense,
+ *     quick-260716-l6u; or a dated fallback) — a repo name can never be a
+ *     shell invocation;
  *   - the local mirror sits under `data/gallery-mirror`, covered by the repo's
  *     `data/` .gitignore entry — the mirror never leaks into THIS repo either.
  *
@@ -244,12 +246,39 @@ function datedFallback(d: Date): string {
 }
 
 /**
- * Reduce a (hostile) chat title to a SAFE GitHub repo slug (T-hak-02): lowercase,
- * collapse every run of non-[a-z0-9] to a single hyphen, strip leading/trailing
- * hyphens, truncate to <=80 (re-strip a trailing hyphen after truncation). When
- * the result is empty (all-symbol / whitespace title), fall back to a dated slug
- * from the injected clock. The output contains ONLY [a-z0-9-] — never a shell
- * metachar, unicode, or over-length string. Pure + exported.
+ * Filler words dropped before taking the first words of a slug (quick-260716-l6u).
+ * A small LOCKED list from the design intent — do not grow it.
+ */
+const REPO_NAME_FILLER_WORDS = new Set([
+  "a",
+  "an",
+  "the",
+  "please",
+  "make",
+  "create",
+  "build",
+  "can",
+  "you",
+  "we",
+]);
+/** Max meaningful words kept in a condensed repo slug (quick-260716-l6u). */
+const REPO_NAME_MAX_WORDS = 4;
+/** Max condensed slug length — enforced at word boundaries, never mid-word (quick-260716-l6u). */
+const REPO_NAME_MAX_CHARS = 32;
+
+/**
+ * Reduce a (hostile) chat title to a SAFE, CONCISE GitHub repo slug (T-hak-02 +
+ * quick-260716-l6u): lowercase, collapse every run of non-[a-z0-9] to a single
+ * hyphen, strip leading/trailing hyphens, truncate to <=80 — then CONDENSE:
+ * drop filler words (REPO_NAME_FILLER_WORDS; if that empties the list, fall
+ * back to the unfiltered words), keep the first REPO_NAME_MAX_WORDS words, and
+ * cap at REPO_NAME_MAX_CHARS by dropping trailing WHOLE words (never mid-word;
+ * a single mega-word with no boundary hard-slices). When the result is empty
+ * (all-symbol / whitespace title), fall back to a dated slug from the injected
+ * clock. The output contains ONLY [a-z0-9-] — never a shell metachar, unicode,
+ * or over-length string (char rules LOCKED — the condense step only SUBSETS
+ * the pipeline output, so the `_index-site` mirror stays unreachable). Pure +
+ * exported.
  */
 export function sanitizeRepoName(title: string, now: () => Date): string {
   let slug = title
@@ -258,6 +287,19 @@ export function sanitizeRepoName(title: string, now: () => Date): string {
     .replaceAll(/^-+|-+$/g, "");
   if (slug.length > 80) {
     slug = slug.slice(0, 80).replaceAll(/-+$/g, "");
+  }
+  // Condense (quick-260716-l6u): filler drop → first-4-words → 32-char word-boundary cap.
+  const allWords = slug.split("-").filter((w) => w.length > 0);
+  const meaningful = allWords.filter((w) => !REPO_NAME_FILLER_WORDS.has(w));
+  // All-filler safety rule: never let the filter empty the slug entirely.
+  let words = (meaningful.length > 0 ? meaningful : allWords).slice(0, REPO_NAME_MAX_WORDS);
+  while (words.length > 1 && words.join("-").length > REPO_NAME_MAX_CHARS) {
+    words = words.slice(0, -1);
+  }
+  slug = words.join("-");
+  if (slug.length > REPO_NAME_MAX_CHARS) {
+    // Single mega-word — no word boundary exists inside one word; hard-slice.
+    slug = slug.slice(0, REPO_NAME_MAX_CHARS);
   }
   return slug.length > 0 ? slug : datedFallback(now());
 }
