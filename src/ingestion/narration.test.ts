@@ -269,6 +269,14 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "window30sLeft",
         "windowExpired",
         "windowRevoked",
+        // Pending-window beats (quick-260716-h73) — a banked window's bank /
+        // promoted-open / denial / cancel transitions; donor name + formatted
+        // duration at most, never a tally.
+        "windowPendingDonation",
+        "windowPendingChannelPoints",
+        "windowOpenedFromPending",
+        "windowDeniedPending",
+        "windowPendingCancelled",
         "chaosOn",
         "chaosOff",
         "chaosPick",
@@ -484,6 +492,28 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       ]);
     });
 
+    it("pending-window beats render verbatim (quick-260716-h73 — reviewed copy contract)", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.windowPendingDonation("alice", "5.00 USD", 60_000);
+      n.windowPendingChannelPoints("bob", "Take the Wheel", 30_000);
+      n.windowOpenedFromPending("alice", 60_000);
+      n.windowDeniedPending("carol");
+      n.windowPendingCancelled("dave");
+      expect(sent).toEqual([
+        "@alice tipped 5.00 USD — window granted! It opens the moment this build finishes: 1:00 of free reign, and the clock starts then.",
+        "@bob redeemed Take the Wheel — window granted! It opens the moment this build finishes: 0:30 of direct control, clock starts then.",
+        "The build's done — @alice's window is OPEN. Free reign for 1:00! Type !build or !suggest <your instruction> — it goes straight to the build queue.",
+        "Thanks @carol — a window is already lined up to open next, so this one can't. One at a time.",
+        "@dave's pending window was cancelled — it won't open. Streamer's call.",
+      ]);
+      // A channel-points redeemer is NEVER labelled "tipped"; the promoted-open
+      // beat announces BOTH commands (quick-260711-raz donor-privilege precedent).
+      expect(sent[1]).not.toContain("tipped");
+      expect(sent[2]).toContain("!build");
+      expect(sent[2]).toContain("!suggest");
+    });
+
     it("rejected-instruction copy carries the CATEGORY_META label, never the internal code", () => {
       const { sent, sender } = capturingSender();
       const n = createNarrator({ sender });
@@ -552,6 +582,12 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       n.window30sLeft("u");
       n.windowExpired("u");
       n.windowRevoked();
+      // Pending-window beats (quick-260716-h73) are PAID copy too — same scan.
+      n.windowPendingDonation("u", "5.00 USD", 60_000);
+      n.windowPendingChannelPoints("u", "Wheel", 60_000);
+      n.windowOpenedFromPending("u", 60_000);
+      n.windowDeniedPending("u");
+      n.windowPendingCancelled("u");
       const paidStrings = [...sent];
       const CHANCE = /chance|luck|odds|random|roll|lottery/i;
       for (const message of paidStrings) {

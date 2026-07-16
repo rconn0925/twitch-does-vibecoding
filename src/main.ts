@@ -106,6 +106,7 @@ import {
   ROUND_OPENED,
   STATE_CHANGED,
   WINDOW_CLOSED,
+  WINDOW_OPENED,
   WINDOW_REVOKED,
 } from "./shared/events.js";
 import type {
@@ -691,17 +692,40 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   };
 
   // Window lifecycle narration: natural expiry / streamer revoke (never silent).
-  // WINDOW_OPENED is narrated at the open() call site instead (it needs the
-  // amount/reward the coarse snapshot deliberately drops), so it is NOT
-  // re-narrated here — avoiding a double beat.
+  // A DIRECT open's WINDOW_OPENED is narrated at the open() call site instead
+  // (it needs the amount/reward the coarse snapshot deliberately drops), so it
+  // is NOT re-narrated here — avoiding a double beat.
   controlWindow.on(WINDOW_CLOSED, (...args) => {
     clearWindowThirtyBeat();
     const snap = args[0] as ControlWindowSnapshot;
     windowNarrator?.windowExpired(snap.donorDisplayName);
   });
-  controlWindow.on(WINDOW_REVOKED, () => {
+  controlWindow.on(WINDOW_REVOKED, (...args) => {
     clearWindowThirtyBeat();
-    windowNarrator?.windowRevoked();
+    // quick-260716-h73: a PENDING discard (console revoke of a banked window,
+    // or the halt-recovery discard — which fires on the recover-to-IDLE beat by
+    // design) carries the pending snapshot; narrate the honest cancelled beat.
+    // An active-window revoke keeps its existing line. clearWindowThirtyBeat
+    // stays unconditional above (a pending never armed one — harmless).
+    const snap = args[0] as ControlWindowSnapshot | undefined;
+    if (snap?.pending) windowNarrator?.windowPendingCancelled(snap.donorDisplayName);
+    else windowNarrator?.windowRevoked();
+  });
+  // quick-260716-h73: a PROMOTED open (a banked window opening on the return
+  // to IDLE) is narrated HERE — the FSM emits WINDOW_OPENED with a second arg
+  // { fromPending: true } as the discriminator; direct open() keeps its
+  // single-arg emit, so this handler no-ops for it (no double beat). This
+  // subscription sits AFTER controlWindow.restore() above (IN-01 precedent):
+  // a boot-restore promotion emits before it exists, so it cannot narrate or
+  // double-arm the 30s beat alongside the restoredWindow re-arm block below —
+  // exactly one 30s timer is ever live (armWindowThirtyBeat clears first, and
+  // only ONE arm site runs per open).
+  controlWindow.on(WINDOW_OPENED, (...args) => {
+    const meta = args[1] as { fromPending?: boolean } | undefined;
+    if (meta?.fromPending !== true) return; // direct opens narrate at the call site
+    const snap = args[0] as ControlWindowSnapshot;
+    windowNarrator?.windowOpenedFromPending(snap.donorDisplayName, snap.durationMs);
+    armWindowThirtyBeat(snap.donorDisplayName, snap.durationMs);
   });
 
   // Map a validated donation/redemption event → a normalized OpenWindowRequest →
@@ -719,6 +743,17 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     };
     try {
       const snap = controlWindow.open(request);
+      // quick-260716-h73: a BANKED window (machine was busy) narrates the
+      // pending beat and arms NOTHING — the 30s beat belongs to the promoted
+      // open (the WINDOW_OPENED { fromPending: true } handler above).
+      if (snap.pending) {
+        windowNarrator?.windowPendingDonation(
+          tip.displayName,
+          `${tip.amount.toFixed(2)} ${tip.currency.toUpperCase()}`,
+          snap.durationMs,
+        );
+        return;
+      }
       // WR-02: narrate the ACTUAL currency (ISO code), never a hardcoded "$".
       windowNarrator?.windowOpenedDonation(
         tip.displayName,
@@ -732,6 +767,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         // "window already running" (no window is live; a round/build is).
         if (err.reason === "cooldown") windowNarrator?.windowDeniedCooldown(tip.displayName);
         else if (err.reason === "not-idle") windowNarrator?.windowDeniedNotIdle(tip.displayName);
+        else if (err.reason === "window-pending")
+          windowNarrator?.windowDeniedPending(tip.displayName);
         else windowNarrator?.windowDeniedActive(tip.displayName);
         return;
       }
@@ -747,6 +784,16 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     };
     try {
       const snap = controlWindow.open(request);
+      // quick-260716-h73: banked redemption → pending beat, no 30s arm (see
+      // openWindowFromDonation).
+      if (snap.pending) {
+        windowNarrator?.windowPendingChannelPoints(
+          redemption.user_name,
+          redemption.reward.title,
+          snap.durationMs,
+        );
+        return;
+      }
       windowNarrator?.windowOpenedChannelPoints(
         redemption.user_name,
         redemption.reward.title,
@@ -759,6 +806,8 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         if (err.reason === "cooldown") windowNarrator?.windowDeniedCooldown(redemption.user_name);
         else if (err.reason === "not-idle")
           windowNarrator?.windowDeniedNotIdle(redemption.user_name);
+        else if (err.reason === "window-pending")
+          windowNarrator?.windowDeniedPending(redemption.user_name);
         else windowNarrator?.windowDeniedActive(redemption.user_name);
         return;
       }
@@ -992,8 +1041,17 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     round: { snapshot: () => round.snapshot(), on: (event, handler) => round.on(event, handler) },
     startRound: (initiator) => round.startRound(initiator),
     isControlWindowLive: () => {
+      // quick-260716-h73: a PENDING window makes the scheduler ineligible too —
+      // the promoted window must deterministically beat the parked/next vote
+      // round. TWO mechanisms make the race deterministic: (1) this predicate —
+      // #isEligible AND #resumeFromWait both consult it, exactly the way chaos
+      // is consulted, so "pending exists" parks the cadence; (2) subscription
+      // order — ControlWindow's STATE_CHANGED handler (constructed above) runs
+      // BEFORE this scheduler's, so on the BUILD→IDLE transition the promote
+      // has already landed and the mode is FREE_REIGN_WINDOW by the time the
+      // scheduler re-checks.
       const s = controlWindow.snapshot();
-      return s !== null && s.endsAtMs > Date.now();
+      return (s !== null && s.endsAtMs > Date.now()) || controlWindow.pendingSnapshot() !== null;
     },
     isChaosOn: () => chaos.enabled(),
     isVoteQueueFull,
@@ -1406,8 +1464,17 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     // single-click Revoke, the chaos on/off state + toggle, and the donation-feed
     // health pill — all backed by the real FSM/controller composed above.
     controlWindow: {
-      snapshot: () => controlWindow.snapshot(),
+      // quick-260716-h73: the console (and ONLY the console) also sees a banked
+      // pending window — active wins when both exist. The Revoke route's
+      // snapshot-gate now passes for a pending too; revoke() cancels either.
+      // The overlay source seam, intake interceptor, and drainVoteQueue keep
+      // consulting controlWindow.snapshot() directly (active-only): a pending
+      // window grants no chat privileges and never reaches the public wire.
+      snapshot: () => controlWindow.snapshot() ?? controlWindow.pendingSnapshot(),
       revoke: () => controlWindow.revoke(),
+      // Console push hook: WINDOW_PENDING banks and pending discards happen
+      // WITHOUT a mode change — the server subscribes so the panel stays live.
+      on: (event, handler) => controlWindow.on(event, handler),
     },
     chaos: { enabled: () => chaos.enabled(), toggle: () => chaos.toggle() },
     // quick-t5k D-04: the auto-cycle pause/resume seam — POST

@@ -468,6 +468,39 @@ export function recordWindowOpened(
   });
 }
 
+/**
+ * One row per window BANK (quick-260716-h73): a donation/redemption arriving
+ * while the machine was busy (mid-build / mid-round / chaos) banked a PENDING
+ * window instead of denying — real money mid-build gets honored, not refused.
+ * The rationale carries the amount→duration mapping AND the opens-on-IDLE
+ * promise so the ledger shows exactly what was granted (never-silent doctrine).
+ * Mirrors recordWindowOpened's shape; audit_log has no CHECK constraint, so the
+ * new "window_pending" event_type is a schema-safe addition.
+ */
+export function recordWindowPending(
+  db: Database.Database,
+  args: {
+    trigger: WindowTriggerArg;
+    donorIdentifier: string;
+    amountOrCost: number;
+    durationMs: number;
+    streamMode: StreamMode;
+  },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "window_pending",
+    source: args.trigger,
+    twitchUsername: args.donorIdentifier,
+    suggestionText: null,
+    decision: null,
+    category: null,
+    rationale: `Banked: amount/cost ${args.amountOrCost} -> ${args.durationMs}ms window — opens when the machine returns to IDLE (never-silent)`,
+    streamMode: args.streamMode,
+    taskId: null,
+  });
+}
+
 /** One row per window natural EXPIRY (D-12: the full amount-proportional duration elapsed). */
 export function recordWindowExpired(
   db: Database.Database,
@@ -512,16 +545,24 @@ export function recordWindowRevoked(
  * IDLE (a voting round / build in progress) is turned away NEVER silently
  * (D-05/CR-01, never-silent doctrine). `reason` carries which guard fired:
  *   - "already-active" — a control window is already live (D-05)
- *   - "cooldown"       — the donor is inside the per-donor cooldown (D-04)
- *   - "not-idle"       — the show is mid-round / mid-build (CR-01): a real-money
- *                        event must leave a ledger trace even in this routine case
+ *   - "cooldown"       — the donor is inside the per-donor cooldown (D-04).
+ *                        quick-260716-h73: checked at GRANT (bank) time, BEFORE
+ *                        the bank branch — a cooling-down donor tipping
+ *                        mid-build now audits "cooldown" (the honest reason),
+ *                        not "not-idle"
+ *   - "not-idle"       — quick-260716-h73: HALTED only (the kill switch outranks
+ *                        money — stream_mode HALTED distinguishes it). Busy
+ *                        modes now BANK a pending window (window_pending row)
+ *                        instead of landing here
+ *   - "window-pending" — quick-260716-h73: a window is already banked and lined
+ *                        up to open next — one slot, never silent (D-05)
  */
 export function recordWindowDenied(
   db: Database.Database,
   args: {
     trigger: WindowTriggerArg;
     donorIdentifier: string;
-    reason: "already-active" | "cooldown" | "not-idle";
+    reason: "already-active" | "cooldown" | "not-idle" | "window-pending";
     streamMode: StreamMode;
   },
 ): void {

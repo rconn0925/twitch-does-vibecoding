@@ -167,8 +167,14 @@ export interface RoundSnapshot {
  */
 export type WindowTrigger = "donation" | "channel_points";
 
-/** Lifecycle status of a control_windows row. 'active' → 'expired' | 'revoked'. */
-export type WindowStatus = "active" | "expired" | "revoked";
+/**
+ * Lifecycle status of a control_windows row.
+ * quick-260716-h73: 'pending' (banked while the machine was busy) → 'active'
+ * (promoted on the return to IDLE) → 'expired' | 'revoked'. A pending window
+ * discarded (halt recovery / streamer revoke) closes as 'revoked' without
+ * ever having been active.
+ */
+export type WindowStatus = "pending" | "active" | "expired" | "revoked";
 
 /**
  * CONSOLE-side view of an active control window (the honest, full-detail
@@ -186,6 +192,15 @@ export interface ControlWindowSnapshot {
   durationMs: number;
   /** ABSOLUTE close time (Date.now()-based) — single source of truth, crash-safe (D-06/D-12). */
   endsAtMs: number;
+  /**
+   * quick-260716-h73: CONSOLE-ONLY flag — set when this snapshot describes a
+   * BANKED (pending) window that has not opened yet. A pending snapshot carries
+   * `endsAtMs: 0` as a documented no-deadline sentinel (the clock starts at
+   * OPEN, never at bank) — the console gates its countdown on this flag, and
+   * this shape never reaches the public overlay wire because
+   * `ControlWindow.snapshot()` stays active-only (T-h73-05).
+   */
+  pending?: true;
 }
 
 /**

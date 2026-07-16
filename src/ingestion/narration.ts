@@ -91,6 +91,23 @@ export interface Narrator extends BuildNarrator {
   windowExpired(donor: string): void;
   /** The streamer revoked the window early (PAID-03). */
   windowRevoked(): void;
+
+  // ── Pending-window beats (quick-260716-h73 — server-composed) ─────────────
+  // A trigger arriving mid-build/mid-round BANKS a window that auto-opens on
+  // the return to IDLE. Each beat fires at most once per bank/open/discard
+  // (never in the anti-spam no-op set). Copy-separation invariant holds: no
+  // chance/luck/odds/random/roll words. Donor name is the SOLE chat-derived
+  // interpolation; `amount` is pre-formatted server-side (WR-02 currency copy).
+  /** A DONATION banked a pending window — granted now, opens when the build wraps. */
+  windowPendingDonation(donor: string, amount: string, durationMs: number): void;
+  /** A CHANNEL-POINTS redemption banked a pending window. */
+  windowPendingChannelPoints(user: string, reward: string, durationMs: number): void;
+  /** The banked window OPENED on the return to IDLE — full duration starts now. */
+  windowOpenedFromPending(donor: string, durationMs: number): void;
+  /** A trigger was denied because a window is already banked (one slot, D-05). */
+  windowDeniedPending(donor: string): void;
+  /** The pending window was discarded (streamer revoke / halt recovery) — never silent. */
+  windowPendingCancelled(donor: string): void;
   /** Chaos mode turned on. */
   chaosOn(): void;
   /** Chaos mode turned off — the vote loop resumes. */
@@ -515,6 +532,42 @@ export function createNarrator(deps: {
     windowRevoked(): void {
       void deps.sender.send(
         "Streamer's call — the control window is closed early. Back to the regular show.",
+      );
+    },
+
+    // ── Pending-window beats (quick-260716-h73 — reviewed copy contract) ─────
+    // Server-composed templates; donor/user name is the sole chat-derived
+    // interpolation. The promoted-open beat announces BOTH !build and !suggest
+    // (quick-260711-raz donor-privilege precedent). No chance/money-mix words
+    // (copy-separation invariant, scanned in narration.test.ts).
+
+    windowPendingDonation(donor: string, amount: string, durationMs: number): void {
+      void deps.sender.send(
+        `@${donor} tipped ${amount} — window granted! It opens the moment this build finishes: ${formatMmss(durationMs)} of free reign, and the clock starts then.`,
+      );
+    },
+
+    windowPendingChannelPoints(user: string, reward: string, durationMs: number): void {
+      void deps.sender.send(
+        `@${user} redeemed ${reward} — window granted! It opens the moment this build finishes: ${formatMmss(durationMs)} of direct control, clock starts then.`,
+      );
+    },
+
+    windowOpenedFromPending(donor: string, durationMs: number): void {
+      void deps.sender.send(
+        `The build's done — @${donor}'s window is OPEN. Free reign for ${formatMmss(durationMs)}! Type !build or !suggest <your instruction> — it goes straight to the build queue.`,
+      );
+    },
+
+    windowDeniedPending(donor: string): void {
+      void deps.sender.send(
+        `Thanks @${donor} — a window is already lined up to open next, so this one can't. One at a time.`,
+      );
+    },
+
+    windowPendingCancelled(donor: string): void {
+      void deps.sender.send(
+        `@${donor}'s pending window was cancelled — it won't open. Streamer's call.`,
       );
     },
 

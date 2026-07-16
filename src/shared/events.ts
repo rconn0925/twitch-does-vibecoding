@@ -42,6 +42,14 @@ export const WINDOW_OPENED = "window:opened" as const;
 export const WINDOW_CLOSED = "window:closed" as const;
 export const WINDOW_REVOKED = "window:revoked" as const;
 export const WINDOW_DENIED = "window:denied" as const;
+/**
+ * quick-260716-h73: a donation/redemption arriving while the machine is busy
+ * (mid-build / mid-round / chaos) BANKED a pending window instead of denying —
+ * it auto-opens with its FULL paid duration on the return to IDLE. Emitted with
+ * the pending snapshot (pending:true, endsAtMs 0 sentinel). Console-push beat
+ * only — the pending window never reaches the public overlay wire.
+ */
+export const WINDOW_PENDING = "window:pending" as const;
 export const CHAOS_TOGGLED = "chaos:toggled" as const;
 export const CHAOS_PICK = "chaos:pick" as const;
 
@@ -91,6 +99,7 @@ export type AppEvent =
   | typeof WINDOW_CLOSED
   | typeof WINDOW_REVOKED
   | typeof WINDOW_DENIED
+  | typeof WINDOW_PENDING
   | typeof CHAOS_TOGGLED
   | typeof CHAOS_PICK
   | typeof CHAOS_MODE_CHANGED

@@ -24,6 +24,8 @@ import {
   ROUND_OPENED,
   STATE_CHANGED,
   VOTE_RECORDED,
+  WINDOW_PENDING,
+  WINDOW_REVOKED,
 } from "../shared/events.js";
 import { isLoopbackHostHeader, isLoopbackOrigin } from "../shared/loopback.js";
 import type {
@@ -148,10 +150,18 @@ export interface ConsoleAutoCycleSource {
  * Console-side control-window seam (PAID-04). `snapshot()` returns the honest,
  * full-detail projection (donor + trigger + amount→duration mapping the overlay
  * hides); `revoke()` cancels the active window. Real impl wired in 04-07.
+ *
+ * quick-260716-h73: the snapshot may be a PENDING window (pending:true,
+ * endsAtMs 0 no-deadline sentinel — the console gates its countdown on the
+ * flag); revoke() cancels a pending exactly like an active one. `on` (optional,
+ * mirrors ConsoleAutoCycleSource) lets the server push state on window beats
+ * that happen WITHOUT a mode change: a bank while the machine is busy
+ * (WINDOW_PENDING) and a pending discard (WINDOW_REVOKED).
  */
 export interface ConsoleControlWindowSource {
   snapshot(): ControlWindowSnapshot | null;
   revoke(): void;
+  on?(event: string, handler: (...args: unknown[]) => void): void;
 }
 
 /** Chaos-mode seam (CHAOS-01): current state + the streamer toggle primitive. */
@@ -432,6 +442,16 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
   deps.autoCycle?.on(AUTO_CYCLE_CHANGED, () => {
     pushState();
   });
+  // quick-260716-h73: window beats that happen WITHOUT a mode change — a bank
+  // while the machine is busy (WINDOW_PENDING) and a pending discard
+  // (WINDOW_REVOKED fires for those outside any STATE_CHANGED) — push so the
+  // pending panel is live, never connect-time-stale. Low-frequency show beats
+  // (one per bank/discard), synchronous push like the round events above.
+  for (const windowEvent of [WINDOW_PENDING, WINDOW_REVOKED]) {
+    deps.controlWindow?.on?.(windowEvent, () => {
+      pushState();
+    });
+  }
   const VOTE_PUSH_DEBOUNCE_MS = 250;
   let votePushTimer: NodeJS.Timeout | null = null;
   deps.round.on(VOTE_RECORDED, () => {
