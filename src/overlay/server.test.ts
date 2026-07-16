@@ -503,10 +503,14 @@ describe("overlay server (read-only broadcast surface)", () => {
 
     const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
     const httpState = (await res.json()) as OverlayState;
+    // quick-260716-g8p: the server re-projects buildStatus explicitly. A legacy
+    // source without source/suggestedBy still narrows cleanly — suggestedBy
+    // collapses to null and the (undefined) source key is dropped by JSON.
     expect(httpState.buildStatus).toEqual({
       taskId: "t1",
       title: "build a snake game",
       stage: "researching",
+      suggestedBy: null,
     });
     // The pill vocabulary is unchanged — the fine-grained stage rides buildStatus,
     // not a new pill word (mode stays IDLE here, so the pill is still STANDBY).
@@ -515,6 +519,65 @@ describe("overlay server (read-only broadcast surface)", () => {
     const { messages } = connectWs(handle.port);
     await until(() => messages.length >= 1, "initial push");
     expect(messages[0]?.buildStatus?.stage).toBe("researching");
+  });
+
+  it("buildStatus narrows to EXACTLY {taskId,title,stage,source,suggestedBy} — a richer build source leaks no extra keys (quick-260716-g8p, the T-v4e-01 idiom)", async () => {
+    // A DELIBERATELY-RICH snapshot: the legit five display fields PLUS internal
+    // gate/donor keys that must NEVER reach the broadcast wire.
+    const richStatus = {
+      taskId: "t9",
+      title: "build a rich game",
+      stage: "building",
+      source: "vote",
+      suggestedBy: "viewer9",
+      gateRationale: "classifier-rationale-sentinel",
+      donorAmount: 500,
+    } as unknown as BuildStatusView;
+    const build = makeFakeBuild(richStatus);
+    const { handle } = await start({ build });
+
+    const narrowed = {
+      taskId: "t9",
+      title: "build a rich game",
+      stage: "building",
+      source: "vote",
+      suggestedBy: "viewer9",
+    };
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.buildStatus).toEqual(narrowed);
+    // Raw-bytes assertion (the chaosMode/pool idiom): the forbidden keys are
+    // absent from the ENTIRE serialized state, not just the parsed field.
+    const raw = JSON.stringify(httpState);
+    for (const forbidden of ["gateRationale", "donorAmount", "classifier-rationale-sentinel"]) {
+      expect(raw, `"${forbidden}" must never reach the public wire`).not.toContain(forbidden);
+    }
+
+    // The ws connect push carries the same narrowed projection.
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.buildStatus).toEqual(narrowed);
+    expect(JSON.stringify(messages[0])).not.toContain("gateRationale");
+  });
+
+  it("a paid-build view keeps suggestedBy null on the wire — the donor identity never rides buildStatus (T-g8p-01)", async () => {
+    const build = makeFakeBuild({
+      taskId: "t10",
+      title: "donor pick",
+      stage: "building",
+      source: "donation",
+      suggestedBy: null,
+    } as BuildStatusView);
+    const { handle } = await start({ build });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.buildStatus).toEqual({
+      taskId: "t10",
+      title: "donor pick",
+      stage: "building",
+      source: "donation",
+      suggestedBy: null,
+    });
   });
 
   it("a build-stage change triggers an IMMEDIATE push (never the tally debounce)", async () => {

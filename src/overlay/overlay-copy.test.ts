@@ -57,6 +57,32 @@ describe("overlay fixed copy (quick-ur2)", () => {
     expect(hintIdx).toBeGreaterThan(freeReignLabelIdx);
   });
 
+  describe("NOW BUILDING suggester attribution (quick-260716-g8p)", () => {
+    const SUGGESTER_PREFIX = "suggested by @";
+
+    it("the attribution template appears exactly once, inside renderBuildPanel after the NOW BUILDING header", () => {
+      const src = readOverlayJs();
+      const occurrences = src.split(SUGGESTER_PREFIX).length - 1;
+      expect(occurrences, "suggester template must appear exactly once").toBe(1);
+
+      // Index-ordering (the FREE_REIGN_HINT idiom): the line renders inside
+      // renderBuildPanel, positioned AFTER the panel header strings.
+      const headerIdx = src.indexOf('"NOW BUILDING"');
+      const suggesterIdx = src.indexOf(SUGGESTER_PREFIX);
+      expect(headerIdx).toBeGreaterThan(-1);
+      expect(suggesterIdx).toBeGreaterThan(headerIdx);
+    });
+
+    it("renders textContent-only via el() with the build-suggester class, fail-closed on missing/empty", () => {
+      const src = readOverlayJs();
+      // The el() helper is textContent-only construction; the class name is the
+      // CSS hook. Fail-closed gate: ONLY a non-empty string renders the line —
+      // null/undefined/empty yields no element, no placeholder.
+      expect(src).toContain('"build-suggester"');
+      expect(src).toContain('typeof bs.suggestedBy === "string" && bs.suggestedBy.length > 0');
+    });
+  });
+
   describe("waiting-for-build banner (quick-260716-fdl)", () => {
     const WAITING_TITLE = "BUILDING — vote opens when it's done";
     const WAITING_HINT = "keep the !suggest ideas coming";
