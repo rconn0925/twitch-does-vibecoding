@@ -162,13 +162,17 @@ function makeFakeControlWindow(initial: RichWindowSnapshot | null = null): FakeC
  * narrow the wire shape down to suggestPhase:{endsAtMs} only (quick-t5k A2).
  */
 interface FakeAutoCycle {
-  snapshot(): { enabled: boolean; phase: "suggest" | null; phaseEndsAtMs: number | null };
+  snapshot(): {
+    enabled: boolean;
+    phase: "suggest" | "waiting" | null;
+    phaseEndsAtMs: number | null;
+  };
   on(event: string, handler: (...args: unknown[]) => void): void;
-  setPhase(next: { phase: "suggest" | null; phaseEndsAtMs: number | null }): void;
+  setPhase(next: { phase: "suggest" | "waiting" | null; phaseEndsAtMs: number | null }): void;
 }
 
 function makeFakeAutoCycle(
-  initial: { phase: "suggest" | null; phaseEndsAtMs: number | null } = {
+  initial: { phase: "suggest" | "waiting" | null; phaseEndsAtMs: number | null } = {
     phase: null,
     phaseEndsAtMs: null,
   },
@@ -835,6 +839,57 @@ describe("overlay server (read-only broadcast surface)", () => {
       await fetch(`http://127.0.0.1:${idle.handle.port}/api/state`)
     ).json()) as OverlayState;
     expect(idleState.suggestPhase).toBeNull();
+  });
+
+  it("voteWaiting narrows from phase 'waiting': a bare boolean, suggestPhase stays null, enabled still never crosses the wire (quick-260716-fdl)", async () => {
+    // EXACTLY ONE new field crosses the wire for the wait state — a bare
+    // boolean (no deadline exists while waiting, no richer field rides along;
+    // the suggestPhase T-04-13 narrowing idiom, T-fdl-01).
+    const autoCycle = makeFakeAutoCycle({ phase: "waiting", phaseEndsAtMs: null });
+    const { handle } = await start({ autoCycle });
+
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/state`);
+    const httpState = (await res.json()) as OverlayState;
+    expect(httpState.voteWaiting).toBe(true);
+    // While waiting there is NO countdown: suggestPhase stays null.
+    expect(httpState.suggestPhase).toBeNull();
+    // The scheduler's enabled flag is console detail — never broadcast.
+    expect(JSON.stringify(httpState)).not.toContain("enabled");
+
+    // voteWaiting is true IFF the snapshot phase is "waiting" — false during a
+    // suggest phase and false when no phase runs (fail-closed narrowing).
+    const suggesting = await start({
+      autoCycle: makeFakeAutoCycle({ phase: "suggest", phaseEndsAtMs: 99_000 }),
+    });
+    const suggestingState = (await (
+      await fetch(`http://127.0.0.1:${suggesting.handle.port}/api/state`)
+    ).json()) as OverlayState;
+    expect(suggestingState.voteWaiting).toBe(false);
+    expect(suggestingState.suggestPhase).toEqual({ endsAtMs: 99_000 });
+
+    const idle = await start({});
+    const idleState = (await (
+      await fetch(`http://127.0.0.1:${idle.handle.port}/api/state`)
+    ).json()) as OverlayState;
+    expect(idleState.voteWaiting).toBe(false);
+  });
+
+  it("AUTO_CYCLE_CHANGED pushes voteWaiting immediately when the park begins and clears it on resume (quick-260716-fdl)", async () => {
+    const autoCycle = makeFakeAutoCycle();
+    const { handle } = await start({ autoCycle });
+    const { messages } = connectWs(handle.port);
+    await until(() => messages.length >= 1, "initial push");
+    expect(messages[0]?.voteWaiting).toBe(false);
+
+    autoCycle.setPhase({ phase: "waiting", phaseEndsAtMs: null });
+    await until(() => messages.length >= 2, "immediate waiting push");
+    await flushIo();
+    expect(messages[1]?.voteWaiting).toBe(true);
+    expect(messages[1]?.suggestPhase).toBeNull();
+
+    autoCycle.setPhase({ phase: null, phaseEndsAtMs: null });
+    await until(() => messages.length >= 3, "resume push");
+    expect(messages[2]?.voteWaiting).toBe(false);
   });
 
   it("AUTO_CYCLE_CHANGED triggers an IMMEDIATE push carrying the fresh suggestPhase (never the tally debounce)", async () => {
