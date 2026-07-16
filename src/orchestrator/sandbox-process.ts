@@ -273,6 +273,38 @@ export function createSandboxAdapter(deps: SandboxAdapterDeps = {}): SandboxAdap
      * widening (buildSandboxEnv untouched — this is a distinct wsl
      * invocation via the EXISTING execFileFn seam, zero new spawn paths).
      * Rejects on wsl exec failure — the supervisor catches (fail-open).
+     *
+     * quick-k3x no-store server: the bare `-m http.server` sent NO
+     * Cache-Control, so OBS's CEF heuristic-cached old documents AND
+     * subresources (~10% of file age) — confirmed live 2026-07-16: OBS framed
+     * app-5 while 5555 verifiably served app-6. The inline `-c` payload
+     * subclasses SimpleHTTPRequestHandler and overrides end_headers ONLY —
+     * inject `Cache-Control: no-store`, then delegate to the base class. That
+     * runs on EVERY response path including list_directory, so document,
+     * subresources, and the boot-time directory listing all carry no-store;
+     * the empty-dir listing HTML (title "Directory listing for /") is
+     * inherited byte-for-byte, keeping appReady()'s directory-listing
+     * detection (quick-ofs) untouched.
+     *
+     * The trailing `#http.server` python comment exists SOLELY so the joined
+     * in-distro cmdline still ends with `http.server <port>` —
+     * stopPreviewDevServer's end-anchored pkill pattern stays byte-identical,
+     * which ALSO makes the deploy transition safe: an old-style
+     * `-m http.server` process started before this change matches the same
+     * pattern and is killed by the first reroot. Removing that comment
+     * silently breaks stop — the likeliest future regression (test-pinned).
+     *
+     * `h.test(...)` is the same module-level function `-m http.server`'s
+     * __main__ uses; `bind="127.0.0.1"` is passed EXPLICITLY because test()'s
+     * default ServerClass (ThreadingHTTPServer, no dual-stack setup) with
+     * bind=None can bind IPv6-only on some configs — pinning IPv4 loopback
+     * matches the probe/frame address family (WR-06, preview-manager's
+     * 127.0.0.1 pinning) and the locked loopback-only posture; never wider
+     * than the previous default bind (T-k3x-03). The port arrives via argv
+     * (int(sys.argv[1])), keeping it argv-final for the anchor. stdlib only
+     * (http.server, sys) — zero new dependencies in the distro. The payload
+     * is sh single-quoted, so it MUST contain no single quotes (double quotes
+     * only — test-asserted, T-k3x-01).
      */
     async startPreviewDevServer(dir: string, port: number): Promise<void> {
       await execFileFn(wslExePath, [
@@ -287,7 +319,7 @@ export function createSandboxAdapter(deps: SandboxAdapterDeps = {}): SandboxAdap
         // on a COLD distro boot the instant-exit session races python's startup
         // and the nohup'd child can be reaped with the session (live-fire finding,
         // 2026-07-11: probes failed at boot until the session outlived the bind).
-        `mkdir -p ${dir} && cd ${dir} && nohup python3 -m http.server ${port} >/dev/null 2>&1 & sleep 2`,
+        `mkdir -p ${dir} && cd ${dir} && nohup python3 -c 'import http.server as h,sys;H=type("H",(h.SimpleHTTPRequestHandler,),{"end_headers":lambda s:(s.send_header("Cache-Control","no-store"),h.SimpleHTTPRequestHandler.end_headers(s))});h.test(HandlerClass=H,port=int(sys.argv[1]),bind="127.0.0.1") #http.server' ${port} >/dev/null 2>&1 & sleep 2`,
       ]);
     },
     /**

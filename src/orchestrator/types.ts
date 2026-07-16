@@ -153,7 +153,10 @@ export interface SandboxAdapter {
   workspaceHasCommittableFiles?(dir: string): Promise<boolean>;
   /**
    * quick-t8k preview ownership: start the in-distro preview dev server
-   * (`python3 -m http.server <port>`, detached) rooted at `dir`. Both args are
+   * (inline `python3 -c` SimpleHTTPRequestHandler subclass adding
+   * `Cache-Control: no-store` on every response — quick-k3x; detached, port
+   * argv-final so the cmdline still ends `http.server <port>`) rooted at
+   * `dir`. Both args are
    * INTERNALLY derived — `dir` from workspace.dir() (integer-generation path)
    * and `port` from resolvePreviewDevServerPort — never chat text. REJECTS on
    * wsl exec failure (the supervisor catches — fail-open, never the app).
