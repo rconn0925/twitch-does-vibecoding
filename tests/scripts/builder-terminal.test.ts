@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { createBuilderFeed } from "../../src/overlay/builder-feed.js";
 import {
   backoffDelay,
+  BURST_DRAIN_CHARS,
   DIFF_MAX,
   diffFeed,
+  fileStatsFromFeed,
+  formatElapsed,
+  isBuildInFlight,
+  LINE_MAX,
   paceCharsPerTick,
   renderLine,
   sanitizeWireText,
   splitAnsiChunks,
+  THINKING_QUIET_MS,
+  thinkingStatusLine,
 } from "../../scripts/builder-terminal.js";
 
 /**
@@ -186,27 +194,250 @@ describe("renderLine", () => {
   });
 });
 
-describe("paceCharsPerTick", () => {
-  it("returns the 7-char floor for small backlogs (≤1400 chars)", () => {
+describe("paceCharsPerTick (burst-drain rework, quick-rtd)", () => {
+  it("returns the 7-char floor for small backlogs (≤280 chars)", () => {
     expect(paceCharsPerTick(0)).toBe(7);
     expect(paceCharsPerTick(1)).toBe(7);
-    expect(paceCharsPerTick(700)).toBe(7);
-    expect(paceCharsPerTick(1400)).toBe(7);
+    expect(paceCharsPerTick(140)).toBe(7);
+    expect(paceCharsPerTick(280)).toBe(7);
   });
 
-  it("grows ceil(backlog/200) beyond the floor — bounded catch-up", () => {
-    expect(paceCharsPerTick(1401)).toBe(8);
-    expect(paceCharsPerTick(2000)).toBe(10);
-    expect(paceCharsPerTick(20_000)).toBe(100);
+  it("grows ceil(backlog/40) beyond the floor — ≈2s decay constant", () => {
+    expect(paceCharsPerTick(281)).toBe(8);
+    expect(paceCharsPerTick(400)).toBe(10);
+    expect(paceCharsPerTick(2000)).toBe(50);
+    expect(paceCharsPerTick(7999)).toBe(200);
   });
 
-  it("is monotonically non-decreasing in backlog size", () => {
+  it("blits huge bursts instantly: backlog ≥ BURST_DRAIN_CHARS drains in one tick", () => {
+    expect(BURST_DRAIN_CHARS).toBe(8_000);
+    expect(paceCharsPerTick(8_000)).toBe(8_000);
+    expect(paceCharsPerTick(16_000)).toBe(16_000);
+  });
+
+  it("is monotonically non-decreasing in backlog size — including across the 8000 jump", () => {
     let prev = 0;
-    for (const backlog of [0, 100, 1400, 1401, 3000, 10_000, 20_000, 100_000]) {
+    for (const backlog of [0, 100, 280, 281, 3000, 7999, 8000, 16_000, 100_000]) {
       const rate = paceCharsPerTick(backlog);
       expect(rate).toBeGreaterThanOrEqual(prev);
       prev = rate;
     }
+  });
+
+  it("drains ANY backlog within ≤10s of ticks — seconds, not minutes", () => {
+    const TICK_MS = 50;
+    for (const start of [16_000, 7_999]) {
+      let backlog = start;
+      let ticks = 0;
+      while (backlog > 0) {
+        backlog -= paceCharsPerTick(backlog);
+        ticks += 1;
+      }
+      expect(ticks * TICK_MS).toBeLessThanOrEqual(10_000);
+    }
+  });
+});
+
+describe("formatElapsed", () => {
+  it("renders sub-minute durations as seconds only", () => {
+    expect(formatElapsed(0)).toBe("0s");
+    expect(formatElapsed(40_000)).toBe("40s");
+    expect(formatElapsed(59_999)).toBe("59s");
+  });
+
+  it("renders sub-hour durations as minutes + seconds", () => {
+    expect(formatElapsed(60_000)).toBe("1m 0s");
+    expect(formatElapsed(160_000)).toBe("2m 40s");
+    expect(formatElapsed(3_599_999)).toBe("59m 59s");
+  });
+
+  it("renders hour-plus durations as hours + minutes", () => {
+    expect(formatElapsed(3_600_000)).toBe("1h 0m");
+    expect(formatElapsed(3_900_000)).toBe("1h 5m");
+  });
+
+  it("clamps negative and NaN inputs to 0s", () => {
+    expect(formatElapsed(-5)).toBe("0s");
+    expect(formatElapsed(Number.NaN)).toBe("0s");
+  });
+});
+
+describe("isBuildInFlight", () => {
+  it("is false for an empty feed (undefined last line — idle)", () => {
+    expect(isBuildInFlight(undefined)).toBe(false);
+  });
+
+  it("is false when the last line is a terminal state (stage-warn / done caption)", () => {
+    expect(isBuildInFlight({ kind: "stage-warn", text: "Regrouping…" })).toBe(false);
+    expect(isBuildInFlight({ kind: "stage-warn", text: "Skipping this one" })).toBe(false);
+    expect(isBuildInFlight({ kind: "stage", text: "Live on screen now" })).toBe(false);
+  });
+
+  it("is true for every in-progress kind (title / other stage / activity / reasoning / tool-call / diff)", () => {
+    expect(isBuildInFlight({ kind: "title", text: "NOW BUILDING: app" })).toBe(true);
+    expect(isBuildInFlight({ kind: "stage", text: "Writing the code" })).toBe(true);
+    expect(isBuildInFlight({ kind: "activity", text: "Writing src/app.ts" })).toBe(true);
+    expect(isBuildInFlight({ kind: "reasoning", text: "Next I'll wire the handler." })).toBe(true);
+    expect(isBuildInFlight({ kind: "tool-call", text: "Bash(npm install)" })).toBe(true);
+    expect(isBuildInFlight({ kind: "diff", text: "+const x = 1;" })).toBe(true);
+  });
+
+  it("fails closed on unknown kinds", () => {
+    expect(isBuildInFlight({ kind: "snippet", text: "retired" })).toBe(false);
+    expect(isBuildInFlight({ kind: "bogus", text: "x" })).toBe(false);
+    expect(isBuildInFlight({ kind: "", text: "x" })).toBe(false);
+  });
+
+  it("caption-sync: tracks the REAL server captions via createBuilderFeed (drift breaks CI)", () => {
+    const done = createBuilderFeed();
+    done.stage("done");
+    const doneLines = done.list();
+    expect(isBuildInFlight(doneLines[doneLines.length - 1])).toBe(false);
+
+    const building = createBuilderFeed();
+    building.stage("building");
+    const buildingLines = building.list();
+    expect(isBuildInFlight(buildingLines[buildingLines.length - 1])).toBe(true);
+
+    const failed = createBuilderFeed();
+    failed.stage("failed");
+    const failedLines = failed.list();
+    expect(isBuildInFlight(failedLines[failedLines.length - 1])).toBe(false);
+  });
+});
+
+describe("fileStatsFromFeed", () => {
+  it("returns zeros and null lastPath for an empty feed", () => {
+    expect(fileStatsFromFeed([])).toEqual({ written: 0, edited: 0, lastPath: null });
+  });
+
+  it("counts DISTINCT paths per verb and tracks the last activity path", () => {
+    const stats = fileStatsFromFeed([
+      { kind: "activity", text: "Writing src/a.ts" },
+      { kind: "activity", text: "Writing src/a.ts" },
+      { kind: "activity", text: "Writing src/b.ts" },
+      { kind: "activity", text: "Editing src/a.ts" },
+    ]);
+    expect(stats.written).toBe(2);
+    expect(stats.edited).toBe(1);
+    expect(stats.lastPath).toBe("src/a.ts");
+  });
+
+  it("lastPath follows the LAST activity line regardless of verb", () => {
+    const stats = fileStatsFromFeed([
+      { kind: "activity", text: "Writing src/a.ts" },
+      { kind: "diff", text: "+x" },
+      { kind: "activity", text: "Editing src/b.ts" },
+      { kind: "reasoning", text: "done with b" },
+    ]);
+    expect(stats.lastPath).toBe("src/b.ts");
+  });
+
+  it("ignores non-activity kinds even when their text mimics an activity line", () => {
+    const stats = fileStatsFromFeed([
+      { kind: "reasoning", text: "Writing src/fake.ts" },
+      { kind: "tool-call", text: "Editing src/fake.ts" },
+    ]);
+    expect(stats).toEqual({ written: 0, edited: 0, lastPath: null });
+  });
+
+  it("malformed activity text contributes nothing (wrong verb / empty path)", () => {
+    const stats = fileStatsFromFeed([
+      { kind: "activity", text: "Deleted src/x.ts" },
+      { kind: "activity", text: "Writing " },
+      { kind: "activity", text: "Editing" },
+    ]);
+    expect(stats).toEqual({ written: 0, edited: 0, lastPath: null });
+  });
+});
+
+describe("thinkingStatusLine", () => {
+  const DIM = `${ESC}[2m`;
+  const RESET = `${ESC}[0m`;
+  const NO_FILES = { written: 0, edited: 0, lastPath: null };
+
+  /** The plain (unstyled) payload between the DIM open and RESET close. */
+  function plainOf(out: string): string {
+    expect(out.startsWith(DIM)).toBe(true);
+    expect(out.endsWith(RESET)).toBe(true);
+    return out.slice(DIM.length, out.length - RESET.length);
+  }
+
+  it("is null under the 10s quiet threshold", () => {
+    expect(THINKING_QUIET_MS).toBe(10_000);
+    expect(thinkingStatusLine(0, NO_FILES)).toBeNull();
+    expect(thinkingStatusLine(9_999, NO_FILES)).toBeNull();
+  });
+
+  it("shows the calm thinking copy with live elapsed time at/after the threshold", () => {
+    const out = thinkingStatusLine(10_000, NO_FILES);
+    expect(out).toBeTypeOf("string");
+    expect(out).toContain("the AI is thinking — 10s in…");
+    const later = thinkingStatusLine(160_000, NO_FILES) as string;
+    expect(later).toContain("the AI is thinking — 2m 40s in…");
+  });
+
+  it("omits the files ticker when no files exist yet", () => {
+    const out = thinkingStatusLine(30_000, NO_FILES) as string;
+    expect(out).not.toContain("files:");
+    expect(out).not.toContain("last:");
+  });
+
+  it("appends the files ticker once files exist (edited part only when > 0)", () => {
+    const writtenOnly = thinkingStatusLine(30_000, {
+      written: 2,
+      edited: 0,
+      lastPath: "src/app.ts",
+    }) as string;
+    expect(writtenOnly).toContain("files: 2 written");
+    expect(writtenOnly).not.toContain("edited");
+    expect(writtenOnly).toContain("last: src/app.ts");
+
+    const both = thinkingStatusLine(30_000, {
+      written: 1,
+      edited: 3,
+      lastPath: "src/b.ts",
+    }) as string;
+    expect(both).toContain("files: 1 written, 3 edited");
+    expect(both).toContain("last: src/b.ts");
+  });
+
+  it("styles with DIM only — never red, never any other SGR (calm, D2-18)", () => {
+    const out = thinkingStatusLine(30_000, {
+      written: 1,
+      edited: 1,
+      lastPath: "src/a.ts",
+    }) as string;
+    expectNoRed(out);
+    expect(out.startsWith(DIM)).toBe(true);
+    expect(out.endsWith(RESET)).toBe(true);
+    // exactly the DIM open + RESET close — no other escapes anywhere
+    expect(out.split(ESC).length - 1).toBe(2);
+    expect(out).not.toContain("\n");
+  });
+
+  it("a hostile lastPath can never smuggle ESC bytes into the line (T-rtd-01)", () => {
+    const out = thinkingStatusLine(30_000, {
+      written: 1,
+      edited: 0,
+      lastPath: `evil${ESC}[31mred${ESC}[2Jpath`,
+    }) as string;
+    expectNoRed(out);
+    expect(out).not.toContain(`${ESC}[2J`);
+    expect(plainOf(out)).not.toContain(ESC);
+    expect(out).toContain("evil");
+  });
+
+  it("truncates the plain text to LINE_MAX (long lastPath cannot wrap the line)", () => {
+    expect(LINE_MAX).toBe(120);
+    const out = thinkingStatusLine(30_000, {
+      written: 5,
+      edited: 2,
+      lastPath: `src/${"very-long-".repeat(30)}file.ts`,
+    }) as string;
+    const plain = plainOf(out);
+    expect(plain.length).toBeLessThanOrEqual(LINE_MAX + 1); // slice(0,120) + "…"
+    expect(plain.endsWith("…")).toBe(true);
   });
 });
 
