@@ -158,6 +158,7 @@ function fakeWorkspaceView(): WorkspaceView {
   let generation = 1;
   return {
     dir: () => `/home/builder/projects/app-${generation}`,
+    dirFor: (target: number) => `/home/builder/projects/app-${target}`,
     scaffolded: () => scaffolded,
     markBuilt: () => {
       scaffolded = true;

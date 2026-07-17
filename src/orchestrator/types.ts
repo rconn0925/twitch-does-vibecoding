@@ -82,6 +82,15 @@ export interface AgentRunSpec {
 export interface WorkspaceView {
   /** `/home/builder/projects/app-<generation>` — POSIX-absolute inside the distro. */
   dir(): string;
+  /**
+   * quick-260717-093 (D093-1): the app-<N> path template for an ARBITRARY
+   * generation — single-sourced in workspace.ts so holdover-aware preview
+   * reroots (main.ts's supervisor workspaceDir closure) never duplicate the
+   * `/home/builder/projects/app-N` template. Throws on non-integer input;
+   * the argument is only ever an internally-generated integer, never chat
+   * text. dir() delegates to dirFor(generation()).
+   */
+  dirFor(generation: number): string;
   /** True once ANY build finalized `done` in the current generation. */
   scaffolded(): boolean;
   /** A build finalized `done` — the workspace is now an existing project. */
