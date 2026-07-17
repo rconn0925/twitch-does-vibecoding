@@ -141,9 +141,7 @@ describe("CLASSIFIER_SYSTEM_PROMPT tooling retune (quick-260717-08w)", () => {
   // Pin 4: the viewer-prompt scope caveat — carve-outs never loosen the
   // suggestion-side gate.
   it("contains the viewer-prompt scope caveat", () => {
-    expect(CLASSIFIER_SYSTEM_PROMPT).toContain(
-      "applies ONLY to build-agent operational output",
-    );
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain("applies ONLY to build-agent operational output");
   });
 
   // Pin 5 (regression): the existing teeth survive the retune untouched.
