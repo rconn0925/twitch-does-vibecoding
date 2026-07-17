@@ -462,6 +462,20 @@ describe("createSandboxAdapter — preview dev-server lifecycle (quick-t8k, exec
     ]);
   });
 
+  it("quick-tqz pin: the launch payload STARTS with `mkdir -p <dir> && cd <dir> &&` — the dir-exists guarantee every reroot path (incl. the deferred done-time holdover reroot) leans on", async () => {
+    const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
+    const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });
+
+    await adapter.startPreviewDevServer?.("/home/builder/projects/app-7", 5555);
+
+    const script = (execFileFn.mock.calls[0]?.[1] ?? []).at(-1) as string;
+    expect(
+      script.startsWith(
+        "mkdir -p /home/builder/projects/app-7 && cd /home/builder/projects/app-7 && ",
+      ),
+    ).toBe(true);
+  });
+
   it("quick-k3x anchor invariant: the python payload ends `#http.server' 5555` before the redirect, carries no-store, and holds ZERO single quotes (sh string can't terminate early)", async () => {
     const execFileFn = vi.fn<SandboxExecFileFn>(async () => ({ stdout: "" }));
     const adapter = createSandboxAdapter({ config: TEST_CONFIG, execFileFn });

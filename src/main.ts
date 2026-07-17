@@ -463,6 +463,22 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // generation change — console new-project, project-switch rotation, and
   // swap activation.
   let reRootPreview: () => void = () => {};
+  // quick-260716-tqz PREVIEW HOLDOVER: during a project-switch build the OBS
+  // LIVE BUILD slot keeps serving the PREVIOUS generation's directory until
+  // the NEW build finalizes done (live incident 2026-07-16 ~20:2x — the
+  // rotation-time reroot served a freshly-mkdir'd EMPTY dir for the whole
+  // multi-minute build). Non-null = the outgoing generation being held over;
+  // the deferred reroot rides the onBuildDone hook below. A failed/aborted/
+  // skipped new build never discharges it — the previous project stays on
+  // screen until a later successful done or an explicit operator action.
+  let previewHoldoverGeneration: number | null = null;
+  // Every IMMEDIATE reroot path (console new-project, swap activation,
+  // save-and-close) goes through this clearing helper so a stale holdover can
+  // never outlive an operator action.
+  const rerootPreviewNow = (): void => {
+    previewHoldoverGeneration = null;
+    reRootPreview();
+  };
 
   // ── Playable-link state (quick-260716-g8p) ────────────────────────────────
   // ONE resolved gallery owner for every URL surface (quick-1ki note: never
@@ -1498,7 +1514,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       ...workspace,
       newProject: (): number => {
         const generation = workspace.newProject();
-        reRootPreview();
+        // quick-tqz: clearing helper — an operator rotation always reroots
+        // IMMEDIATELY and discharges any stale holdover.
+        rerootPreviewNow();
         return generation;
       },
     },
@@ -1624,6 +1642,17 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // console "New project" rotation cannot race it. task.text is the
       // gate-APPROVED title (D-03) — the same string build_history records.
       onBuildDone: (task) => {
+        // quick-260716-tqz: discharge a pending preview holdover FIRST — this
+        // MUST run even when no galleryPublisher is composed (hence before the
+        // early-return). A flag check + a void fire-and-forget call only:
+        // build-session wraps this hook in its own try/catch and the
+        // supervisor's reroot() serializes and never rejects, so nothing
+        // synchronous or throwing rides finalize's IDLE transition (t1n
+        // ordering discipline, .planning/debug/260716-double-build-execution.md).
+        if (previewHoldoverGeneration !== null) {
+          previewHoldoverGeneration = null;
+          reRootPreview();
+        }
         if (!galleryPublisher) return;
         const generation = workspace.generation();
         void galleryPublisher
@@ -1691,8 +1720,17 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       if (workspace.scaffolded()) {
         fresh = workspace.newProject();
         // A rotation is a generation change — re-root the preview dev server
-        // at the fresh dir (fire-and-forget; supervisor fail-opens).
-        reRootPreview();
+        // at the fresh dir (fire-and-forget; supervisor fail-opens). quick-tqz:
+        // the clearing helper also discharges any pending holdover.
+        rerootPreviewNow();
+      } else if (previewHoldoverGeneration !== null) {
+        // quick-tqz wipe-intent-after-rotation edge (rll): shipThenRotate
+        // rotated + set the holdover, then dispatchBuild intercepted the
+        // wipe-intent winner on the UNSCAFFOLDED fresh gen — no rotation runs
+        // above, so without this the holdover would strand and keep the DEAD
+        // project on screen forever. The default screen IS the point of
+        // save-and-close: reroot at the fresh empty dir now.
+        rerootPreviewNow();
       }
       if (db.open) {
         recordProjectClosed(db, {
@@ -1794,9 +1832,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
             initiator: "chat-vote",
           });
         }
-        // quick-t8k: a rotation is a generation change — re-root the preview
-        // dev server at the fresh dir (fire-and-forget; supervisor fail-opens).
-        reRootPreview();
+        // quick-260716-tqz HOLDOVER: do NOT reroot at rotation time — the
+        // preview keeps serving the OUTGOING generation's dir (`generation`,
+        // captured before newProject() above) for the entire new build. The
+        // deferred reroot rides onBuildDone; a failed/aborted new build keeps
+        // the previous project on screen by design (quick-tqz).
+        previewHoldoverGeneration = generation;
         // quick-260716-rll: dispatchBuild's unscaffolded-skip guard means a
         // wipe-intent !build ships the outgoing app above (a bonus save) and
         // never pays for a wasteful second rotation here.
@@ -2022,7 +2063,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         });
       }
       windowNarrator?.swapActivated(target.repo_name);
-      reRootPreview();
+      // quick-tqz: clearing helper — activation IS the completion (there is no
+      // build), so the swap reroots IMMEDIATELY and discharges any holdover.
+      rerootPreviewNow();
       backToIdle();
     };
 
@@ -2366,9 +2409,14 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       current: () => {
         try {
           if (!db.open) return null;
-          const row = overlayPlayRepoStmt.get({ generation: workspace.generation() }) as
-            | { repo_name: string }
-            | undefined;
+          // quick-260716-tqz: during a preview holdover the play link matches
+          // what viewers ACTUALLY see on the LIVE BUILD slot — the previous
+          // generation's app — flipping to the new generation only after the
+          // done-time discharge. Value selection only; the fail-closed
+          // try/catch and no-row → null behavior are unchanged (D3-12 holds:
+          // zero edits to src/preview/*).
+          const generation = previewHoldoverGeneration ?? workspace.generation();
+          const row = overlayPlayRepoStmt.get({ generation }) as { repo_name: string } | undefined;
           return row ? galleryPlayUrl(galleryOwner, row.repo_name) : null;
         } catch (err) {
           logger.error({ err }, "playUrl lookup failed — phase-banner play line stays absent");
