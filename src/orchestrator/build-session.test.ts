@@ -2421,3 +2421,201 @@ describe("createBuildSession — suggester attribution on the overlay view (quic
     }
   });
 });
+
+describe("createBuildSession — dequeue-before-IDLE ordering invariant (quick-260716-t1n)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  /**
+   * A machine sliver that runs an ordering probe at the INSTANT of every
+   * transition("IDLE") call — the exact moment stream-mode.ts emits
+   * STATE_CHANGED synchronously to every subscriber. Live incident
+   * 2026-07-16: the fdl scheduler's synchronous resume ran INSIDE that emit
+   * and re-captured the finished task because it was still queue head. The
+   * invariant pinned here: a task must never be discoverable in the queue (or
+   * hold a registered controller) once the machine leaves BUILD_IN_PROGRESS.
+   */
+  function orderProbingMachine(initial: StreamMode = "IDLE") {
+    let mode: StreamMode = initial;
+    const transitions: StreamMode[] = [];
+    let probe: (() => void) | null = null;
+    const machine: BuildMachineView = {
+      get mode() {
+        return mode;
+      },
+      transition(next) {
+        transitions.push(next);
+        if (next === "IDLE") probe?.();
+        mode = next;
+      },
+      setActiveTask() {},
+    };
+    return {
+      machine,
+      transitions,
+      setProbe: (fn: () => void) => {
+        probe = fn;
+      },
+      halt: () => {
+        mode = "HALTED";
+      },
+    };
+  }
+
+  function orderingViolations(taskQueue: TaskQueue, registry: AbortRegistry, taskId: string) {
+    const violations: string[] = [];
+    return {
+      violations,
+      probe: (): void => {
+        if (taskQueue.list().some((t) => t.id === taskId)) {
+          violations.push('finished task still queued at the instant of transition("IDLE")');
+        }
+        if (registry.list().length > 0) {
+          violations.push('controller still registered at the instant of transition("IDLE")');
+        }
+      },
+    };
+  }
+
+  it("(a) finalize(done): the task is dequeued AND unregistered BEFORE the IDLE transition emits", async () => {
+    const probe = orderProbingMachine();
+    const registry = new AbortRegistry();
+    const { runner } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-order-a", "make a page");
+    const { deps, taskQueue } = makeDeps({
+      task,
+      db,
+      machine: probe.machine,
+      registry,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    const { violations, probe: check } = orderingViolations(taskQueue, registry, task.id);
+    probe.setProbe(check);
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(probe.transitions).toContain("IDLE");
+    expect(violations).toEqual([]);
+  });
+
+  it("(b) finalizeAborted (shutdown-style abort, mode still BUILD_IN_PROGRESS): dequeued+unregistered BEFORE the IDLE transition", async () => {
+    const probe = orderProbingMachine();
+    const registry = new AbortRegistry();
+    // Abort the REGISTERED controller mid-stream WITHOUT halting the machine —
+    // the shutdown-style abort that still takes finalizeAborted's guarded
+    // BUILD_IN_PROGRESS→IDLE transition (the HALTED arm never transitions, so
+    // it cannot be pinned this way — see (b2) below).
+    const runner: AgentRunner = {
+      run(): AsyncIterable<AgentMessage> {
+        return (async function* () {
+          yield writeBatch("app.js", "console.log('hi')") as never;
+          for (const entry of registry.list()) entry.controller?.abort();
+          yield resultSuccess as never;
+        })();
+      },
+    };
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-order-b", "make a page");
+    const { deps, taskQueue } = makeDeps({
+      task,
+      db,
+      machine: probe.machine,
+      registry,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    const { violations, probe: check } = orderingViolations(taskQueue, registry, task.id);
+    probe.setProbe(check);
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(probe.transitions).toContain("IDLE");
+    // CR-01 stays intact: no build_history row, never a 'done' stage.
+    expect(listBuildHistory(db, { limit: 10 })).toHaveLength(0);
+    expect(violations).toEqual([]);
+  });
+
+  it("(b2) abort while HALTED: the machine STAYS HALTED (frozen — no IDLE transition) and the task is still dequeued+unregistered", async () => {
+    const probe = orderProbingMachine();
+    const registry = new AbortRegistry();
+    // The streamer veto shape: the machine flips to HALTED DURING the stream.
+    const runner: AgentRunner = {
+      run(): AsyncIterable<AgentMessage> {
+        return (async function* () {
+          yield writeBatch("app.js", "console.log('hi')") as never;
+          probe.halt();
+          yield resultSuccess as never;
+        })();
+      },
+    };
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-order-b2", "vetoed mid-build");
+    const { deps, taskQueue } = makeDeps({
+      task,
+      db,
+      machine: probe.machine,
+      registry,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    // HALTED stays frozen — the kill switch owns it; finalizeAborted never
+    // fights it — yet the terminal cleanup still ran to completion.
+    expect(probe.transitions).not.toContain("IDLE");
+    expect(probe.machine.mode).toBe("HALTED");
+    expect(taskQueue.list()).toHaveLength(0);
+    expect(registry.list()).toHaveLength(0);
+    // CR-01: no history row, no false BUILT-IT.
+    expect(listBuildHistory(db, { limit: 10 })).toHaveLength(0);
+  });
+
+  it("(c) skipTask from a decision-pending build: dequeued+unregistered BEFORE the IDLE transition", async () => {
+    const probe = orderProbingMachine();
+    const registry = new AbortRegistry();
+    const { runner } = fakeAgentRunner({ build: [modelRefusal] });
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-order-c", "make a page");
+    const { deps, taskQueue } = makeDeps({
+      task,
+      db,
+      machine: probe.machine,
+      registry,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+    const { violations, probe: check } = orderingViolations(taskQueue, registry, task.id);
+    probe.setProbe(check);
+
+    const session = createBuildSession(deps);
+    await session.startBuild(task);
+    // Frozen on the refusal, awaiting the streamer's decision.
+    expect(probe.machine.mode).toBe("BUILD_IN_PROGRESS");
+
+    session.skipTask(task.id);
+
+    expect(probe.transitions).toContain("IDLE");
+    expect(probe.machine.mode).toBe("IDLE");
+    expect(violations).toEqual([]);
+  });
+});
