@@ -470,7 +470,9 @@ describe("createSandboxAdapter — preview dev-server lifecycle (quick-t8k, exec
 
     const script = (execFileFn.mock.calls[0]?.[1] ?? []).at(-1) as string;
     expect(
-      script.startsWith("mkdir -p /home/builder/projects/app-7 && cd /home/builder/projects/app-7 && "),
+      script.startsWith(
+        "mkdir -p /home/builder/projects/app-7 && cd /home/builder/projects/app-7 && ",
+      ),
     ).toBe(true);
   });
 
