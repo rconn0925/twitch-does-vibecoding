@@ -16,6 +16,7 @@ import {
   recordGateDecision,
   recordHalt,
   recordPoolDropped,
+  recordProjectClosed,
   recordRevertOutcome,
   recordReviewResolution,
   recordRoundClosed,
@@ -322,6 +323,40 @@ describe("audit record helpers (append-only ledger)", () => {
       expect(row.source).toBe("operator");
       expect(row.suggestion_text).toBeNull();
     }
+    db.close();
+  });
+
+  it("recordProjectClosed inserts ONE project_closed row — generation integers only, never chat text (quick-260716-rll)", () => {
+    const db = openDb(":memory:");
+    // The normal rotated shape (scaffolded workspace closed → fresh generation).
+    recordProjectClosed(db, {
+      taskId: "task-pc1",
+      closedGeneration: 6,
+      freshGeneration: 7,
+      streamMode: "BUILD_IN_PROGRESS",
+    });
+    // The already-fresh-canvas shape (unscaffolded — no rotation happened, but
+    // the interception is STILL recorded: never silent, T-rll-03).
+    recordProjectClosed(db, {
+      taskId: "task-pc2",
+      closedGeneration: 7,
+      freshGeneration: 7,
+      streamMode: "BUILD_IN_PROGRESS",
+    });
+    const rows = listAuditRecords(db, { limit: 10, eventType: "project_closed" });
+    expect(rows).toHaveLength(2);
+    // newest-first
+    expect(rows.map((r) => r.task_id)).toEqual(["task-pc2", "task-pc1"]);
+    for (const row of rows) {
+      expect(row.source).toBe("operator");
+      expect(row.decision).toBe("saved-and-closed");
+      expect(row.suggestion_text).toBeNull(); // never the winning chat text (T-rll-04)
+      expect(row.stream_mode).toBe("BUILD_IN_PROGRESS");
+    }
+    // Server-composed rationale interpolates the generation INTEGERS only.
+    expect(rows[1]?.rationale).toContain("generation 6");
+    expect(rows[1]?.rationale).toContain("fresh generation 7");
+    expect(rows[1]?.rationale).toContain("gallery");
     db.close();
   });
 

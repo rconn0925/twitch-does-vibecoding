@@ -16,6 +16,7 @@ import {
   recordChaosToggled,
   recordGalleryPublish,
   recordPoolDropped,
+  recordProjectClosed,
   recordRevertOutcome,
   recordSoloPick,
   recordSwapOutcome,
@@ -66,6 +67,7 @@ import {
   startConsoleServer,
   type TwitchConnectionStatus,
 } from "./operator-console/server.js";
+import { isDestructiveIntent } from "./orchestrator/destructive-intent.js";
 import { listGalleryIndexEntries } from "./orchestrator/gallery-index.js";
 import {
   createGalleryPublisher,
@@ -111,6 +113,7 @@ import {
 } from "./shared/events.js";
 import type {
   BuildNarrator,
+  BuildProvenance,
   ControlWindowSnapshot,
   GateResult,
   HaltContext,
@@ -1657,6 +1660,84 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     orchestrator = buildSession;
 
     /**
+     * quick-260716-rll SAVE-AND-CLOSE: a gate-approved winner whose text asks
+     * to wipe/reset the whole app is intercepted at dispatch (see
+     * dispatchBuild below) and resolved here instead of built. Live incident
+     * 2026-07-16 ~19:41 (audit 885-891); Ross's verbatim directive: "in the
+     * future any commands to delete the repo should just save and close the
+     * project. then viewers just see the default overlay screen."
+     *
+     * Steps in EXACTLY this order — remove → rotate → audit → narrate →
+     * transition (the STATE_CHANGED→IDLE drain is setImmediate-deferred, so
+     * the queue is already clean when it fires):
+     *  (a) remove the head FIRST (the runChaosWinner/runRevertWinner idiom —
+     *      startBuild's finalize normally owns the dequeue; an intercepted
+     *      task must never linger at the queue head);
+     *  (b) rotate via the EXISTING console new-project flow (locked decision
+     *      3) — "save" is already true from the last done-build publish, so
+     *      no new publish step exists. An UNSCAFFOLDED canvas skips the
+     *      rotation (double-rotation guard — also covers a wipe-intent
+     *      project-switch arriving after shipThenRotate already rotated);
+     *  (c) audit project_closed — never silent (T-rll-03);
+     *  (d) narrate the calm amber beat;
+     *  (e) guarded return to IDLE — ending at IDLE is what makes ALL THREE
+     *      existing completion continuations (drain-next / window-return /
+     *      chaos-repick) work with ZERO edits.
+     */
+    const saveAndCloseProject = (task: QueuedTask): void => {
+      taskQueue.remove(task.id);
+      const closed = workspace.generation();
+      let fresh = closed;
+      if (workspace.scaffolded()) {
+        fresh = workspace.newProject();
+        // A rotation is a generation change — re-root the preview dev server
+        // at the fresh dir (fire-and-forget; supervisor fail-opens).
+        reRootPreview();
+      }
+      if (db.open) {
+        recordProjectClosed(db, {
+          taskId: task.id,
+          closedGeneration: closed,
+          freshGeneration: fresh,
+          streamMode: machine.mode,
+        });
+      }
+      windowNarrator?.projectClosed();
+      if (machine.mode === "BUILD_IN_PROGRESS") {
+        try {
+          // Guarded (finalize()'s idiom): a halt that landed mid-close leaves
+          // the machine HALTED — never fight the kill switch.
+          machine.transition("IDLE");
+        } catch (err) {
+          logger.error({ err, taskId: task.id }, "failed to return to IDLE after a save-and-close");
+        }
+      }
+      logger.warn(
+        { taskId: task.id, closedGeneration: closed, freshGeneration: fresh },
+        "wipe-intent winner intercepted — project saved-and-closed, never handed to the build agent",
+      );
+    };
+
+    /**
+     * quick-260716-rll: the ONE build-dispatch convergence point (locked
+     * decision 2). Every path that hands a queued task to the build agent —
+     * vote winner, solo pick, chaos pick (chat or console), and paid
+     * free-reign instruction — routes through this wrapper, so the
+     * destructive-intent check structurally cannot be bypassed.
+     *
+     * STRUCTURAL INVARIANT (enforced by tests/e2e/save-and-close.e2e.test.ts
+     * gate A): `buildSession.startBuild` has exactly ONE call site — this
+     * wrapper.
+     */
+    const dispatchBuild = async (task: QueuedTask, provenance: BuildProvenance): Promise<void> => {
+      if (isDestructiveIntent(task.text)) {
+        saveAndCloseProject(task);
+        return;
+      }
+      await buildSession.startBuild(task, provenance);
+    };
+
+    /**
      * quick-q5n LOCKED USER DECISION: a project-switch winner commits and
      * pushes the CURRENT project FIRST, and rotates the workspace ONLY on a
      * confirmed publish outcome (published | no-changes). A failed final push
@@ -1671,7 +1752,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // (i) No active project: nothing to ship, nothing to rotate — the
       // current fresh generation scaffolds (build-session computes the mode).
       if (!workspace.scaffolded()) {
-        await buildSession.startBuild(head, "vote");
+        await dispatchBuild(head, "vote");
         return;
       }
       // (ii) Active project ⇒ require a CONFIRMABLE push. No publisher = the
@@ -1716,7 +1797,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         // quick-t8k: a rotation is a generation change — re-root the preview
         // dev server at the fresh dir (fire-and-forget; supervisor fail-opens).
         reRootPreview();
-        await buildSession.startBuild(head, "vote");
+        // quick-260716-rll: dispatchBuild's unscaffolded-skip guard means a
+        // wipe-intent !build ships the outgoing app above (a bonus save) and
+        // never pays for a wasteful second rotation here.
+        await dispatchBuild(head, "vote");
         return;
       }
       // (iv) Ship FAILED (or no publisher): DO NOT rotate, DO NOT startBuild.
@@ -2034,7 +2118,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
           default:
             // "suggestion" — unchanged. HIST-01: a round winner's provenance
             // is always the normal vote loop.
-            await buildSession.startBuild(head, "vote");
+            await dispatchBuild(head, "vote");
             break;
         }
         // Completion continuation (driveChaosBuild's shape): drain the NEXT
@@ -2103,7 +2187,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // build starts. Fall back to 'donation' only if no snapshot is present.
       const windowProvenance = controlWindow.snapshot()?.trigger ?? "donation";
       void (async () => {
-        await buildSession.startBuild(task, windowProvenance);
+        await dispatchBuild(task, windowProvenance);
         // IDLE = terminal; still BUILD_IN_PROGRESS = decision-pending (streamer
         // owns the next step); HALTED = kill switch owns it.
         if (machine.mode !== "IDLE") return;
@@ -2139,7 +2223,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       }
       void (async () => {
         // HIST-01: a chaos pick's provenance is always 'chaos'.
-        await buildSession.startBuild(task, "chaos");
+        await dispatchBuild(task, "chaos");
         if (machine.mode !== "IDLE") return;
         if (!chaosOn) return; // chaos turned off during the build → stay IDLE
         try {

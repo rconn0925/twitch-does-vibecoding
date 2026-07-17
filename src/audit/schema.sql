@@ -21,6 +21,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
                                              --     build_history provenance for such picks reads 'vote' by same-winner-rail design)
                                              --   quick-260711-ly4: 'solo_pick' — the auto-cycle window ended with EXACTLY ONE pooled candidate, built
                                              --     UNOPPOSED with no vote round (kind in `decision`, distinct from 'chaos_pick' and 'round_closed')
+                                             --   quick-260716-rll: 'project_closed' — a gate-approved wipe-intent winner was intercepted at the
+                                             --     dispatch funnel and the project was SAVED-AND-CLOSED instead of built (decision 'saved-and-closed',
+                                             --     task_id = the intercepted winner; rationale carries closed→fresh generation integers only). The
+                                             --     workspace rotated via the existing non-destructive new-project flow — no repo is ever removed
   source          TEXT NOT NULL,             -- 'chat' | 'channel_points' | 'donation' | 'chaos' | 'operator' | 'orchestrator' | 'console' | 'hotkey'
   twitch_username TEXT,                      -- nullable: absent for operator-console-originated events
   suggestion_text TEXT,                      -- nullable: absent for pure veto/halt events with no candidate

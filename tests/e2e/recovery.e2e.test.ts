@@ -481,6 +481,7 @@ describe("EventSub disconnect → ready reconciliation (INFRA-02, D2-14)", () =>
         revertFailed() {},
         newProjectShipping() {},
         newProjectShipFailed() {},
+        projectClosed() {},
         infoProjects() {},
         infoCurrent() {},
         infoRepo() {},

@@ -174,6 +174,16 @@ export interface Narrator extends BuildNarrator {
   /** The pre-rotation ship failed — staying on the current project (never a silent rotate). */
   newProjectShipFailed(): void;
 
+  // ── Wipe-intent save-and-close beat (quick-260716-rll) ───────────────────
+  /**
+   * A gate-approved winner asked to wipe/reset the whole app, so the project
+   * was SAVED to the gallery and CLOSED instead of handed to the build agent
+   * (2026-07-16 incident, audit 885-891). Fixed server-composed line, zero
+   * interpolation — never chat text. Amber-tier (D2-18) and copy-separation
+   * clean (no chance words, no money words).
+   */
+  projectClosed(): void;
+
   // ── Swap beats (quick-t8k) ────────────────────────────────────────────────
   // Server-composed; the resolved project_repos.repo_name slug is the ONLY
   // dynamic token. Failure lines are AMBER-TIER (D2-18): matter-of-fact
@@ -687,6 +697,16 @@ export function createNarrator(deps: {
     newProjectShipFailed(): void {
       void deps.sender.send(
         "Couldn't ship the current project to the gallery just now — staying on it for the moment. We'll take the new-project switch again another round.",
+      );
+    },
+
+    // quick-260716-rll: the wipe-intent save-and-close beat. Fixed
+    // server-composed copy — the calm public face of an interception: the
+    // project is already safe in the gallery (the last done-build publish),
+    // the canvas rotates fresh, and the show loop keeps rolling.
+    projectClosed(): void {
+      void deps.sender.send(
+        "Project saved to the gallery and closed — fresh canvas! Keep the ideas coming.",
       );
     },
 
