@@ -128,6 +128,8 @@ function fakeNarrator(): Narrator & { feedbackCalls: [FeedbackKind, string, stri
     revertFailed: vi.fn(),
     newProjectShipping: vi.fn(),
     newProjectShipFailed: vi.fn(),
+    // quick-260716-rll wipe-intent save-and-close beat (unused by the chat listener).
+    projectClosed: vi.fn(),
     // Tier-2 info replies (quick-t8k; routed via the infoCommand seam, not here).
     infoProjects: vi.fn(),
     infoCurrent: vi.fn(),

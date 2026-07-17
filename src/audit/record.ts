@@ -663,6 +663,42 @@ export function recordRevertOutcome(
 }
 
 /**
+ * One row per wipe-intent SAVE-AND-CLOSE (quick-260716-rll): a gate-approved
+ * winner asked to wipe/reset the whole app, so the dispatch funnel intercepted
+ * it before the build agent and rotated the workspace to a fresh generation
+ * via the EXISTING non-destructive new-project flow (the old distro dir stays
+ * archived in place; the gallery repo stays published). The unscaffolded
+ * already-fresh case skips the rotation (closedGeneration === freshGeneration)
+ * but STILL writes this row — an interception is never silent (T-rll-03).
+ * The rationale interpolates internally-generated generation INTEGERS only —
+ * never the winning chat text (the recordRevertOutcome doctrine, T-rll-04).
+ * audit_log has no CHECK constraints, so the new "project_closed" event_type
+ * is a schema-safe addition (comment-only schema.sql change).
+ */
+export function recordProjectClosed(
+  db: Database.Database,
+  args: {
+    taskId: string;
+    closedGeneration: number;
+    freshGeneration: number;
+    streamMode: StreamMode;
+  },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "project_closed",
+    source: "operator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: "saved-and-closed",
+    category: null,
+    rationale: `Chat asked to wipe the project — generation ${args.closedGeneration} stays published in the gallery; workspace closed and rotated to fresh generation ${args.freshGeneration}`,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
+/**
  * One row per chat-voted swap OUTCOME (quick-t8k): the kind router's swap arm
  * resolved activated / unresolved / already-current / ship-failed. Status
  * "activated" writes the `swap_activated` event with the from/to generations
