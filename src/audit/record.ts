@@ -407,6 +407,33 @@ export function recordBuildSkip(
   });
 }
 
+/**
+ * One row per held-verdict PARK (quick-260717-2gr, D-08): a COMP-02
+ * held-for-review verdict (pre-build or mid-build) parked the build in the
+ * console review queue instead of tossing it. A distinct event_type from
+ * comp02_decision (the verdict) and review_resolved (the outcome) so the audit
+ * chain comp02(held) → build_parked_for_review → review_resolved/review_expired
+ * is complete — never a silent transition (T-2gr-05). audit_log has no CHECK
+ * constraint, so the new event_type is a schema-safe addition.
+ */
+export function recordBuildParked(
+  db: Database.Database,
+  args: { taskId: string; phase: "pre-build" | "mid-build"; streamMode: StreamMode },
+): void {
+  insert(db, {
+    createdAtMs: Date.now(),
+    eventType: "build_parked_for_review",
+    source: "orchestrator",
+    twitchUsername: null,
+    suggestionText: null,
+    decision: "held-for-review",
+    category: null,
+    rationale: `COMP-02 ${args.phase} hold parked the build for streamer review (D-08)`,
+    streamMode: args.streamMode,
+    taskId: args.taskId,
+  });
+}
+
 /** One row per sandbox teardown (BUILD-04 / D3-10): the wsl --terminate abort primitive fired. */
 export function recordSandboxTeardown(
   db: Database.Database,

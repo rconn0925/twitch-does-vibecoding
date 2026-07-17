@@ -34,7 +34,14 @@ export interface Comp02Deps {
  * The decision COMP-02 hands its caller (the 03-06 build session):
  * - `approved`        → `{ proceed: true }`                              (build proceeds)
  * - `rejected`        → `{ proceed: false, disposition: "rejected", category }` (caller narrates + aborts)
- * - `held-for-review` → `{ proceed: false, disposition: "held" }`        (caller routes to the console review queue, D-08)
+ * - `held-for-review` → `{ proceed: false, disposition: "held", category, rationale }`
+ *                       (caller PARKS the build for the console review queue,
+ *                       D-08 / quick-260717-2gr — the category + rationale ride
+ *                       along so the review card can show WHY it was flagged)
+ *
+ * The held arm's `category` is non-null by D-12 (held ⇒ escalate-eligible
+ * category); the mapping falls back defensively ("gut-feeling"/"") rather than
+ * ever throwing on a malformed result.
  *
  * The audit row is written by classify() itself (gate.ts's audit() call) —
  * COMP-02 only maps the decision, it does not re-audit.
@@ -42,7 +49,7 @@ export interface Comp02Deps {
 export type Comp02Outcome =
   | { proceed: true }
   | { proceed: false; disposition: "rejected"; category: string | null }
-  | { proceed: false; disposition: "held" };
+  | { proceed: false; disposition: "held"; category: string; rationale: string };
 
 /**
  * Fail-closed sentinel category, mirroring gate.ts's FAIL_CLOSED — a classify()
@@ -86,7 +93,14 @@ async function screen(deps: Comp02Deps, candidate: SuggestionCandidate): Promise
     case "approved":
       return { proceed: true };
     case "held-for-review":
-      return { proceed: false, disposition: "held" };
+      return {
+        proceed: false,
+        disposition: "held",
+        // D-12 guarantees a non-null escalate category on the live gate;
+        // fall back defensively rather than ever throwing (fail-closed spirit).
+        category: result.category ?? "gut-feeling",
+        rationale: typeof result.rationale === "string" ? result.rationale : "",
+      };
     default:
       return { proceed: false, disposition: "rejected", category: result.category };
   }

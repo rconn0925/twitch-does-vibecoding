@@ -51,12 +51,36 @@ describe("screenBuildPlan (src/orchestrator/comp02.ts — COMP-02 second complia
     expect(outcome).toEqual({ proceed: false, disposition: "rejected", category: "hate" });
   });
 
-  it("maps a held-for-review gate result to a non-proceeding held outcome (routes to console review queue)", async () => {
+  it("maps a held-for-review gate result to a held outcome CARRYING the classifier's category + rationale (D-08 park routing)", async () => {
     const { deps } = makeDeps(async () => HELD);
 
     const outcome = await screenBuildPlan(deps, { taskId: "task-1", planText: PLAN_TEXT });
 
-    expect(outcome).toEqual({ proceed: false, disposition: "held" });
+    expect(outcome).toEqual({
+      proceed: false,
+      disposition: "held",
+      category: "self-harm-adjacent",
+      rationale: "streamer should eyeball this",
+    });
+  });
+
+  it("a held result with a null category falls back defensively ('gut-feeling'/'' — never throws, D-12 guards the live path)", async () => {
+    // D-12 guarantees held ⇒ non-null escalate category on the LIVE gate; this
+    // pins the defensive fallback for a malformed injected classify only.
+    const { deps } = makeDeps(async () => ({
+      decision: "held-for-review" as const,
+      category: null,
+      rationale: undefined as unknown as string,
+    }));
+
+    const outcome = await screenBuildPlan(deps, { taskId: "task-1", planText: PLAN_TEXT });
+
+    expect(outcome).toEqual({
+      proceed: false,
+      disposition: "held",
+      category: "gut-feeling",
+      rationale: "",
+    });
   });
 
   it("passes classify() a candidate with source 'orchestrator' and the plan text byte-identical, never mutated", async () => {
@@ -108,6 +132,19 @@ describe("screenOutputBatch (src/orchestrator/comp02.ts — D3-07 in-flight re-s
     expect(candidate.source).toBe("orchestrator");
     expect(candidate.text).toBe(OUTPUT);
     expect(candidate.id).toBe("task-7-output");
+  });
+
+  it("a held in-flight batch carries category + rationale too (the mid-build park path consumes them)", async () => {
+    const { deps } = makeDeps(async () => HELD);
+
+    const outcome = await screenOutputBatch(deps, { taskId: "task-1", outputText: "some diff" });
+
+    expect(outcome).toEqual({
+      proceed: false,
+      disposition: "held",
+      category: "self-harm-adjacent",
+      rationale: "streamer should eyeball this",
+    });
   });
 
   it("resolves a throwing classify() to a rejected/fail-closed outcome", async () => {

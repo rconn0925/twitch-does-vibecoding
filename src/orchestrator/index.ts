@@ -16,4 +16,7 @@ export {
   createBuildSession,
   extractAssistantText,
   extractScreenableText,
+  type HeldForReviewInfo,
+  type ReviewHoldPhase,
+  type StartBuildOptions,
 } from "./build-session.js";

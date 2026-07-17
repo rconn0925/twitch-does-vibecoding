@@ -444,6 +444,7 @@ describe("EventSub disconnect → ready reconciliation (INFRA-02, D2-14)", () =>
         buildSkipped() {},
         comp02Rejected() {},
         buildHeld() {},
+        buildResumedFromReview() {},
         buildVetoed() {},
         windowOpenedDonation() {},
         windowOpenedChannelPoints() {},

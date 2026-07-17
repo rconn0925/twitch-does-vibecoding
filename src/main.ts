@@ -78,7 +78,12 @@ import {
   galleryPlayUrl,
   resolveGalleryConfig,
 } from "./orchestrator/gallery-publisher.js";
-import { type BuildSession, createBuildSession } from "./orchestrator/index.js";
+import {
+  type BuildSession,
+  createBuildSession,
+  type ReviewHoldPhase,
+  type StartBuildOptions,
+} from "./orchestrator/index.js";
 import type {
   AgentRunner,
   DevServerProbe,
@@ -118,13 +123,21 @@ import type {
   GateResult,
   HaltContext,
   QueuedTask,
+  ReasonTag,
   RoundSnapshot,
   StateSnapshot,
   SuggestionCandidate,
 } from "./shared/types.js";
 import { AutoCycleScheduler } from "./state-machine/auto-cycle.js";
 import { type HaltDeps, triggerHalt } from "./state-machine/halt.js";
-import { expireAllPending, expireStale, reviewTtlMs } from "./state-machine/review-queue.js";
+import {
+  expireAllPending,
+  expireOne,
+  expireStale,
+  insertHeld,
+  resolveParked,
+  reviewTtlMs,
+} from "./state-machine/review-queue.js";
 import { RoundManager } from "./state-machine/round.js";
 import { StreamModeMachine } from "./state-machine/stream-mode.js";
 
@@ -373,6 +386,17 @@ const DEFAULT_VOTE_QUEUE_MAX = 10;
 const DEFAULT_INFO_COMMAND_COOLDOWN_SECONDS = 30;
 /** quick-rs3: how long an activated chaos window lasts before auto-revert. */
 const DEFAULT_CHAOS_MODE_DURATION_SECONDS = 300;
+/**
+ * quick-260717-2gr (Ross verbatim: "if i dont respond to the manual review of
+ * the paused build within 2 minutes, auto decline it"): a PARKED held-for-review
+ * build auto-DECLINES after this many seconds (REVIEW_HOLD_TIMEOUT_SECONDS
+ * knob). Fail-closed — an unresolved park never becomes a zombie (T-2gr-04).
+ * DISTINCT from REVIEW_TTL_HOURS (the 4h intake-hold TTL + 15-min sweep),
+ * which stays untouched.
+ */
+const DEFAULT_REVIEW_HOLD_TIMEOUT_SECONDS = 120;
+/** Emitted on parked-review beats (park / resolve / expiry) for the console push. */
+const REVIEW_HOLD_CHANGED = "review-hold:changed";
 
 /**
  * Wires the Walking Skeleton: audit db -> state machine -> operator console.
@@ -472,13 +496,53 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
   // skipped new build never discharges it — the previous project stays on
   // screen until a later successful done or an explicit operator action.
   let previewHoldoverGeneration: number | null = null;
+  // quick-260717-2gr PREVIEW TAINT (P4, fail-closed): a MID-BUILD held batch
+  // may already be on disk when the park aborts the build — we cannot know
+  // whether the flagged Write executed, so assume it did. While true (and no
+  // holdover is armed — a holdover reroot serves the PREVIOUS project's dir,
+  // which is safe), the 093 teardown resurrection and the HALTED-exit reroot
+  // are WITHHELD: the dead dev server leaves the 4902 page on its standing-by
+  // card instead of serving the tainted workspace. Discharged by: (a) approve
+  // of the tweak hold (content sanctioned), (b) the next successful done
+  // build (onBuildDone), (c) any operator immediate path (rerootPreviewNow).
+  // Reject/expiry of the hold KEEPS the park — no file revert exists.
+  let previewParked = false;
   // Every IMMEDIATE reroot path (console new-project, swap activation,
   // save-and-close) goes through this clearing helper so a stale holdover can
   // never outlive an operator action.
   const rerootPreviewNow = (): void => {
     previewHoldoverGeneration = null;
+    previewParked = false;
     reRootPreview();
   };
+
+  // ── Parked held-for-review builds (quick-260717-2gr, D-08) ───────────────
+  // The composition root owns the parked registry: the branded QueuedTask is
+  // RETAINED here for the approve continuation (no re-branding, no gate.ts
+  // edit — single-funnel rail), alongside the original provenance, the hold
+  // phase, and the armed auto-decline timer. The task was REMOVED from the
+  // build queue at park time (P2) — drain can never re-pick it; approve
+  // dispatches the retained task directly through dispatchBuild.
+  interface ParkedReviewEntry {
+    task: QueuedTask;
+    phase: ReviewHoldPhase;
+    provenance: BuildProvenance;
+    expiresAtMs: number;
+    timer: NodeJS.Timeout;
+  }
+  const parkedReviews = new Map<number, ParkedReviewEntry>();
+  const reviewHoldEvents = new EventEmitter();
+  // Late-bound parked-review resolution seam (the driveWindowBuild idiom):
+  // assigned inside the orchestrator composition block below; null until a
+  // build engine exists — the console then treats every row as an intake hold.
+  let heldBuildsSeam: {
+    resolve(
+      reviewId: number,
+      action: "approve" | "reject",
+      reasonTag?: ReasonTag | null,
+    ): "approved" | "rejected" | "conflict" | "not-held";
+    expiresAtMs(reviewId: number): number | null;
+  } | null = null;
 
   // ── Playable-link state (quick-260716-g8p) ────────────────────────────────
   // ONE resolved gallery owner for every URL surface (quick-1ki note: never
@@ -1479,6 +1543,17 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     retryBuild: (taskId) => orchestrator?.retryBuild(taskId),
     skipTask: (taskId, reasonTag) => orchestrator?.skipTask(taskId, reasonTag),
     buildStatus: () => orchestrator?.snapshot() ?? null,
+    // quick-260717-2gr (D-08): parked held-for-review builds. Late-binding
+    // closures over heldBuildsSeam (assigned in the orchestrator block below,
+    // the buildStatus idiom) — until then every review row is an intake hold.
+    heldBuilds: {
+      resolve: (reviewId, action, reasonTag) =>
+        heldBuildsSeam?.resolve(reviewId, action, reasonTag ?? null) ?? "not-held",
+      expiresAtMs: (reviewId) => heldBuildsSeam?.expiresAtMs(reviewId) ?? null,
+      onChange: (handler) => {
+        reviewHoldEvents.on(REVIEW_HOLD_CHANGED, handler);
+      },
+    },
     // PAID-04 / CHAOS-01 seams (04-05): the honest full-detail window snapshot +
     // single-click Revoke, the chaos on/off state + toggle, and the donation-feed
     // health pill — all backed by the real FSM/controller composed above.
@@ -1597,6 +1672,31 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       }
     };
 
+    /**
+     * quick-260717-2gr (AMENDMENT, Ross verbatim: "if i dont respond to the
+     * manual review of the paused build within 2 minutes, auto decline it"):
+     * the per-park auto-decline. Guard-first expireOne() (a resolution that
+     * won the race makes this a no-op — idempotent), then discard the parked
+     * entry, narrate the SAME denial beat as a reject (locked decision 6),
+     * and push the console. The preview park (if any) stays — fail-closed;
+     * the next done build or an operator action discharges it. db.open guards
+     * every write (WR-05 shutdown drain); the timer keeps running through a
+     * halt by design (P8 — a fail-closed decline while halted is acceptable).
+     */
+    const expireParkedReview = (reviewId: number): void => {
+      const entry = parkedReviews.get(reviewId);
+      parkedReviews.delete(reviewId);
+      if (!db.open) return;
+      const expired = expireOne(db, reviewId, machine.mode);
+      if (!expired) return; // approve/reject won the race — nothing to decline
+      if (entry) buildNarrator?.comp02Rejected(entry.task.text);
+      logger.warn(
+        { reviewId, taskId: entry?.task.id },
+        "parked review expired unreviewed — auto-declined (D-08 120s window)",
+      );
+      reviewHoldEvents.emit(REVIEW_HOLD_CHANGED);
+    };
+
     const buildSession = createBuildSession({
       taskQueue,
       db,
@@ -1611,17 +1711,68 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // drives BOTH the pre-build suggestion re-screen and the in-flight output re-screen.
       comp02: { classify: (candidate) => classify(gateDeps, candidate) },
       progress,
-      // WR-03 / D-08: routing a held plan into the console review queue is
-      // DEFERRED. Interim behavior is explicit and never silent — the build
-      // session narrates the held beat + audits it (comp02_decision:
-      // held-for-review + pipeline_stage: refused), and this hook logs an audited
-      // warning. TODO(D-08): re-queue the held plan into the streamer review flow
-      // instead of dropping it after audit+narration.
-      onHeldForReview: (task) =>
-        logger.warn(
-          { taskId: task.id },
-          "COMP-02 held the build plan — audited + narrated; D-08 console review-queue routing deferred (TODO)",
-        ),
+      // WR-03 / D-08 (implemented quick-260717-2gr): a COMP-02 held verdict
+      // PARKS the build in the console review queue. The build session already
+      // exited cleanly (task dequeued, machine IDLE, buildHeld narrated); this
+      // handler owns the composition side: the review row (the candidate IS
+      // the retained branded task; for a mid-build hold the rationale appends
+      // a bounded flagged-content excerpt — console-only surface, P6), the
+      // parked registry + 120s auto-decline timer, the P4 preview-taint
+      // semantics, and the console push. Own try/catch: a routing failure can
+      // never disturb the already-completed park exit.
+      onHeldForReview: (task, heldText, hold) => {
+        try {
+          if (!db.open) return;
+          const rationale =
+            hold.phase === "mid-build"
+              ? `${hold.rationale}\n---\n${heldText.slice(0, 1500)}`
+              : hold.rationale;
+          const reviewId = insertHeld(db, task, {
+            decision: "held-for-review",
+            category: hold.category || "gut-feeling",
+            rationale,
+          });
+          const timeoutMs =
+            envPositive(
+              process.env.REVIEW_HOLD_TIMEOUT_SECONDS,
+              DEFAULT_REVIEW_HOLD_TIMEOUT_SECONDS,
+            ) * 1_000;
+          const timer = setTimeout(() => expireParkedReview(reviewId), timeoutMs);
+          timer.unref();
+          parkedReviews.set(reviewId, {
+            task,
+            phase: hold.phase,
+            provenance: hold.provenance,
+            expiresAtMs: Date.now() + timeoutMs,
+            timer,
+          });
+          // P4 preview taint (mid-build holds only; a pre-build hold tore
+          // nothing down — no preview action at all). HALTED guard mirrors
+          // the onBuildTeardown handler: while frozen the preview stays dark.
+          if (hold.phase === "mid-build" && machine.mode !== "HALTED") {
+            if (previewHoldoverGeneration !== null) {
+              // Project-switch hold: raw holdover-aware reroot — the PREVIOUS
+              // project comes back on screen. Holdover NOT discharged.
+              reRootPreview();
+            } else {
+              // Tweak hold: withhold the 093 resurrection — the sandbox
+              // terminate killed the dev server, so 4902 shows the existing
+              // standing-by card instead of the tainted workspace.
+              previewParked = true;
+            }
+          }
+          reviewHoldEvents.emit(REVIEW_HOLD_CHANGED);
+          logger.warn(
+            { taskId: task.id, reviewId, phase: hold.phase, category: hold.category, timeoutMs },
+            "COMP-02 held — build PARKED for streamer review (D-08); auto-declines when the window lapses",
+          );
+        } catch (err) {
+          logger.error(
+            { err, taskId: task.id },
+            "parked-review routing failed — the park exit already completed cleanly; item lost to review (audit rows remain)",
+          );
+        }
+      },
       // Build-pipeline chat narration (BUILD-03/D3-08/D3-09); absent when no chat
       // pipeline is composed — the build still runs, just without chat beats.
       ...(buildNarrator ? { narrator: buildNarrator } : {}),
@@ -1649,8 +1800,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         // supervisor's reroot() serializes and never rejects, so nothing
         // synchronous or throwing rides finalize's IDLE transition (t1n
         // ordering discipline, .planning/debug/260716-double-build-execution.md).
-        if (previewHoldoverGeneration !== null) {
+        // quick-260717-2gr: a successful done build ALSO discharges the P4
+        // preview-park taint — the workspace now holds sanctioned content.
+        if (previewHoldoverGeneration !== null || previewParked) {
           previewHoldoverGeneration = null;
+          previewParked = false;
           reRootPreview();
         }
         if (!galleryPublisher) return;
@@ -1699,6 +1853,11 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // transition (t1n ordering discipline).
       onBuildTeardown: () => {
         if (machine.mode === "HALTED") return;
+        // quick-260717-2gr P4 taint guard: while a tweak hold is parked (no
+        // holdover armed — with a holdover the reroot serves the PREVIOUS
+        // project's dir, which is safe), a LATER teardown must never
+        // resurrect the tainted workspace onto the broadcast.
+        if (previewParked && previewHoldoverGeneration === null) return;
         reRootPreview();
       },
       logger,
@@ -1784,12 +1943,67 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
      * gate A): `buildSession.startBuild` has exactly ONE call site — this
      * wrapper.
      */
-    const dispatchBuild = async (task: QueuedTask, provenance: BuildProvenance): Promise<void> => {
+    const dispatchBuild = async (
+      task: QueuedTask,
+      provenance: BuildProvenance,
+      opts?: StartBuildOptions,
+    ): Promise<void> => {
       if (isDestructiveIntent(task.text)) {
         saveAndCloseProject(task);
         return;
       }
-      await buildSession.startBuild(task, provenance);
+      await buildSession.startBuild(task, provenance, opts);
+    };
+
+    // quick-260717-2gr (D-08): the parked-review resolution seam the console
+    // routes call (late-bound — declared with the preview state above).
+    // Approve checks HALTED FIRST (P8: the row stays pending, the timer keeps
+    // running), then resolves the row WITHOUT touching the pool and
+    // fire-and-forgets the continuation through the ONE dispatchBuild funnel
+    // with the ORIGINAL provenance + the right resume phase — p-queue
+    // concurrency-1 serializes it behind any in-flight build. Reject takes
+    // today's denial path; the preview park (if any) is KEPT on reject.
+    heldBuildsSeam = {
+      expiresAtMs: (reviewId) => parkedReviews.get(reviewId)?.expiresAtMs ?? null,
+      resolve: (reviewId, action, reasonTag) => {
+        const entry = parkedReviews.get(reviewId);
+        if (!entry) return "not-held";
+        if (action === "approve" && machine.mode === "HALTED") return "conflict";
+        const ok = resolveParked(
+          db,
+          reviewId,
+          action === "approve" ? "approved" : "rejected",
+          machine.mode,
+          reasonTag ?? null,
+        );
+        clearTimeout(entry.timer);
+        parkedReviews.delete(reviewId);
+        if (!ok) {
+          // The row raced to terminal (the expiry fired between the route's
+          // expiresAtMs check and here) — treat as not parked anymore.
+          reviewHoldEvents.emit(REVIEW_HOLD_CHANGED);
+          return "not-held";
+        }
+        if (action === "approve") {
+          // P4 discharge (a): approving a TWEAK hold sanctions the flagged
+          // content — clear the taint + reroot immediately so the mid-build
+          // preview serves the dir normally during the continuation.
+          if (entry.phase === "mid-build" && previewParked && previewHoldoverGeneration === null) {
+            previewParked = false;
+            reRootPreview();
+          }
+          // Fire-and-forget: dispatchBuild never rejects (startBuild is
+          // fail-closed) and the route must answer immediately.
+          void dispatchBuild(entry.task, entry.provenance, {
+            resume: { phase: entry.phase },
+          });
+        } else {
+          // The SAME denial beat as a COMP-02 rejection (locked decision 6).
+          buildNarrator?.comp02Rejected(entry.task.text);
+        }
+        reviewHoldEvents.emit(REVIEW_HOLD_CHANGED);
+        return action === "approve" ? "approved" : "rejected";
+      },
     };
 
     /**
@@ -2387,7 +2601,12 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     machine.on(STATE_CHANGED, () => {
       const now = machine.mode;
       if (lastPreviewMode === "HALTED" && now !== "HALTED") {
-        reRootPreview();
+        // quick-260717-2gr P4 taint guard (same predicate as the teardown
+        // handler): a halt recovery must never resurrect a parked tweak
+        // hold's tainted workspace onto the broadcast.
+        if (!(previewParked && previewHoldoverGeneration === null)) {
+          reRootPreview();
+        }
       }
       lastPreviewMode = now;
     });

@@ -13,10 +13,12 @@ import type { GateResult, SuggestionCandidate } from "../shared/types.js";
 import {
   approve,
   expireAllPending,
+  expireOne,
   expireStale,
   insertHeld,
   listPending,
   reject,
+  resolveParked,
   reviewTtlMs,
 } from "./review-queue.js";
 
@@ -218,6 +220,83 @@ describe("review-queue workflow (D-05/06/07)", () => {
         process.env.REVIEW_TTL_HOURS = prior;
       }
     }
+  });
+
+  // ── quick-260717-2gr parked-build resolvers (D-08) ─────────────────────────
+
+  it("resolveParked('approved') resolves the row + ONE review_resolved audit row WITHOUT touching the pool", () => {
+    const candidate = makeCandidate();
+    const id = insertHeld(db, candidate, HELD);
+
+    const resolved = resolveParked(db, id, "approved", "IDLE");
+
+    expect(resolved).toBe(true);
+    expect(reviewRow(db, id).status).toBe("approved");
+    // The parked build's continuation goes through dispatchBuild — the intake
+    // pool is NEVER touched (the whole point vs approve()).
+    expect(pool.list()).toHaveLength(0);
+    const rows = auditRowsOfType(db, "review_resolved");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      decision: "approved",
+      suggestion_text: candidate.text,
+      task_id: String(id),
+    });
+  });
+
+  it("resolveParked('rejected') carries the optional reason tag onto the audit row", () => {
+    const id = insertHeld(db, makeCandidate(), HELD);
+
+    const resolved = resolveParked(db, id, "rejected", "BUILD_IN_PROGRESS", "tos-risk");
+
+    expect(resolved).toBe(true);
+    expect(reviewRow(db, id).status).toBe("rejected");
+    const rows = auditRowsOfType(db, "review_resolved");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      decision: "rejected",
+      category: "tos-risk",
+      stream_mode: "BUILD_IN_PROGRESS",
+    });
+  });
+
+  it("resolveParked is throw-free on missing/terminal rows: returns false, writes NOTHING", () => {
+    expect(resolveParked(db, 9_999, "approved")).toBe(false);
+    const id = insertHeld(db, makeCandidate(), HELD);
+    reject(db, id);
+    const before = allAuditRows(db).length;
+    expect(resolveParked(db, id, "approved")).toBe(false);
+    expect(allAuditRows(db).length).toBe(before);
+    expect(reviewRow(db, id).status).toBe("rejected");
+  });
+
+  it("expireOne() resolves ONE pending row as expired-unreviewed + review_expired audit row; idempotent (false when not pending)", () => {
+    const candidate = makeCandidate();
+    const id = insertHeld(db, candidate, HELD);
+
+    expect(expireOne(db, id, "IDLE")).toBe(true);
+    expect(reviewRow(db, id).status).toBe("expired-unreviewed");
+    const rows = auditRowsOfType(db, "review_expired");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      decision: "expired-unreviewed",
+      suggestion_text: candidate.text,
+      task_id: String(id),
+    });
+
+    // Second fire (the timer raced a resolution): false, no extra rows.
+    expect(expireOne(db, id, "IDLE")).toBe(false);
+    expect(auditRowsOfType(db, "review_expired")).toHaveLength(1);
+    // Missing row: false, throw-free.
+    expect(expireOne(db, 12_345, "IDLE")).toBe(false);
+  });
+
+  it("expireOne() loses the race against resolveParked cleanly (terminal stays terminal)", () => {
+    const id = insertHeld(db, makeCandidate(), HELD);
+    expect(resolveParked(db, id, "approved")).toBe(true);
+    expect(expireOne(db, id)).toBe(false);
+    expect(reviewRow(db, id).status).toBe("approved");
+    expect(auditRowsOfType(db, "review_expired")).toHaveLength(0);
   });
 
   it("two-table integrity: original gate_decision audit rows are byte-identical after approve/reject/expire", () => {

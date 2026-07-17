@@ -7,7 +7,13 @@ import { ControlWindow } from "../control-window/control-window.js";
 import type { WorkspaceView } from "../orchestrator/types.js";
 import { CandidatePool } from "../queue/pool.js";
 import { TaskQueue } from "../queue/task-queue.js";
-import type { BuildStatusView, ControlWindowSnapshot } from "../shared/types.js";
+import type {
+  BuildStatusView,
+  ControlWindowSnapshot,
+  GateResult,
+  SuggestionCandidate,
+} from "../shared/types.js";
+import { getReview, insertHeld } from "../state-machine/review-queue.js";
 import { RoundManager } from "../state-machine/round.js";
 import { InvalidTransitionError, StreamModeMachine } from "../state-machine/stream-mode.js";
 import { type ConsoleServerDeps, type ConsoleServerHandle, startConsoleServer } from "./server.js";
@@ -680,6 +686,261 @@ describe("Phase 4 routes inherit the shared CSRF + DNS-rebinding middleware (T-0
     expect(res.status).toBe(403);
     expect(res.body).toContain("forbidden host");
     expect(controlWindow.revoke).not.toHaveBeenCalled();
+  });
+});
+
+// ── quick-260717-2gr: parked-build review routing (D-08) ─────────────────────
+
+const HELD_RESULT: GateResult = {
+  decision: "held-for-review",
+  category: "ip-infringement",
+  rationale: "looks like a clone",
+};
+
+function heldCandidate(id = "cand-parked"): SuggestionCandidate {
+  return {
+    id,
+    source: "chat",
+    kind: "suggestion",
+    twitchUsername: "flagged_viewer",
+    text: "make a twitch clone",
+    submittedAtMs: 1_700_000_000_000,
+  };
+}
+
+/** A main.ts-shaped heldBuilds seam fake: parked ids → expiresAtMs. */
+function fakeHeldBuilds(
+  parked: Map<number, number>,
+  resolveOutcome: "approved" | "rejected" | "conflict" | "not-held" = "approved",
+) {
+  const changeHandlers: Array<() => void> = [];
+  return {
+    seam: {
+      resolve: vi.fn((_id: number, action: "approve" | "reject") =>
+        resolveOutcome === "approved" && action === "reject" ? "rejected" : resolveOutcome,
+      ),
+      expiresAtMs: (id: number) => parked.get(id) ?? null,
+      onChange: (handler: () => void) => {
+        changeHandlers.push(handler);
+      },
+    },
+    emitChange: () => {
+      for (const handler of changeHandlers) handler();
+    },
+  };
+}
+
+describe("console parked-review routing (quick-260717-2gr, D-08)", () => {
+  it("POST approve on a PARKED row resolves via heldBuilds (pool NEVER touched) — the intake re-pool path is bypassed", async () => {
+    db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    const round = new RoundManager({ db, machine, pool, enqueueWinner: () => ({ queued: true }) });
+    const reviewId = insertHeld(db, heldCandidate(), HELD_RESULT);
+    const { seam } = fakeHeldBuilds(new Map([[reviewId, Date.now() + 120_000]]));
+    handle = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      heldBuilds: seam,
+    });
+
+    const res = await postJson(`${base(handle)}/api/review/${reviewId}/approve`, {});
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(seam.resolve).toHaveBeenCalledExactlyOnceWith(reviewId, "approve", null);
+    // The parked continuation dispatches through main.ts — the intake pool is
+    // NEVER touched (the D-06 re-pool path is for intake holds only).
+    expect(pool.list()).toHaveLength(0);
+  });
+
+  it("POST approve on a parked row while HALTED maps 'conflict' → 409 and the row STAYS pending", async () => {
+    db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    const round = new RoundManager({ db, machine, pool, enqueueWinner: () => ({ queued: true }) });
+    const reviewId = insertHeld(db, heldCandidate(), HELD_RESULT);
+    const { seam } = fakeHeldBuilds(new Map([[reviewId, Date.now() + 120_000]]), "conflict");
+    handle = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      heldBuilds: seam,
+    });
+
+    const res = await postJson(`${base(handle)}/api/review/${reviewId}/approve`, {});
+    expect(res.status).toBe(409);
+    // The seam refused BEFORE resolving; nothing re-pooled; row still pending.
+    expect(getReview(db, reviewId)?.status).toBe("pending");
+    expect(pool.list()).toHaveLength(0);
+  });
+
+  it("POST reject on a parked row resolves via heldBuilds with the optional reason tag", async () => {
+    db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    const round = new RoundManager({ db, machine, pool, enqueueWinner: () => ({ queued: true }) });
+    const reviewId = insertHeld(db, heldCandidate(), HELD_RESULT);
+    const { seam } = fakeHeldBuilds(new Map([[reviewId, Date.now() + 120_000]]), "rejected");
+    handle = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      heldBuilds: seam,
+    });
+
+    const res = await postJson(`${base(handle)}/api/review/${reviewId}/reject`, {
+      reasonTag: "tos-risk",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(seam.resolve).toHaveBeenCalledExactlyOnceWith(reviewId, "reject", "tos-risk");
+  });
+
+  it("a 'not-held' race falls through to the EXISTING intake behavior (byte-identical resolution path)", async () => {
+    db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    const round = new RoundManager({ db, machine, pool, enqueueWinner: () => ({ queued: true }) });
+    const reviewId = insertHeld(db, heldCandidate(), HELD_RESULT);
+    // The seam CLAIMS the row is parked (expiresAtMs non-null) but resolve
+    // races to not-held — the route must fall through to intake approve().
+    const { seam } = fakeHeldBuilds(new Map([[reviewId, Date.now() + 120_000]]), "not-held");
+    handle = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      heldBuilds: seam,
+    });
+
+    const res = await postJson(`${base(handle)}/api/review/${reviewId}/approve`, {});
+    expect(res.status).toBe(200);
+    // Intake semantics: the ORIGINAL candidate re-entered the pool (D-06).
+    expect(pool.list()).toHaveLength(1);
+    expect(getReview(db, reviewId)?.status).toBe("approved");
+  });
+
+  it("INTAKE holds stay byte-identical when a heldBuilds seam exists but the row is not parked (expiresAtMs null)", async () => {
+    db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    const round = new RoundManager({ db, machine, pool, enqueueWinner: () => ({ queued: true }) });
+    const reviewId = insertHeld(db, heldCandidate("cand-intake"), HELD_RESULT);
+    const { seam } = fakeHeldBuilds(new Map()); // nothing parked
+    handle = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      heldBuilds: seam,
+    });
+
+    const res = await postJson(`${base(handle)}/api/review/${reviewId}/approve`, {});
+    expect(res.status).toBe(200);
+    expect(seam.resolve).not.toHaveBeenCalled();
+    expect(pool.list()).toHaveLength(1); // D-06 re-pool ran
+  });
+
+  it("ConsoleState review items carry expiresAtMs (number for parked, null for intake holds)", async () => {
+    db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    const round = new RoundManager({ db, machine, pool, enqueueWinner: () => ({ queued: true }) });
+    const parkedId = insertHeld(db, heldCandidate("cand-a"), HELD_RESULT);
+    const intakeId = insertHeld(db, heldCandidate("cand-b"), HELD_RESULT);
+    const expiresAtMs = Date.now() + 90_000;
+    const { seam } = fakeHeldBuilds(new Map([[parkedId, expiresAtMs]]));
+    handle = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      heldBuilds: seam,
+    });
+
+    const state = (await (await fetch(`${base(handle)}/api/state`)).json()) as {
+      review: Array<{ id: number; expiresAtMs: number | null }>;
+    };
+    const parked = state.review.find((r) => r.id === parkedId);
+    const intake = state.review.find((r) => r.id === intakeId);
+    expect(parked?.expiresAtMs).toBe(expiresAtMs);
+    expect(intake?.expiresAtMs).toBeNull();
+  });
+
+  it("review items carry expiresAtMs null when NO heldBuilds seam is composed (pre-2gr shape preserved)", async () => {
+    const server = await startServer();
+    if (!db) throw new Error("db not open");
+    insertHeld(db, heldCandidate(), HELD_RESULT);
+    const state = (await (await fetch(`${base(server)}/api/state`)).json()) as {
+      review: Array<{ expiresAtMs: number | null }>;
+    };
+    expect(state.review[0]?.expiresAtMs).toBeNull();
+  });
+
+  it("a heldBuilds change event pushes fresh state to ws clients (park + expiry are live, never connect-time-stale)", async () => {
+    db = openDb(":memory:");
+    const machine = new StreamModeMachine();
+    const pool = new CandidatePool();
+    const round = new RoundManager({ db, machine, pool, enqueueWinner: () => ({ queued: true }) });
+    const parked = new Map<number, number>();
+    const { seam, emitChange } = fakeHeldBuilds(parked);
+    handle = await startConsoleServer({
+      machine,
+      db,
+      port: 0,
+      pool,
+      taskQueue: new TaskQueue(),
+      round,
+      classify: () => Promise.resolve({ decision: "approved", category: null, rationale: "ok" }),
+      heldBuilds: seam,
+    });
+
+    const { WebSocket } = await import("ws");
+    const socket = new WebSocket(`ws://127.0.0.1:${handle.port}`);
+    const messages: Array<{ review: Array<{ expiresAtMs: number | null }> }> = [];
+    socket.on("message", (data) => {
+      messages.push(JSON.parse(String(data)) as (typeof messages)[number]);
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.on("open", () => resolve());
+      socket.on("error", reject);
+    });
+    await vi.waitFor(() => expect(messages.length).toBeGreaterThanOrEqual(1));
+
+    // A park happens WITHOUT a mode change — only the heldBuilds change
+    // subscription can push it.
+    const baseline = messages.length;
+    const reviewId = insertHeld(db, heldCandidate(), HELD_RESULT);
+    parked.set(reviewId, Date.now() + 120_000);
+    emitChange();
+    await vi.waitFor(() => {
+      expect(messages.length).toBeGreaterThan(baseline);
+      const latest = messages[messages.length - 1];
+      expect(latest?.review.some((r) => typeof r.expiresAtMs === "number")).toBe(true);
+    });
+    socket.close();
   });
 });
 

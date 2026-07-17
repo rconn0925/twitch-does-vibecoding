@@ -247,6 +247,7 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "buildRetryingOnce",
         "buildSkipped",
         "buildHeld",
+        "buildResumedFromReview",
         "buildVetoed",
         "comp02Rejected",
         "error",
@@ -443,6 +444,7 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       n.buildSkipped("a counter app");
       n.comp02Rejected("a counter app");
       n.buildHeld("a counter app");
+      n.buildResumedFromReview("a counter app");
       n.buildVetoed("a counter app");
       expect(sent).toEqual([
         '"a counter app" is built — it\'s live on screen. GG.',
@@ -453,6 +455,7 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         'Skipping "a counter app" — on to the next idea.',
         "\"a counter app\" didn't pass the second safety check — can't build that one. Next up.",
         '"a counter app" needs a human look before it can build — held for streamer review. Next up.',
+        'Streamer approved "a counter app" — picking it back up.',
         'Build stopped — pulling the plug on "a counter app". Standing by.',
       ]);
     });

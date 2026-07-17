@@ -482,6 +482,14 @@
     if (latest.controlWindow) {
       renderWindowPanel(latest);
     }
+    // quick-260717-2gr: keep the parked-build auto-decline countdown honest
+    // between ws pushes — re-render the review view while any item is parked.
+    if (
+      Array.isArray(latest.review) &&
+      latest.review.some((item) => typeof item.expiresAtMs === "number")
+    ) {
+      renderReview(latest);
+    }
   }, 1000);
 
   // --- Build awareness + failed/refused decision surface (BUILD-03 / D3-09) ---
@@ -666,10 +674,26 @@
       const card = el("article", "card");
       const head = el("div", "card-head");
       head.appendChild(el("span", "status-pill status-held", item.category));
+      // quick-260717-2gr: a PARKED build (a COMP-02 hold paused an actual
+      // build mid-flight) is distinct from an intake hold — amber pill +
+      // live auto-decline countdown. expiresAtMs is server-composed; all
+      // rendering stays textContent-only (single-funnel invariant c).
+      if (typeof item.expiresAtMs === "number") {
+        head.appendChild(el("span", "status-pill status-held", "PARKED BUILD"));
+      }
       head.appendChild(el("span", "card-user", item.twitchUsername || "unknown"));
       card.appendChild(head);
       card.appendChild(el("p", "card-text", item.text));
       card.appendChild(el("p", "card-rationale", item.rationale));
+      if (typeof item.expiresAtMs === "number") {
+        card.appendChild(
+          el(
+            "p",
+            "card-rationale review-countdown",
+            `auto-declines in ${formatRemaining(item.expiresAtMs - Date.now())}`,
+          ),
+        );
+      }
       const actions = el("div", "card-actions");
       actions.appendChild(
         button("Approve", "button-accent", () => {
