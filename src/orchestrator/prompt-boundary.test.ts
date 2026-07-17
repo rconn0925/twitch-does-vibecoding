@@ -17,6 +17,7 @@ import {
   BUILD_SYSTEM_PROMPT_SCAFFOLD,
   type BuildPromptMode,
   buildBuildPrompt,
+  CLASSIFIER_SYSTEM_PROMPT,
 } from "./prompt-boundary.js";
 
 const BENIGN = "Build a colorful weather dashboard with a 7-day forecast";
@@ -113,5 +114,48 @@ describe("buildBuildPrompt — zero-interpolation delimited boundary (both modes
     expect(buildBuildPrompt(BENIGN, "scaffold").userPrompt).toBe(
       buildBuildPrompt(BENIGN, "continue").userPrompt,
     );
+  });
+});
+
+describe("CLASSIFIER_SYSTEM_PROMPT tooling retune (quick-260717-08w)", () => {
+  // Pin 1: the prompt carries a dedicated build-agent tooling section.
+  it("contains the BUILD-AGENT TOOLING OUTPUT section marker", () => {
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain("BUILD-AGENT TOOLING OUTPUT");
+  });
+
+  // Pin 2: the tooling lean-approve bias sentence (exact substrings).
+  it("contains the tooling lean-approve bias sentence", () => {
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain("developer tooling with no displayable content");
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain("lean approve");
+  });
+
+  // Pin 3: the sandbox-containment rationale — the sandbox, not the
+  // classifier, contains the build agent's BEHAVIOR.
+  it("contains the sandbox-containment rationale", () => {
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain("sandbox");
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain(
+      "the sandbox — not you — is the containment layer for the agent's BEHAVIOR",
+    );
+  });
+
+  // Pin 4: the viewer-prompt scope caveat — carve-outs never loosen the
+  // suggestion-side gate.
+  it("contains the viewer-prompt scope caveat", () => {
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain(
+      "applies ONLY to build-agent operational output",
+    );
+  });
+
+  // Pin 5 (regression): the existing teeth survive the retune untouched.
+  it("keeps the pre-retune teeth (categories, minors sentence, default-approve rule)", () => {
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain("unsafe-build-target");
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain("prompt-injection-attempt");
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain("NEVER held-for-review");
+    expect(CLASSIFIER_SYSTEM_PROMPT).toContain("DEFAULT IS APPROVE");
+  });
+
+  // Pin 6 (SAND-04): the prompt stays a zero-interpolation template literal.
+  it("stays a ZERO-interpolation template literal (SAND-04 guard shape)", () => {
+    expect(CLASSIFIER_SYSTEM_PROMPT).not.toContain("${");
   });
 });
