@@ -391,7 +391,8 @@ describe("thinkingStatusLine", () => {
     }) as string;
     expect(writtenOnly).toContain("files: 2 written");
     expect(writtenOnly).not.toContain("edited");
-    expect(writtenOnly).toContain("last: src/app.ts");
+    expect(writtenOnly).toContain("last: app.ts"); // basename only — full paths wrapped the line (fast-260717)
+    expect(writtenOnly).not.toContain("src/");
 
     const both = thinkingStatusLine(30_000, {
       written: 1,
@@ -399,7 +400,23 @@ describe("thinkingStatusLine", () => {
       lastPath: "src/b.ts",
     }) as string;
     expect(both).toContain("files: 1 written, 3 edited");
-    expect(both).toContain("last: src/b.ts");
+    expect(both).toContain("last: b.ts");
+  });
+
+  it("never exceeds the live terminal width (single-row guarantee, fast-260717)", () => {
+    const longPath = `/home/builder/projects/app-14/${"x".repeat(200)}.smoketest.js`;
+    const stats = { written: 4, edited: 2, lastPath: longPath };
+    // Narrow 60-col terminal: plain payload must fit in 60 cells.
+    const narrow = thinkingStatusLine(75_000, stats, 60) as string;
+    expect(plainOf(narrow).length).toBeLessThanOrEqual(60);
+    // Absurd path still yields one row at the default cap.
+    const dflt = thinkingStatusLine(75_000, stats) as string;
+    expect(plainOf(dflt).length).toBeLessThanOrEqual(120);
+    // The long directory prefix never appears — basename only.
+    expect(dflt).not.toContain("/home/builder/projects");
+    // Degenerate width clamps to a sane floor instead of erroring.
+    const tiny = thinkingStatusLine(75_000, stats, 0) as string;
+    expect(plainOf(tiny).length).toBeLessThanOrEqual(8);
   });
 
   it("styles with DIM only — never red, never any other SGR (calm, D2-18)", () => {

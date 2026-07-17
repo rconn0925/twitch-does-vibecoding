@@ -259,12 +259,19 @@ export function fileStatsFromFeed(feed: readonly FeedLine[]): {
  * Compose the ephemeral thinking status line, or null while the quiet gap is
  * under THINKING_QUIET_MS. ONE dim line, no trailing newline, DIM open +
  * RESET close ONLY — calm copy, never red, never error wording. lastPath
- * re-passes sanitizeWireText before composition (T-rtd-01) and the total
- * plain text is truncated to LINE_MAX so the line can never wrap.
+ * re-passes sanitizeWireText before composition (T-rtd-01), is shortened to
+ * its basename, and the total plain text is truncated to the LIVE terminal
+ * width (maxCols, capped by LINE_MAX). A line that reaches the terminal's
+ * last column would soft-wrap, and the `\r` + ESC[2K repaint then clears
+ * only the final wrapped row — leaking one stale row per tick (live incident
+ * 2026-07-17: leaked a line every second on the 900px OBS window). The
+ * single-row guarantee is width-relative, so the caller passes the live
+ * column count each tick.
  */
 export function thinkingStatusLine(
   quietMs: number,
   stats: { written: number; edited: number; lastPath: string | null },
+  maxCols: number = LINE_MAX,
 ): string | null {
   if (!(quietMs >= THINKING_QUIET_MS)) return null; // NaN falls through to null
   let plain = `· the AI is thinking — ${formatElapsed(quietMs)} in…`;
@@ -273,9 +280,16 @@ export function thinkingStatusLine(
     if (stats.edited > 0) plain += `, ${stats.edited} edited`;
   }
   if (stats.lastPath !== null) {
-    plain += ` · last: ${sanitizeWireText(stats.lastPath)}`;
+    // Basename only: the full /home/builder/projects/app-N/… prefix is what
+    // pushed the line past the window width; the filename carries the signal.
+    const base = sanitizeWireText(stats.lastPath).split("/").pop() ?? "";
+    if (base.length > 0) plain += ` · last: ${base}`;
   }
-  return `${DIM}${truncate(plain, LINE_MAX)}${RESET}`;
+  const cap = Math.max(8, Math.min(LINE_MAX, Math.floor(maxCols)));
+  // truncate() appends "…" AFTER the slice (max+1 chars) — feed it cap-1 so
+  // the final payload never exceeds cap cells (the single-row guarantee).
+  const fitted = plain.length > cap ? truncate(plain, cap - 1) : plain;
+  return `${DIM}${fitted}${RESET}`;
 }
 
 /**
@@ -519,7 +533,10 @@ function main(): void {
       clearStatus();
       return;
     }
-    const line = thinkingStatusLine(Date.now() - lastRenderActivityAt, stats);
+    // Live column read each tick (resize-safe): one column of headroom so the
+    // cursor never touches the last cell (which would trigger soft-wrap).
+    const cols = (out.columns ?? 80) - 1;
+    const line = thinkingStatusLine(Date.now() - lastRenderActivityAt, stats, cols);
     if (line === null) {
       clearStatus();
       return;
