@@ -54,15 +54,28 @@ function recordingRunner() {
 }
 
 /**
+ * quick-260717-093: the string an app's marker-aware fakeClassifier rejects.
+ * It only ever appears inside a "comp02"-released build's Write batch — never
+ * in intake suggestion text — so intake stays approved while the in-flight
+ * COMP-02 output re-screen rejects exactly that batch (D3-07 driving pattern).
+ */
+const COMP02_MARKER = "XX-COMP02-REJECT-MARKER-093-XX";
+
+/**
  * quick-260716-tqz GATED runner: like recordingRunner, but each build's async
  * generator AWAITS a per-build deferred between the write batch and the result
  * message — the build hangs mid-flight (machine BUILD_IN_PROGRESS, stream
  * open) until the test calls releaseNext(). A queue of outcomes means
  * sequential builds each gate deterministically, and an early releaseNext()
  * (before the generator reaches its gate) parks the outcome for pickup.
+ *
+ * quick-260717-093 adds the "comp02" outcome: the released build yields ONE
+ * more Write batch carrying COMP02_MARKER — a marker-aware fakeClassifier
+ * rejects it in-flight, finalizing the build `refused` (the live 2026-07-16
+ * 20:25 twitch-clone incident path).
  */
 function gatedRunner() {
-  type Outcome = "success" | "failed";
+  type Outcome = "success" | "failed" | "comp02";
   const specs: AgentRunSpec[] = [];
   const waiters: Array<(outcome: Outcome) => void> = [];
   const parked: Outcome[] = [];
@@ -76,6 +89,14 @@ function gatedRunner() {
           if (queued !== undefined) resolve(queued);
           else waiters.push(resolve);
         });
+        if (outcome === "comp02") {
+          // The in-flight screen rejects this batch and breaks out of the
+          // stream; the trailing success result is unreachable by design (it
+          // only ever runs if the rejection seam is broken).
+          yield writeBatch("evil.html", COMP02_MARKER) as never;
+          yield resultSuccess as never;
+          return;
+        }
         yield (outcome === "success" ? resultSuccess : resultFailed) as never;
       })();
     },
@@ -383,8 +404,12 @@ describe("preview re-root e2e: fail-open + adapter-absence", () => {
  * LIVE BUILD slot must keep serving the PREVIOUS project's directory for the
  * ENTIRE build (no STANDING BY / empty-listing window — live incident
  * 2026-07-16 ~20:2x, gen-8), rerooting exactly once the moment the new build
- * finalizes done. A failed/skipped switch build NEVER reroots (the previous
- * project stays on screen); the next successful done discharges the holdover.
+ * finalizes done. quick-260717-093 (D093-4) SUPERSEDES the tqz "failed/skipped
+ * switch builds never reroot" pins: the on-screen outcome is unchanged (the
+ * previous project stays visible) but the mechanism inverts — those teardown
+ * paths now reroot AT THE HOLDOVER DIR (the sandbox teardown killed the dev
+ * server; resurrection at the held-over generation brings the previous project
+ * back). The holdover stays armed; only a later successful done discharges it.
  * Throughout the holdover window the overlay playUrl shows the PREVIOUS
  * project's URL — what viewers actually see on the preview.
  */
@@ -481,7 +506,7 @@ describe("preview HOLDOVER e2e (quick-260716-tqz): previous project stays live u
     expect(await fetchPlayUrl()).toBe("https://twitchvibecodes.github.io/brand-new-app/");
   });
 
-  it("FAILED project-switch build: NO reroot, playUrl stays the previous project's; skip does not reroot either", async () => {
+  it("FAILED project-switch build: no reroot until the decision resolves; skip reroots at the HOLDOVER dir, holdover stays armed (D093-4)", async () => {
     const startsBefore = sandbox.starts.length;
 
     say("!build another new app");
@@ -495,6 +520,7 @@ describe("preview HOLDOVER e2e (quick-260716-tqz): previous project stays live u
 
     // Fail attempt 1 → the D3-09 auto-retry gates attempt 2 → fail it too →
     // the build freezes a retry/skip decision (machine stays BUILD_IN_PROGRESS).
+    // The decision freeze is NOT a teardown — no reroot yet (D093-2).
     runner.releaseNext("failed");
     await until(() => runner.specs.length === 4); // auto-retry attempt gated
     runner.releaseNext("failed");
@@ -503,12 +529,17 @@ describe("preview HOLDOVER e2e (quick-260716-tqz): previous project stays live u
     expect(sandbox.starts).toHaveLength(startsBefore);
     expect(await fetchPlayUrl()).toBe("https://twitchvibecodes.github.io/brand-new-app/");
 
-    // Resolve the frozen decision via the existing skip route — ALSO no reroot.
+    // Resolve the frozen decision via the existing skip route: quick-260717-093
+    // (D093-4, superseding the tqz "no reroot" pin) — the teardown resurrection
+    // reroots exactly once AT THE HOLDOVER DIR (app-2: the previous project
+    // comes back on screen), and the holdover stays armed (playUrl unchanged).
     const taskId = app.orchestrator?.snapshot()?.taskId ?? "";
     app.orchestrator?.skipTask(taskId);
     await until(() => app.machine.mode === "IDLE" && app.taskQueue.list().length === 0);
+    await until(() => sandbox.starts.length === startsBefore + 1);
+    expect(sandbox.starts.at(-1)).toEqual({ dir: "/home/builder/projects/app-2", port: 5555 });
     await sleep(100);
-    expect(sandbox.starts).toHaveLength(startsBefore);
+    expect(sandbox.starts).toHaveLength(startsBefore + 1);
     expect(await fetchPlayUrl()).toBe("https://twitchvibecodes.github.io/brand-new-app/");
   });
 
@@ -547,5 +578,225 @@ describe("preview HOLDOVER e2e (quick-260716-tqz): previous project stays live u
     await until(() => app.machine.mode === "IDLE" && app.taskQueue.list().length === 0);
     await sleep(100);
     expect(sandbox.starts).toHaveLength(startsBefore);
+  });
+});
+
+/**
+ * quick-260717-093 TEARDOWN RESURRECTION: the app-under-construction preview
+ * must NEVER drop to "Between builds" because a build was refused/failed/
+ * aborted (Ross's verbatim directive 2026-07-17). Every non-done teardown that
+ * kills the WSL sandbox kills the 5555 dev server with it — the orchestrator
+ * now resurrects it serving `previewHoldoverGeneration ?? workspace.generation()`:
+ * a refused TWEAK brings the CURRENT project back; a refused PROJECT-SWITCH
+ * under a holdover brings the PREVIOUS project back (holdover stays armed).
+ * While HALTED nothing reroots; leaving HALTED fires exactly one holdover-aware
+ * reroot. A done build behaves exactly as before (tqz discharge semantics).
+ */
+describe("preview TEARDOWN RESURRECTION e2e (quick-260717-093)", () => {
+  const chat = fakeChatSource();
+  const { sink } = capturingSink();
+  const sandbox = previewSandbox();
+  const pub = recordingPublisher();
+  let runner: ReturnType<typeof gatedRunner>;
+  let app: AppHandle;
+  let chatter = 900;
+
+  /** Pool one text via a fresh chatter (avoids intake cooldown/cap). */
+  const say = (text: string): void => {
+    chatter += 1;
+    chat.say(String(chatter), `viewer${chatter}`, text);
+  };
+
+  const fetchPlayUrl = async (): Promise<string | null> => {
+    const res = await fetch(`http://127.0.0.1:${app.overlay.port}/api/state`);
+    const state = (await res.json()) as { playUrl: string | null };
+    return state.playUrl ?? null;
+  };
+
+  const seedRepoRow = (generation: number, repoName: string): void => {
+    app.db
+      .prepare("INSERT INTO project_repos (generation, repo_name, created_at_ms) VALUES (?, ?, ?)")
+      .run(generation, repoName, Date.now());
+  };
+
+  const postJson = (path: string, body: unknown): Promise<Response> =>
+    fetch(`http://127.0.0.1:${app.port}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  beforeAll(async () => {
+    runner = gatedRunner();
+    app = await createApp({
+      dbPath: ":memory:",
+      port: 0,
+      // Marker-aware classifier: intake + pre-build screens approve (no marker
+      // in suggestion text); the in-flight COMP-02 output re-screen rejects
+      // exactly the "comp02"-released build's marker batch.
+      fakeClassifier: (candidate) =>
+        candidate.text.includes(COMP02_MARKER)
+          ? { decision: "rejected", category: "malware", rationale: "test: marker rejected" }
+          : approved,
+      chatSource: chat.source,
+      chatSink: sink,
+      agentRunner: runner.runner,
+      sandboxAdapter: sandbox.adapter,
+      devServerProbe: reachableProbe,
+      galleryPublisher: pub.publisher,
+    });
+  });
+
+  afterAll(async () => {
+    // Drain any still-gated generators so close() never waits on the WR-05
+    // drain bound.
+    for (let i = 0; i < 8; i += 1) runner.releaseNext("failed");
+    await app.close();
+  });
+
+  it("refused TWEAK build (COMP-02 in-flight): exactly ONE resurrection stop+start at the CURRENT gen dir", async () => {
+    await until(() => sandbox.starts.length === 1); // boot reroot at app-1
+
+    // Make gen 1 an ACTIVE project (done build) with a durable repo row.
+    say("!suggest make the first app");
+    say("!suggest filler one");
+    await until(() => app.pool.list().length === 2);
+    voteKindToVictory(app, "suggestion");
+    await until(() => runner.specs.length === 1);
+    runner.releaseNext("success");
+    await until(() => app.machine.mode === "IDLE" && app.taskQueue.list().length === 0);
+    seedRepoRow(1, "counter-app");
+    expect(await fetchPlayUrl()).toBe("https://twitchvibecodes.github.io/counter-app/");
+
+    const startsBefore = sandbox.starts.length;
+    const stopsBefore = sandbox.stops.length;
+
+    // A tweak build on the scaffolded current gen, rejected in flight by the
+    // second safety check — the exact live 2026-07-16 20:25 incident shape.
+    say("!suggest add a scoreboard");
+    say("!suggest filler two");
+    await until(() => app.pool.list().length === 2);
+    voteKindToVictory(app, "suggestion");
+    await until(() => runner.specs.length === 2); // gated mid-flight
+    runner.releaseNext("comp02");
+    await until(() => app.machine.mode === "IDLE" && app.taskQueue.list().length === 0);
+
+    // Exactly ONE new stop+start pair, rooted at the CURRENT generation dir —
+    // the current project stays visible, never "Between builds".
+    await until(() => sandbox.starts.length === startsBefore + 1);
+    expect(sandbox.starts.at(-1)).toEqual({ dir: "/home/builder/projects/app-1", port: 5555 });
+    await sleep(100);
+    expect(sandbox.starts).toHaveLength(startsBefore + 1);
+    expect(sandbox.stops).toHaveLength(stopsBefore + 1);
+    // playUrl unchanged — no generation moved.
+    expect(await fetchPlayUrl()).toBe("https://twitchvibecodes.github.io/counter-app/");
+  });
+
+  it("refused PROJECT-SWITCH under holdover: resurrection at the HOLDOVER dir, holdover stays armed; a later done discharges it", async () => {
+    const startsBefore = sandbox.starts.length;
+
+    // Project-switch winner: shipThenRotate rotates to gen 2 + arms the holdover.
+    say("!build a brand new app");
+    say("!suggest filler three");
+    await until(() => app.pool.list().length === 2);
+    voteKindToVictory(app, "project-switch");
+    await until(() => runner.specs.length === 3); // new build in flight (gated)
+    expect(workspaceGeneration(app)).toBe(2);
+
+    // In-flight refusal → the resurrection lands at the HOLDOVER dir (app-1):
+    // the PREVIOUS project comes back on screen (REPLACES the tqz "no reroot
+    // on a failed switch" expectation per D093-4).
+    runner.releaseNext("comp02");
+    await until(() => app.machine.mode === "IDLE" && app.taskQueue.list().length === 0);
+    await until(() => sandbox.starts.length === startsBefore + 1);
+    expect(sandbox.starts.at(-1)).toEqual({ dir: "/home/builder/projects/app-1", port: 5555 });
+    await sleep(100);
+    expect(sandbox.starts).toHaveLength(startsBefore + 1);
+    // The holdover is STILL armed: playUrl stays the gen-1 URL.
+    expect(await fetchPlayUrl()).toBe("https://twitchvibecodes.github.io/counter-app/");
+
+    // A later successful done build discharges it: single reroot at the ACTIVE
+    // gen dir, playUrl flips — tqz discharge semantics preserved.
+    seedRepoRow(2, "brand-new-app");
+    say("!suggest start the new app properly");
+    say("!suggest filler four");
+    await until(() => app.pool.list().length === 2);
+    voteKindToVictory(app, "suggestion");
+    await until(() => runner.specs.length === 4);
+    runner.releaseNext("success");
+    await until(() => app.machine.mode === "IDLE" && app.taskQueue.list().length === 0);
+    await until(() => sandbox.starts.length === startsBefore + 2);
+    expect(sandbox.starts.at(-1)).toEqual({ dir: "/home/builder/projects/app-2", port: 5555 });
+    await sleep(100);
+    expect(sandbox.starts).toHaveLength(startsBefore + 2);
+    expect(await fetchPlayUrl()).toBe("https://twitchvibecodes.github.io/brand-new-app/");
+  });
+
+  it("HALT: no reroot while HALTED; leaving HALTED fires exactly ONE reroot; a pre-halt holdover survives recovery", async () => {
+    const startsBefore = sandbox.starts.length;
+
+    // Arm a holdover: project-switch rotates to gen 3 (holdover = gen 2), the
+    // new build gates mid-flight.
+    say("!build yet another app");
+    say("!suggest filler five");
+    await until(() => app.pool.list().length === 2);
+    voteKindToVictory(app, "project-switch");
+    await until(() => runner.specs.length === 5);
+    expect(workspaceGeneration(app)).toBe(3);
+
+    // HALT mid-build, then release the gate so the aborted turn unwinds into
+    // finalizeAborted — while HALTED the preview may stay dark: NO reroot.
+    const haltRes = await postJson("/api/halt", {});
+    expect(haltRes.status).toBe(200);
+    expect(app.machine.mode).toBe("HALTED");
+    runner.releaseNext("success"); // outcome ignored — the abort wins
+    await until(() => app.orchestrator?.snapshot() === null);
+    await sleep(150); // give any (incorrect) reroot room to fire
+    expect(sandbox.starts).toHaveLength(startsBefore);
+
+    // Recover: leaving HALTED fires exactly ONE holdover-aware reroot — the
+    // holdover (gen 2) is STILL armed, so the resurrection serves app-2.
+    const recoverRes = await postJson("/api/recover", { action: "reset-to-idle" });
+    expect(recoverRes.status).toBe(200);
+    expect(app.machine.mode).toBe("IDLE");
+    await until(() => sandbox.starts.length === startsBefore + 1);
+    expect(sandbox.starts.at(-1)).toEqual({ dir: "/home/builder/projects/app-2", port: 5555 });
+    await sleep(100);
+    expect(sandbox.starts).toHaveLength(startsBefore + 1);
+    // Holdover survived recovery: playUrl stays the previous generation's.
+    expect(await fetchPlayUrl()).toBe("https://twitchvibecodes.github.io/brand-new-app/");
+  });
+
+  it("done path unchanged: holdover discharge reroots exactly ONCE (no double); a plain done build reroots NOTHING", async () => {
+    // (a) The armed holdover (gen 2, from the halt test) discharges on the
+    // next done build — exactly ONE reroot at the active gen dir, never two
+    // (the teardown hook must not also fire on done).
+    const startsBefore = sandbox.starts.length;
+    seedRepoRow(3, "third-app");
+    say("!suggest fill in the third app");
+    say("!suggest filler six");
+    await until(() => app.pool.list().length === 2);
+    voteKindToVictory(app, "suggestion");
+    await until(() => runner.specs.length === 6);
+    runner.releaseNext("success");
+    await until(() => app.machine.mode === "IDLE" && app.taskQueue.list().length === 0);
+    await until(() => sandbox.starts.length === startsBefore + 1);
+    expect(sandbox.starts.at(-1)).toEqual({ dir: "/home/builder/projects/app-3", port: 5555 });
+    await sleep(100);
+    expect(sandbox.starts).toHaveLength(startsBefore + 1);
+    expect(await fetchPlayUrl()).toBe("https://twitchvibecodes.github.io/third-app/");
+
+    // (b) A plain successful tweak build (no holdover) produces ZERO
+    // resurrection reroots.
+    const startsBefore2 = sandbox.starts.length;
+    say("!suggest one more tweak");
+    say("!suggest filler seven");
+    await until(() => app.pool.list().length === 2);
+    voteKindToVictory(app, "suggestion");
+    await until(() => runner.specs.length === 7);
+    runner.releaseNext("success");
+    await until(() => app.machine.mode === "IDLE" && app.taskQueue.list().length === 0);
+    await sleep(100);
+    expect(sandbox.starts).toHaveLength(startsBefore2);
   });
 });

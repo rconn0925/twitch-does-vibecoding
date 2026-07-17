@@ -256,6 +256,7 @@ function makeDeps(over: {
   narrator?: BuildNarrator;
   builderFeed?: BuilderFeedSink;
   onBuildDone?: (task: QueuedTask) => void;
+  onBuildTeardown?: (task: QueuedTask) => void;
   turnTimeoutMs?: number;
 }): { deps: BuildSessionDeps; taskQueue: TaskQueue } {
   const taskQueue = new TaskQueue();
@@ -274,6 +275,7 @@ function makeDeps(over: {
     ...(over.narrator ? { narrator: over.narrator } : {}),
     ...(over.builderFeed ? { builderFeed: over.builderFeed } : {}),
     ...(over.onBuildDone ? { onBuildDone: over.onBuildDone } : {}),
+    ...(over.onBuildTeardown ? { onBuildTeardown: over.onBuildTeardown } : {}),
     ...(over.turnTimeoutMs !== undefined ? { turnTimeoutMs: over.turnTimeoutMs } : {}),
   };
   return { deps, taskQueue };
@@ -1476,6 +1478,282 @@ describe("createBuildSession — onBuildDone done-seam (quick-22l)", () => {
     const rows = listBuildHistory(db, { limit: 10 });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.result).toBe("built");
+  });
+});
+
+describe("createBuildSession — onBuildTeardown teardown-seam (quick-260717-093)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  /** A machine + a halt() that flips it to HALTED (simulating a mid-build veto). */
+  function haltableMachine() {
+    let mode: StreamMode = "IDLE";
+    const machine: BuildMachineView = {
+      get mode() {
+        return mode;
+      },
+      transition(next) {
+        mode = next;
+      },
+      setActiveTask() {},
+    };
+    return { machine, halt: () => (mode = "HALTED") };
+  }
+
+  /** A runner whose stream NEVER yields — drives the WR-07 watchdog path. */
+  function hangingRunner(): AgentRunner {
+    return {
+      run(): AsyncIterable<AgentMessage> {
+        return (async function* () {
+          await new Promise<never>(() => {});
+          yield undefined as never;
+        })();
+      },
+    };
+  }
+
+  /**
+   * A runner that aborts its OWN spec.abortController mid-stream — a NON-halt
+   * abort (machine stays BUILD_IN_PROGRESS) driving finalizeAborted's
+   * transition-to-IDLE arm.
+   */
+  function selfAbortingRunner(): AgentRunner {
+    return {
+      run(spec: AgentRunSpec): AsyncIterable<AgentMessage> {
+        return (async function* () {
+          yield writeBatch("app.js", "fine") as never;
+          spec.abortController.abort();
+          yield resultSuccess as never;
+        })();
+      },
+    };
+  }
+
+  function teardownDeps(over: {
+    task: QueuedTask;
+    machine: BuildMachineView;
+    agentRunner: AgentRunner;
+    comp02: Comp02Deps;
+    onBuildTeardown: (task: QueuedTask) => void;
+    turnTimeoutMs?: number;
+  }) {
+    const { sink } = capturingSink();
+    return makeDeps({
+      task: over.task,
+      db,
+      machine: over.machine,
+      agentRunner: over.agentRunner,
+      sandboxAdapter: fakeSandbox(),
+      comp02: over.comp02,
+      progress: sink,
+      onBuildTeardown: over.onBuildTeardown,
+      ...(over.turnTimeoutMs !== undefined ? { turnTimeoutMs: over.turnTimeoutMs } : {}),
+    });
+  }
+
+  it("fires on finalize('refused') — in-flight COMP-02 rejection (the live 20:25 incident path)", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02((id) =>
+      id.endsWith("-output")
+        ? { decision: "rejected", category: "malware", rationale: "no" }
+        : APPROVED,
+    );
+    const onBuildTeardown = vi.fn();
+    const task = queuedTask("task-td-1", "make a page");
+    const { deps, taskQueue } = teardownDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner({ build: [writeBatch("evil.js", "leak"), resultSuccess] })
+        .runner,
+      comp02,
+      onBuildTeardown,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(machine.mode).toBe("IDLE"); // finalize("refused") ran
+    expect(taskQueue.list()).toHaveLength(0);
+    expect(onBuildTeardown).toHaveBeenCalledTimes(1);
+    expect(onBuildTeardown).toHaveBeenCalledWith(task);
+  });
+
+  it("fires on finalizeAborted — non-halt abort (machine returns to IDLE)", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildTeardown = vi.fn();
+    const task = queuedTask("task-td-2", "aborted mid-build");
+    const { deps, taskQueue } = teardownDeps({
+      task,
+      machine,
+      agentRunner: selfAbortingRunner(),
+      comp02,
+      onBuildTeardown,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(machine.mode).toBe("IDLE");
+    expect(taskQueue.list()).toHaveLength(0);
+    expect(onBuildTeardown).toHaveBeenCalledTimes(1);
+    expect(onBuildTeardown).toHaveBeenCalledWith(task);
+  });
+
+  it("fires on finalizeAborted during a HALT too — the HALTED no-reroot guard is main.ts's job", async () => {
+    const { machine, halt } = haltableMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildTeardown = vi.fn();
+    const task = queuedTask("task-td-3", "vetoed mid-build");
+    const haltingRunner: AgentRunner = {
+      run(): AsyncIterable<AgentMessage> {
+        const messages = HAPPY_SCRIPT.build ?? [];
+        return (async function* () {
+          for (const message of messages) {
+            yield message as AgentMessage;
+            halt();
+          }
+        })();
+      },
+    };
+    const { deps } = teardownDeps({
+      task,
+      machine,
+      agentRunner: haltingRunner,
+      comp02,
+      onBuildTeardown,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(machine.mode).toBe("HALTED");
+    expect(onBuildTeardown).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT fire on the agent-refusal decision freeze (no teardown happened); fires later at skipTask", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildTeardown = vi.fn();
+    const task = queuedTask("task-td-4", "refuse me");
+    const { deps, taskQueue } = teardownDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner({ build: [modelRefusal] }).runner,
+      comp02,
+      onBuildTeardown,
+    });
+
+    const session = createBuildSession(deps);
+    await session.startBuild(task);
+
+    // Decision freeze: the sandbox is alive, the dev server is healthy — no
+    // teardown, no pointless stop/start blip (D093-2).
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS");
+    expect(onBuildTeardown).not.toHaveBeenCalled();
+
+    session.skipTask(task.id);
+
+    expect(machine.mode).toBe("IDLE");
+    expect(taskQueue.list()).toHaveLength(0);
+    expect(onBuildTeardown).toHaveBeenCalledTimes(1);
+    expect(onBuildTeardown).toHaveBeenCalledWith(task);
+  });
+
+  it("fires on the WR-07 watchdog-timeout branch (sandbox torn down, machine frozen on a decision)", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildTeardown = vi.fn();
+    const task = queuedTask("task-td-5", "hang forever");
+    const { deps } = teardownDeps({
+      task,
+      machine,
+      agentRunner: hangingRunner(),
+      comp02,
+      onBuildTeardown,
+      turnTimeoutMs: 20,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    // The machine freezes on a retry/skip decision — but the sandbox (and the
+    // dev server with it) is DEAD, so the hook fires anyway (D093-2 d).
+    expect(machine.mode).toBe("BUILD_IN_PROGRESS");
+    expect(onBuildTeardown).toHaveBeenCalledTimes(1);
+    expect(onBuildTeardown).toHaveBeenCalledWith(task);
+  });
+
+  it("NEVER fires on a done finalize (onBuildDone owns the done seam)", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildTeardown = vi.fn();
+    const task = queuedTask("task-td-6", "make a counter");
+    const { deps } = teardownDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner(HAPPY_SCRIPT).runner,
+      comp02,
+      onBuildTeardown,
+    });
+
+    await createBuildSession(deps).startBuild(task);
+
+    expect(machine.mode).toBe("IDLE");
+    expect(onBuildTeardown).not.toHaveBeenCalled();
+  });
+
+  it("a THROWING onBuildTeardown never disturbs finalize: IDLE reached, task dequeued", async () => {
+    const { machine, transitions } = fakeMachine();
+    const { deps: comp02 } = fakeComp02((id) =>
+      id.endsWith("-output")
+        ? { decision: "rejected", category: "malware", rationale: "no" }
+        : APPROVED,
+    );
+    const onBuildTeardown = vi.fn(() => {
+      throw new Error("teardown hook blew up");
+    });
+    const task = queuedTask("task-td-7", "make a page");
+    const { deps, taskQueue } = teardownDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner({ build: [writeBatch("evil.js", "leak"), resultSuccess] })
+        .runner,
+      comp02,
+      onBuildTeardown,
+    });
+
+    await expect(createBuildSession(deps).startBuild(task)).resolves.toBeUndefined();
+
+    expect(onBuildTeardown).toHaveBeenCalledTimes(1);
+    expect(machine.mode).toBe("IDLE");
+    expect(transitions).toContain("IDLE");
+    expect(taskQueue.list()).toHaveLength(0);
+  });
+
+  it("a THROWING onBuildTeardown never disturbs skipTask: IDLE reached, task dequeued", async () => {
+    const { machine } = fakeMachine();
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const onBuildTeardown = vi.fn(() => {
+      throw new Error("teardown hook blew up");
+    });
+    const task = queuedTask("task-td-8", "skip me");
+    const { deps, taskQueue } = teardownDeps({
+      task,
+      machine,
+      agentRunner: fakeAgentRunner({ build: [modelRefusal] }).runner,
+      comp02,
+      onBuildTeardown,
+    });
+
+    const session = createBuildSession(deps);
+    await session.startBuild(task);
+    expect(() => session.skipTask(task.id)).not.toThrow();
+
+    expect(onBuildTeardown).toHaveBeenCalledTimes(1);
+    expect(machine.mode).toBe("IDLE");
+    expect(taskQueue.list()).toHaveLength(0);
   });
 });
 

@@ -182,6 +182,36 @@ describe("top_generation high-water mark (quick-t8k — checker BLOCKER 1)", () 
   });
 });
 
+describe("dirFor — single-sourced app-<N> path template (quick-260717-093, D093-1)", () => {
+  it("dirFor(3) → /home/builder/projects/app-3 (arbitrary generation, integer-derived)", () => {
+    const db = openDb(":memory:");
+    const ws = createWorkspaceState(db);
+    expect(ws.dirFor(3)).toBe("/home/builder/projects/app-3");
+    db.close();
+  });
+
+  it("dirFor(current generation) === dir() — dir() delegates, the template exists ONCE", () => {
+    const db = openDb(":memory:");
+    const ws = createWorkspaceState(db);
+    expect(ws.dirFor(ws.generation())).toBe(ws.dir());
+    ws.newProject();
+    expect(ws.dirFor(ws.generation())).toBe(ws.dir());
+    expect(ws.dir()).toBe("/home/builder/projects/app-2");
+    db.close();
+  });
+
+  it.each([
+    [1.5, "non-integer"],
+    [Number.NaN, "NaN"],
+    [Number.POSITIVE_INFINITY, "Infinity"],
+  ])("throws on non-integer input %s (%s) — chat text structurally cannot reach it", (target) => {
+    const db = openDb(":memory:");
+    const ws = createWorkspaceState(db);
+    expect(() => ws.dirFor(target as number)).toThrow(/dirFor/);
+    db.close();
+  });
+});
+
 describe("activateExisting — validating, non-destructive pointer move (quick-t8k BLOCKER 2)", () => {
   function seeded() {
     const db = openDb(":memory:");
