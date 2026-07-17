@@ -105,7 +105,11 @@ const fakeProbe: DevServerProbe = { reachable: async () => false };
 
 const approved: GateResult = { decision: "approved", category: null, rationale: "test: approved" };
 
-function candidate(id: string, text: string, kind: CandidateKind = "suggestion"): SuggestionCandidate {
+function candidate(
+  id: string,
+  text: string,
+  kind: CandidateKind = "suggestion",
+): SuggestionCandidate {
   return {
     id,
     source: "chat",
@@ -356,7 +360,9 @@ describe("double-build regression: the same fingerprint with a project-switch he
 
   it("Test 3: the project-switch task built exactly once (one 'building' row, one history row)", () => {
     expect(buildingRows(app, SWITCH_ID)).toHaveLength(1);
-    expect(listBuildHistory(app.db, { limit: 100 }).filter((h) => h.taskId === SWITCH_ID)).toHaveLength(1);
+    expect(
+      listBuildHistory(app.db, { limit: 100 }).filter((h) => h.taskId === SWITCH_ID),
+    ).toHaveLength(1);
   });
 
   it("Test 3: the build AFTER the project-switch win is the solo winner — never the finished head", () => {
