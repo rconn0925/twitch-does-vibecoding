@@ -581,9 +581,7 @@ describe("createBuildSession — held-verdict PARK + resume (quick-260717-2gr, D
     // the hold detail carries phase/category/rationale/provenance.
     expect(onHeldForReview).toHaveBeenCalledTimes(1);
     expect(onHeldForReview.mock.calls[0]?.[0]).toBe(task);
-    expect(String(onHeldForReview.mock.calls[0]?.[1])).toContain(
-      "body { background: hotpink; }",
-    );
+    expect(String(onHeldForReview.mock.calls[0]?.[1])).toContain("body { background: hotpink; }");
     expect(onHeldForReview.mock.calls[0]?.[2]).toEqual({
       phase: "mid-build",
       category: "ip-infringement",

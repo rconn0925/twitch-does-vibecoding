@@ -222,7 +222,11 @@ export interface BuildSession {
    * through the SAME single funnel — see StartBuildOptions for the exact
    * screening semantics per phase.
    */
-  startBuild(task: QueuedTask, provenance?: BuildProvenance, opts?: StartBuildOptions): Promise<void>;
+  startBuild(
+    task: QueuedTask,
+    provenance?: BuildProvenance,
+    opts?: StartBuildOptions,
+  ): Promise<void>;
   /**
    * BUILD-03 / D3-09: the streamer chose RETRY for a failed/refused build.
    * Re-runs the sandboxed build turn from the suggestion text (WITHOUT

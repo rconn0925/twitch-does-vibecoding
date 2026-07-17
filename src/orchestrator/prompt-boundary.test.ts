@@ -128,24 +128,26 @@ describe("buildBuildPrompt — approved-continuation note (quick-260717-2gr, D-0
     }
   });
 
-  it.each(MODES)(
-    "$mode: approvedContinuation appends a FIXED host-authored paragraph OUTSIDE the delimiters",
-    ({ mode, fixed }) => {
-      const prompt = buildBuildPrompt(BENIGN, mode, { approvedContinuation: true });
-      // System prompt untouched — the note is user-turn data framing only.
-      expect(prompt.systemPrompt).toBe(fixed);
-      // The delimited untrusted frame is byte-identical to the plain call…
-      expect(prompt.userPrompt).toContain(
-        `<task_description source="chat">\n${BENIGN}\n</task_description>`,
-      );
-      // …and the note sits strictly AFTER the closing delimiter.
-      const afterFrame = prompt.userPrompt.split("</task_description>")[1] ?? "";
-      expect(afterFrame).toContain("reviewed and approved");
-      expect(afterFrame.toLowerCase()).toContain("continue from the current workspace state");
-      // Zero interpolation of the untrusted text into the note itself.
-      expect(afterFrame).not.toContain(BENIGN);
-    },
-  );
+  it.each(
+    MODES,
+  )("$mode: approvedContinuation appends a FIXED host-authored paragraph OUTSIDE the delimiters", ({
+    mode,
+    fixed,
+  }) => {
+    const prompt = buildBuildPrompt(BENIGN, mode, { approvedContinuation: true });
+    // System prompt untouched — the note is user-turn data framing only.
+    expect(prompt.systemPrompt).toBe(fixed);
+    // The delimited untrusted frame is byte-identical to the plain call…
+    expect(prompt.userPrompt).toContain(
+      `<task_description source="chat">\n${BENIGN}\n</task_description>`,
+    );
+    // …and the note sits strictly AFTER the closing delimiter.
+    const afterFrame = prompt.userPrompt.split("</task_description>")[1] ?? "";
+    expect(afterFrame).toContain("reviewed and approved");
+    expect(afterFrame.toLowerCase()).toContain("continue from the current workspace state");
+    // Zero interpolation of the untrusted text into the note itself.
+    expect(afterFrame).not.toContain(BENIGN);
+  });
 
   it("the note is identical regardless of task text (fixed constant, never templated)", () => {
     const a = buildBuildPrompt(BENIGN, "continue", { approvedContinuation: true });

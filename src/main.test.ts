@@ -72,7 +72,10 @@ function markerRunner() {
           yield resultFailed as never;
           return;
         }
-        if (spec.userPrompt.includes("flagme") && !spec.userPrompt.includes("reviewed and approved")) {
+        if (
+          spec.userPrompt.includes("flagme") &&
+          !spec.userPrompt.includes("reviewed and approved")
+        ) {
           yield writeBatch("styles.css", `body { /* ${MID_HOLD_MARKER} */ }`) as never;
           yield resultSuccess as never;
           return;
@@ -274,8 +277,12 @@ describe("main onHeldForReview: MID-BUILD hold parks, streamer approve resumes t
   it("writes the park audit chain (comp02 held → build_parked_for_review) and leaves NO history row", () => {
     const comp02 = listAuditRecords(app.db, { limit: 20, eventType: "comp02_decision" });
     expect(comp02.some((r) => r.decision === "held-for-review")).toBe(true);
-    expect(listAuditRecords(app.db, { limit: 20, eventType: "build_parked_for_review" })).toHaveLength(1);
-    expect(listBuildHistory(app.db, { limit: 20 }).filter((r) => r.result !== "built")).toHaveLength(0);
+    expect(
+      listAuditRecords(app.db, { limit: 20, eventType: "build_parked_for_review" }),
+    ).toHaveLength(1);
+    expect(
+      listBuildHistory(app.db, { limit: 20 }).filter((r) => r.result !== "built"),
+    ).toHaveLength(0);
   });
 
   it("the show loop is free: machine IDLE, queue empty, and the parked task is NEVER re-picked by drain", () => {
@@ -332,7 +339,10 @@ describe("main onHeldForReview: MID-BUILD hold parks, streamer approve resumes t
     // The continuation ran through dispatchBuild → startBuild with the
     // mid-build resume: FULL pipeline incl. the pre-build re-screen, and the
     // prompt carries the approved-continuation note.
-    await until(() => runner.specs.length === specsBefore + 1 && app.machine.mode === "IDLE", 15_000);
+    await until(
+      () => runner.specs.length === specsBefore + 1 && app.machine.mode === "IDLE",
+      15_000,
+    );
     const contSpec = runner.specs.at(-1);
     expect(contSpec?.userPrompt).toContain("flagme add a scoreboard");
     expect(contSpec?.userPrompt).toContain("reviewed and approved");
@@ -461,7 +471,10 @@ describe("main onHeldForReview: PRE-BUILD hold, reject path, HALTED conflict", (
     expect(recoverRes.status).toBe(200);
     const approveRes2 = await postJson(app.port, `/api/review/${reviewId}/approve`, {});
     expect(approveRes2.status).toBe(200);
-    await until(() => runner.specs.length === specsBefore + 1 && app.machine.mode === "IDLE", 15_000);
+    await until(
+      () => runner.specs.length === specsBefore + 1 && app.machine.mode === "IDLE",
+      15_000,
+    );
     expect(getReview(app.db, reviewId)?.status).toBe("approved");
   });
 });
@@ -671,10 +684,7 @@ describe("main preview taint (P4): project-switch hold, teardown/HALTED-exit gua
     say("!suggest filler four");
     await until(() => app.pool.list().length === 2);
     voteTextToVictory(app, "flagme sneak in a tweak");
-    await until(
-      () => listPending(app.db).length === 1 && app.machine.mode === "IDLE",
-      15_000,
-    );
+    await until(() => listPending(app.db).length === 1 && app.machine.mode === "IDLE", 15_000);
     expect(sandbox.starts.length).toBe(startsBefore);
     // Reject keeps the park.
     const reviewId = listPending(app.db)[0]?.id ?? 0;

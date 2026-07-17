@@ -688,10 +688,16 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
     // in main.ts, NEVER the D-06 intake re-pool. Intake holds fall through to
     // the existing path byte-identically.
     if (deps.heldBuilds && deps.heldBuilds.expiresAtMs(params.data.id) !== null) {
-      const outcome = deps.heldBuilds.resolve(params.data.id, "approve", body.data.reasonTag ?? null);
+      const outcome = deps.heldBuilds.resolve(
+        params.data.id,
+        "approve",
+        body.data.reasonTag ?? null,
+      );
       if (outcome === "conflict") {
         // P8: nothing resumes while HALTED — honest message, row stays pending.
-        res.status(409).json({ error: "stream is HALTED — recover before resuming a parked build" });
+        res
+          .status(409)
+          .json({ error: "stream is HALTED — recover before resuming a parked build" });
         return;
       }
       if (outcome !== "not-held") {
