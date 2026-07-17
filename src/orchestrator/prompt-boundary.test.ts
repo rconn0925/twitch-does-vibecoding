@@ -117,6 +117,52 @@ describe("buildBuildPrompt — zero-interpolation delimited boundary (both modes
   });
 });
 
+describe("buildBuildPrompt — approved-continuation note (quick-260717-2gr, D-08 resume)", () => {
+  it("absent opts → output byte-identical to today's two-arg call (exact-equality pin)", () => {
+    for (const { mode, fixed } of MODES) {
+      const prompt = buildBuildPrompt(BENIGN, mode);
+      expect(prompt.systemPrompt).toBe(fixed);
+      expect(prompt.userPrompt).toBe(
+        `<task_description source="chat">\n${BENIGN}\n</task_description>`,
+      );
+    }
+  });
+
+  it.each(MODES)(
+    "$mode: approvedContinuation appends a FIXED host-authored paragraph OUTSIDE the delimiters",
+    ({ mode, fixed }) => {
+      const prompt = buildBuildPrompt(BENIGN, mode, { approvedContinuation: true });
+      // System prompt untouched — the note is user-turn data framing only.
+      expect(prompt.systemPrompt).toBe(fixed);
+      // The delimited untrusted frame is byte-identical to the plain call…
+      expect(prompt.userPrompt).toContain(
+        `<task_description source="chat">\n${BENIGN}\n</task_description>`,
+      );
+      // …and the note sits strictly AFTER the closing delimiter.
+      const afterFrame = prompt.userPrompt.split("</task_description>")[1] ?? "";
+      expect(afterFrame).toContain("reviewed and approved");
+      expect(afterFrame.toLowerCase()).toContain("continue from the current workspace state");
+      // Zero interpolation of the untrusted text into the note itself.
+      expect(afterFrame).not.toContain(BENIGN);
+    },
+  );
+
+  it("the note is identical regardless of task text (fixed constant, never templated)", () => {
+    const a = buildBuildPrompt(BENIGN, "continue", { approvedContinuation: true });
+    const b = buildBuildPrompt(INJECTION, "continue", { approvedContinuation: true });
+    const noteA = a.userPrompt.split("</task_description>")[1];
+    const noteB = b.userPrompt.split("</task_description>")[1];
+    expect(noteA).toBe(noteB);
+    expect(noteA).not.toContain("${");
+  });
+
+  it("explicit { approvedContinuation: false } behaves exactly like the two-arg call", () => {
+    expect(buildBuildPrompt(BENIGN, "scaffold", { approvedContinuation: false })).toEqual(
+      buildBuildPrompt(BENIGN, "scaffold"),
+    );
+  });
+});
+
 describe("CLASSIFIER_SYSTEM_PROMPT tooling retune (quick-260717-08w)", () => {
   // Pin 1: the prompt carries a dedicated build-agent tooling section.
   it("contains the BUILD-AGENT TOOLING OUTPUT section marker", () => {

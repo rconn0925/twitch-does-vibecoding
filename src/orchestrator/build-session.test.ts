@@ -192,6 +192,7 @@ function fakeNarrator(): {
     buildSkipped: rec("buildSkipped"),
     comp02Rejected: rec("comp02Rejected"),
     buildHeld: rec("buildHeld"),
+    buildResumedFromReview: rec("buildResumedFromReview"),
     buildVetoed: rec("buildVetoed"),
   };
   return {
@@ -253,7 +254,7 @@ function makeDeps(over: {
   progress: ProgressSink;
   registry?: AbortRegistry;
   workspace?: WorkspaceView;
-  onHeldForReview?: (task: QueuedTask, planText: string) => void;
+  onHeldForReview?: BuildSessionDeps["onHeldForReview"];
   narrator?: BuildNarrator;
   builderFeed?: BuilderFeedSink;
   onBuildDone?: (task: QueuedTask) => void;
@@ -439,9 +440,10 @@ describe("createBuildSession — COMP-02 pre-build suggestion re-screen (D3-06)"
     expect(comp02Rows[0]?.decision).toBe("rejected");
   });
 
-  it("a HELD screen narrates buildHeld, routes (task, task.text) to the review hook, and NEVER invokes the runner", async () => {
+  it("a HELD screen PARKS the build (D-08): widened hook, buildHeld beat, clean IDLE exit, NO history row, runner NEVER invoked", async () => {
     const { machine } = fakeMachine();
     const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const sandbox = fakeSandbox();
     const { deps: comp02 } = fakeComp02((id) =>
       id.endsWith("-plan")
         ? { decision: "held-for-review", category: "gambling", rationale: "escalate" }
@@ -450,7 +452,163 @@ describe("createBuildSession — COMP-02 pre-build suggestion re-screen (D3-06)"
     const { sink, views } = capturingSink();
     const narr = fakeNarrator();
     const onHeldForReview = vi.fn();
+    const onBuildTeardown = vi.fn();
+    const ws = fakeWorkspace(true);
     const task = queuedTask("task-3", "borderline idea");
+    const { deps, taskQueue } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: sandbox,
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+      onHeldForReview,
+      onBuildTeardown,
+      workspace: ws.workspace,
+    });
+
+    const session = createBuildSession(deps);
+    const stageEvents: number[] = [];
+    session.on(BUILD_STAGE_CHANGED, () => stageEvents.push(1));
+    await session.startBuild(task);
+
+    // Widened hook: (task, heldText, { phase, category, rationale, provenance }).
+    expect(onHeldForReview).toHaveBeenCalledTimes(1);
+    expect(onHeldForReview.mock.calls[0]?.[0]).toBe(task);
+    expect(onHeldForReview.mock.calls[0]?.[1]).toBe("borderline idea");
+    expect(onHeldForReview.mock.calls[0]?.[2]).toEqual({
+      phase: "pre-build",
+      category: "gambling",
+      rationale: "escalate",
+      provenance: "vote",
+    });
+    expect(narr.names).toContain("buildHeld");
+    // A park is NOT a refusal: no pipeline_stage emit at all (the old
+    // finalize-refused path is GONE — quick-260717-2gr).
+    expect(stages(views)).toEqual([]);
+    // The AgentRunner was NEVER invoked (zero specs) — and no sandbox ever
+    // spawned, so NO teardown happens on a pre-build hold.
+    expect(calls).toHaveLength(0);
+    expect(sandbox.terminate).not.toHaveBeenCalled();
+    expect(listAuditRecords(db, { limit: 10, eventType: "sandbox_teardown" })).toHaveLength(0);
+    // Clean park exit: queue clean, machine IDLE, snapshot collapsed, one
+    // BUILD_STAGE_CHANGED emitted, teardown hook NEVER fired (P4).
+    expect(taskQueue.list()).toHaveLength(0);
+    expect(machine.mode).toBe("IDLE");
+    expect(session.snapshot()).toBeNull();
+    expect(stageEvents.length).toBeGreaterThanOrEqual(1);
+    expect(onBuildTeardown).not.toHaveBeenCalled();
+    expect(ws.newProject).not.toHaveBeenCalled();
+    // Audit: comp02 held + build_parked_for_review — but NO build_history row
+    // (the old held path wrote a 'refused' history row; the park writes none).
+    const comp02Rows = listAuditRecords(db, { limit: 10, eventType: "comp02_decision" });
+    expect(comp02Rows[0]?.decision).toBe("held-for-review");
+    const parked = listAuditRecords(db, { limit: 10, eventType: "build_parked_for_review" });
+    expect(parked).toHaveLength(1);
+    expect(parked[0]?.source).toBe("orchestrator");
+    expect(parked[0]?.decision).toBe("held-for-review");
+    expect(parked[0]?.task_id).toBe("task-3");
+    expect(listBuildHistory(db, { limit: 10 })).toHaveLength(0);
+  });
+});
+
+describe("createBuildSession — held-verdict PARK + resume (quick-260717-2gr, D-08)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb(":memory:");
+  });
+  afterEach(() => {
+    db.close();
+  });
+
+  it("a MID-BUILD held batch parks: abort + ONE terminate, teardown+parked audit rows, widened hook with the batch text, clean IDLE exit", async () => {
+    const { machine } = fakeMachine();
+    const { runner } = fakeAgentRunner({
+      build: [writeBatch("styles.css", "body { background: hotpink; }"), resultSuccess],
+    });
+    const sandbox = fakeSandbox();
+    const registry = new AbortRegistry();
+    const controllerSpy = vi.spyOn(registry, "registerController");
+    const { deps: comp02 } = fakeComp02((id) =>
+      id.endsWith("-output")
+        ? { decision: "held-for-review", category: "ip-infringement", rationale: "looks cloned" }
+        : APPROVED,
+    );
+    const { sink, views } = capturingSink();
+    const narr = fakeNarrator();
+    const onHeldForReview = vi.fn();
+    const onBuildTeardown = vi.fn();
+    const ws = fakeWorkspace(true);
+    const task = queuedTask("task-park-mid", "make a twitch clone");
+    const { deps, taskQueue } = makeDeps({
+      task,
+      db,
+      machine,
+      registry,
+      agentRunner: runner,
+      sandboxAdapter: sandbox,
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+      onHeldForReview,
+      onBuildTeardown,
+      workspace: ws.workspace,
+    });
+
+    const session = createBuildSession(deps);
+    await session.startBuild(task, "donation");
+
+    // The turn aborted + the sandbox was torn down EXACTLY once.
+    const controller = controllerSpy.mock.calls[0]?.[1];
+    expect(controller?.signal.aborted).toBe(true);
+    expect(sandbox.terminate).toHaveBeenCalledTimes(1);
+    // Teardown audit row carries the D-08 park rationale (NOT the D3-07 reject wording).
+    const teardown = listAuditRecords(db, { limit: 10, eventType: "sandbox_teardown" });
+    expect(teardown).toHaveLength(1);
+    expect(teardown[0]?.rationale).toContain("parked for streamer review (D-08)");
+    // comp02_decision held row (existing recording) + build_parked_for_review.
+    const comp02Rows = listAuditRecords(db, { limit: 10, eventType: "comp02_decision" });
+    expect(comp02Rows.some((r) => r.decision === "held-for-review")).toBe(true);
+    expect(listAuditRecords(db, { limit: 10, eventType: "build_parked_for_review" })).toHaveLength(
+      1,
+    );
+    // buildHeld beat — never silent; NEVER the comp02Rejected denial beat here.
+    expect(narr.names).toContain("buildHeld");
+    expect(narr.names).not.toContain("comp02Rejected");
+    // Widened hook: the held TEXT is the flagged batch (screenable text), and
+    // the hold detail carries phase/category/rationale/provenance.
+    expect(onHeldForReview).toHaveBeenCalledTimes(1);
+    expect(onHeldForReview.mock.calls[0]?.[0]).toBe(task);
+    expect(String(onHeldForReview.mock.calls[0]?.[1])).toContain(
+      "body { background: hotpink; }",
+    );
+    expect(onHeldForReview.mock.calls[0]?.[2]).toEqual({
+      phase: "mid-build",
+      category: "ip-infringement",
+      rationale: "looks cloned",
+      provenance: "donation",
+    });
+    // Clean park exit: no terminal stage emit (building only), queue clean,
+    // registry unregistered, IDLE, snapshot null — and NO build_history row,
+    // NO teardown-hook fire (P4: main.ts owns preview semantics), NO reset.
+    expect(stages(views)).toEqual(["building"]);
+    expect(taskQueue.list()).toHaveLength(0);
+    expect(machine.mode).toBe("IDLE");
+    expect(session.snapshot()).toBeNull();
+    expect(listBuildHistory(db, { limit: 10 })).toHaveLength(0);
+    expect(onBuildTeardown).not.toHaveBeenCalled();
+    expect(ws.newProject).not.toHaveBeenCalled();
+  });
+
+  it("resume phase 'pre-build' SKIPS the pre-build re-screen (no -plan candidate) but keeps in-flight screening + narrates buildResumedFromReview", async () => {
+    const { machine } = fakeMachine();
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02, classify } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const narr = fakeNarrator();
+    const task = queuedTask("task-resume-pre", "borderline idea");
     const { deps } = makeDeps({
       task,
       db,
@@ -460,22 +618,103 @@ describe("createBuildSession — COMP-02 pre-build suggestion re-screen (D3-06)"
       comp02,
       progress: sink,
       narrator: narr.narrator,
-      onHeldForReview,
+    });
+
+    await createBuildSession(deps).startBuild(task, "vote", {
+      resume: { phase: "pre-build" },
+    });
+
+    // The streamer's approval IS the escalation resolution: classify NEVER
+    // sees a `${id}-plan` candidate — no re-hold loop.
+    expect(classify.mock.calls.some(([c]) => c.id.endsWith("-plan"))).toBe(false);
+    // In-flight screening stays FULLY active: the -output batch was screened.
+    expect(classify.mock.calls.some(([c]) => c.id.endsWith("-output"))).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(stages(views)).toEqual(["building", "done"]);
+    expect(narr.names).toContain("buildResumedFromReview");
+  });
+
+  it("resume phase 'mid-build' RE-RUNS the pre-build screen AND the build prompt carries the approved-continuation note", async () => {
+    const { machine } = fakeMachine();
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02, classify } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const narr = fakeNarrator();
+    const task = queuedTask("task-resume-mid", "make a twitch clone");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+      narrator: narr.narrator,
+    });
+
+    await createBuildSession(deps).startBuild(task, "vote", {
+      resume: { phase: "mid-build" },
+    });
+
+    // NO screening exemption for a mid-build resume (locked decision 3).
+    expect(classify.mock.calls.some(([c]) => c.id.endsWith("-plan"))).toBe(true);
+    expect(calls).toHaveLength(1);
+    // The HOST-AUTHORED approved-continuation note rides the user prompt,
+    // OUTSIDE the untrusted-text delimiters.
+    const userPrompt = calls[0]?.userPrompt ?? "";
+    const afterFrame = userPrompt.split("</task_description>")[1] ?? "";
+    expect(afterFrame).toContain("approved");
+    expect(afterFrame.toLowerCase()).toContain("continue from the current workspace state");
+    expect(stages(views)).toEqual(["building", "done"]);
+    expect(narr.names).toContain("buildResumedFromReview");
+  });
+
+  it("a NON-resume startBuild produces a user prompt WITHOUT the continuation note (byte-rail)", async () => {
+    const { machine } = fakeMachine();
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink } = capturingSink();
+    const task = queuedTask("task-plain", "make a clicker");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
     });
 
     await createBuildSession(deps).startBuild(task);
 
-    expect(onHeldForReview).toHaveBeenCalledTimes(1);
-    expect(onHeldForReview.mock.calls[0]?.[0]).toBe(task);
-    // The hook receives the SUGGESTION text (no plan exists anymore).
-    expect(onHeldForReview.mock.calls[0]?.[1]).toBe("borderline idea");
-    expect(narr.names).toContain("buildHeld");
-    expect(stages(views)).toEqual(["refused"]);
-    // The AgentRunner was NEVER invoked (zero specs).
+    expect(calls[0]?.userPrompt).toBe(
+      '<task_description source="chat">\nmake a clicker\n</task_description>',
+    );
+  });
+
+  it("HALTED still refuses a resume startBuild (the existing guard covers resume opts too)", async () => {
+    const { machine } = fakeMachine("HALTED");
+    const { runner, calls } = fakeAgentRunner(HAPPY_SCRIPT);
+    const { deps: comp02 } = fakeComp02(() => APPROVED);
+    const { sink, views } = capturingSink();
+    const task = queuedTask("task-halted-resume", "borderline idea");
+    const { deps } = makeDeps({
+      task,
+      db,
+      machine,
+      agentRunner: runner,
+      sandboxAdapter: fakeSandbox(),
+      comp02,
+      progress: sink,
+    });
+
+    await createBuildSession(deps).startBuild(task, "vote", {
+      resume: { phase: "pre-build" },
+    });
+
     expect(calls).toHaveLength(0);
-    expect(machine.mode).toBe("IDLE");
-    const comp02Rows = listAuditRecords(db, { limit: 10, eventType: "comp02_decision" });
-    expect(comp02Rows[0]?.decision).toBe("held-for-review");
+    expect(stages(views)).toEqual([]);
+    expect(machine.mode).toBe("HALTED");
   });
 });
 
