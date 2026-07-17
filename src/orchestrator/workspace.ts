@@ -70,11 +70,25 @@ export function createWorkspaceState(db: Database.Database): WorkspaceView {
     return read.get() as { generation: number; scaffolded: number; top_generation: number };
   }
 
+  // quick-260717-093 (D093-1): the ONE place the app-<N> path template exists.
+  // dir() delegates here; main.ts's holdover-aware supervisor workspaceDir
+  // closure calls it for the held-over generation — never duplicating the
+  // template. Number.isInteger guard (activateExisting's validation style,
+  // T-093-01): the input is only ever an internally-generated integer, and a
+  // non-integer throws BEFORE any templating.
+  function dirFor(generation: number): string {
+    if (!Number.isInteger(generation)) {
+      throw new Error(`dirFor: generation ${generation} is not an integer`);
+    }
+    return `/home/builder/projects/app-${generation}`;
+  }
+
   return {
     dir(): string {
       // Internally-generated integer only — never chat text.
-      return `/home/builder/projects/app-${row().generation}`;
+      return dirFor(row().generation);
     },
+    dirFor,
     generation(): number {
       return row().generation;
     },

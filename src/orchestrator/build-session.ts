@@ -150,6 +150,22 @@ export interface BuildSessionDeps {
    * NEVER disturb finalize, the IDLE transition, or the dequeue.
    */
   onBuildDone?: (task: QueuedTask) => void;
+  /**
+   * Teardown hook (quick-260717-093, D093-2): fired on EVERY non-done settle
+   * whose path tears the sandbox down — and the in-distro preview dev server
+   * dies with it (live incident 2026-07-16 20:25: a COMP-02 in-flight refusal
+   * left the OBS LIVE BUILD slot on "Between builds" indefinitely). EXACTLY
+   * four call sites: finalize() when stage !== "done", finalizeAborted(),
+   * skipTask(), and the WR-07 watchdog-timeout branch (the sandbox is dead
+   * there even though the machine then freezes on a decision). It does NOT
+   * fire on a done finalize (onBuildDone owns the done seam) and NOT on the
+   * agent-refusal decision freeze (no teardown happened — the server is
+   * healthy; it fires later at skipTask). Optional — absent in unit tests that
+   * don't assert on it. Invoked inside its own try/catch (the onBuildDone
+   * idiom): a throwing hook can NEVER disturb finalize/skip/abort, the
+   * dequeue, or the IDLE transition (D093-5).
+   */
+  onBuildTeardown?: (task: QueuedTask) => void;
   logger?: Logger;
 }
 
@@ -497,6 +513,24 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   }
 
   /**
+   * quick-260717-093 (D093-2/D093-5): fire the optional teardown hook — the
+   * preview dev-server resurrection seam. Wrapped in its own try/catch (the
+   * onBuildDone idiom): a throwing hook can NEVER disturb the caller's
+   * dequeue, emit ordering, or the IDLE transition. Every call site sits at
+   * the END of its function, after the dequeue + guarded transition.
+   */
+  function fireTeardownHook(task: QueuedTask): void {
+    try {
+      deps.onBuildTeardown?.(task);
+    } catch (err) {
+      deps.logger?.error(
+        { err, taskId: task.id },
+        "onBuildTeardown hook threw — preview resurrection skipped, teardown continues untouched",
+      );
+    }
+  }
+
+  /**
    * Terminal exit: emit the terminal stage, drop the overlay snapshot,
    * unregister + DEQUEUE the finished task, THEN return to IDLE. Legal
    * BUILD_IN_PROGRESS→IDLE transition; never leaves the machine stuck
@@ -564,6 +598,13 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     } catch (err) {
       deps.logger?.error({ err, taskId: task.id }, "failed to return machine to IDLE after build");
     }
+    // quick-260717-093 (D093-2 a): every NON-done finalize — refused (COMP-02
+    // in-flight/pre-build), failed (unexpected pipeline error) — settled a
+    // build whose path may have torn the sandbox (and the dev server) down.
+    // Never on done: onBuildDone owns that seam.
+    if (stage !== "done") {
+      fireTeardownHook(task);
+    }
   }
 
   /**
@@ -614,6 +655,11 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         "failed to return machine to IDLE after aborted build",
       );
     }
+    // quick-260717-093 (D093-2 b): a halt/veto/shutdown abort tore the sandbox
+    // down — resurrect the preview dev server. main.ts's handler guards
+    // HALTED (the machine is frozen; the preview may stay dark until the
+    // recovery reroot).
+    fireTeardownHook(task);
   }
 
   /**
@@ -895,6 +941,12 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       );
       deps.narrator?.buildDeciding(task.text);
       enterDecision(task, taskText, "failed");
+      // quick-260717-093 (D093-2 d): the watchdog branch above just ran
+      // terminate() — the sandbox (and the dev server with it) is literally
+      // dead, and the machine now freezes on a decision for possibly minutes.
+      // Per design intent "ANY build teardown that kills the sandbox", the
+      // hook fires even though enterDecision is not terminal.
+      fireTeardownHook(task);
       return;
     }
 
@@ -1139,6 +1191,10 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       }
       // snapshot() is now null → the overlay build panel collapses.
       emitter.emit(BUILD_STAGE_CHANGED);
+      // quick-260717-093 (D093-2 c): the skip settles a failed/refused build
+      // whose teardown killed the dev server (watchdog terminate, halt-path
+      // teardown) — resurrect it now that the decision resolved.
+      fireTeardownHook(p.task);
     },
 
     snapshot(): BuildStatusView | null {

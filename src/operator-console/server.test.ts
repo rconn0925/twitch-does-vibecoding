@@ -542,6 +542,7 @@ function fakeWorkspaceSeam(): WorkspaceView & { newProject: ReturnType<typeof vi
   });
   return {
     dir: () => `/home/builder/projects/app-${generation}`,
+    dirFor: (target: number) => `/home/builder/projects/app-${target}`,
     generation: () => generation,
     scaffolded: () => scaffolded,
     markBuilt: () => {

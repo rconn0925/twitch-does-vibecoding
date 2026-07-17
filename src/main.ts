@@ -1684,6 +1684,23 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
             ),
           );
       },
+      // quick-260717-093 (D093-3/D093-5): resurrect the preview dev server
+      // after ANY non-done settle — every such teardown kills the in-distro
+      // 5555 server with the sandbox and nothing else restarts it (live
+      // incident 2026-07-16 20:25: a COMP-02 in-flight refusal left the OBS
+      // LIVE BUILD slot on "Between builds" indefinitely). The supervisor's
+      // workspaceDir closure is holdover-aware, so a refused project-switch
+      // brings the PREVIOUS project back; this NEVER discharges the holdover
+      // (raw seam call, never rerootPreviewNow). While HALTED the preview
+      // stays dark by pinned decision — the HALTED-exit subscription in the
+      // supervisor composition block covers recovery. A mode guard + a void
+      // fire-and-forget onto the serialized never-rejecting reroot chain:
+      // nothing synchronous/throwing rides finalize/skip/abort or the IDLE
+      // transition (t1n ordering discipline).
+      onBuildTeardown: () => {
+        if (machine.mode === "HALTED") return;
+        reRootPreview();
+      },
       logger,
     });
     orchestrator = buildSession;
@@ -2338,7 +2355,17 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     const devServerSupervisor = createDevServerSupervisor({
       adapter: opts.sandboxAdapter,
       port: previewManager.port,
-      workspaceDir: () => workspace.dir(),
+      // quick-260717-093 (D093-1): EVERY reroot is holdover-aware — during a
+      // project-switch holdover the supervisor re-roots at the HELD-OVER
+      // generation's dir (single-sourced template via workspace.dirFor), so a
+      // teardown resurrection brings the PREVIOUS project back. Safe for all
+      // existing call sites: every immediate path clears the holdover first
+      // (rerootPreviewNow) and the done-discharge nulls the flag before it
+      // reroots.
+      workspaceDir: () =>
+        previewHoldoverGeneration !== null
+          ? workspace.dirFor(previewHoldoverGeneration)
+          : workspace.dir(),
       probeReachable: () => (opts.devServerProbe ?? previewManager).reachable(),
       logger,
       // Test knob: PREVIEW_DEV_SERVER_SETTLE_MS=0 makes reroot cycles
@@ -2349,6 +2376,21 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     // project-switch rotation (shipThenRotate), and the console new-project
     // wrapper all fire it. fire-and-forget: reroot() never rejects.
     reRootPreview = () => void devServerSupervisor.reroot();
+    // quick-260717-093 (D093-3): leaving HALTED fires exactly ONE
+    // holdover-aware reroot — the teardown handler above deliberately stays
+    // dark while HALTED (the machine is frozen), so this guarantees a live
+    // preview after every recovery. Recovery is a rare operator action;
+    // rerooting an already-healthy server is an acceptable one-time blip in
+    // exchange for a guaranteed-live preview. Raw seam call: the holdover
+    // SURVIVES recovery — only a done build discharges it.
+    let lastPreviewMode = machine.mode;
+    machine.on(STATE_CHANGED, () => {
+      const now = machine.mode;
+      if (lastPreviewMode === "HALTED" && now !== "HALTED") {
+        reRootPreview();
+      }
+      lastPreviewMode = now;
+    });
     // Boot start: root the preview server at the ACTIVE generation dir with
     // zero manual steps (OPERATIONS.md §11 retires the manual launch).
     void devServerSupervisor.reroot();

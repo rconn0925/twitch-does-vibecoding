@@ -155,6 +155,7 @@ function fakeWorkspace(initialScaffolded = false) {
   });
   const workspace: WorkspaceView = {
     dir: () => `/home/builder/projects/app-${generation}`,
+    dirFor: (target: number) => `/home/builder/projects/app-${target}`,
     scaffolded: () => scaffolded,
     markBuilt,
     newProject,
