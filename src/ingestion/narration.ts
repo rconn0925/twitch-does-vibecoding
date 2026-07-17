@@ -464,6 +464,13 @@ export function createNarrator(deps: {
       );
     },
 
+    // quick-260717-2gr (D-08): the streamer approved a parked build from the
+    // console review queue — the continuation resumes through the same
+    // dispatch funnel. Calm beat, one message per approval, never silent.
+    buildResumedFromReview(title: string): void {
+      void deps.sender.send(`Streamer approved "${truncateTitle(title)}" — picking it back up.`);
+    },
+
     buildVetoed(title: string): void {
       void deps.sender.send(
         `Build stopped — pulling the plug on "${truncateTitle(title)}". Standing by.`,

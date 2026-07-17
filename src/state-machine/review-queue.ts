@@ -158,6 +158,66 @@ export function reject(
   });
 }
 
+/**
+ * quick-260717-2gr (D-08 parked builds): resolve a PARKED review row
+ * approved/rejected WITHOUT touching the candidate pool — the parked build's
+ * continuation dispatches through main.ts's dispatchBuild funnel with the
+ * retained branded task, so re-pooling (approve()'s intake semantics) would be
+ * wrong here. One review_resolved audit row; throw-free: returns false when
+ * the row is missing or already terminal (the timer/HTTP race is expected).
+ */
+export function resolveParked(
+  db: Database.Database,
+  reviewId: number,
+  resolution: "approved" | "rejected",
+  streamMode: StreamMode = "IDLE",
+  reasonTag: ReasonTag | null = null,
+): boolean {
+  let row: ReviewRow;
+  try {
+    row = resolvePendingRow(db, reviewId, resolution);
+  } catch {
+    return false;
+  }
+  recordReviewResolution(db, {
+    reviewId,
+    resolution,
+    suggestionText: row.suggestion_text,
+    twitchUsername: row.twitch_username,
+    streamMode,
+    reasonTag,
+  });
+  return true;
+}
+
+/**
+ * quick-260717-2gr (D-08 parked builds): expire ONE pending row as
+ * expired-unreviewed + one review_expired audit row — the 120s
+ * REVIEW_HOLD_TIMEOUT_SECONDS auto-decline path (fail-closed, never a zombie).
+ * Throw-free + idempotent: returns false when the row is missing or already
+ * terminal (a resolution won the race), writing nothing.
+ */
+export function expireOne(
+  db: Database.Database,
+  reviewId: number,
+  streamMode: StreamMode = "IDLE",
+): boolean {
+  let row: ReviewRow;
+  try {
+    row = resolvePendingRow(db, reviewId, "expired-unreviewed");
+  } catch {
+    return false;
+  }
+  recordReviewResolution(db, {
+    reviewId,
+    resolution: "expired-unreviewed",
+    suggestionText: row.suggestion_text,
+    twitchUsername: row.twitch_username,
+    streamMode,
+  });
+  return true;
+}
+
 /** Snapshot of one review row (any status) — used by the console's D-18 tag follow-up. */
 export interface ReviewRowSnapshot {
   id: number;

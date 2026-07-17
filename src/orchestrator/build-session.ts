@@ -42,6 +42,7 @@ import PQueue from "p-queue";
 import type { Logger } from "pino";
 import {
   recordBuildHistory,
+  recordBuildParked,
   recordBuildRefusal,
   recordBuildRetry,
   recordBuildSkip,
@@ -78,6 +79,37 @@ import type {
 
 export { BUILD_STAGE_CHANGED };
 
+/** Which COMP-02 point held the build (quick-260717-2gr, D-08 park routing). */
+export type ReviewHoldPhase = "pre-build" | "mid-build";
+
+/**
+ * The hold detail the widened onHeldForReview hook carries (quick-260717-2gr):
+ * WHERE the hold fired, WHY (classifier category + rationale), and HOW the
+ * build was selected (provenance — retained so the approve-resume continuation
+ * dispatches with the ORIGINAL provenance, HIST-01).
+ */
+export interface HeldForReviewInfo {
+  phase: ReviewHoldPhase;
+  category: string;
+  rationale: string;
+  provenance: BuildProvenance;
+}
+
+/**
+ * startBuild resume opts (quick-260717-2gr): a streamer-approved parked build
+ * re-dispatches with `resume.phase` set to the phase that parked it:
+ *  - "pre-build": the pre-build re-screen is SKIPPED — the streamer's approval
+ *    IS the escalation resolution for that exact text (intake-approve()
+ *    doctrine); without the skip the same text would re-hold in an infinite
+ *    park loop. In-flight screening stays FULLY active.
+ *  - "mid-build": the FULL pipeline runs (including the pre-build re-screen —
+ *    locked decision 3; a fresh hold re-parks and that is correct) and the
+ *    build prompt gains the host-authored approved-continuation note.
+ */
+export interface StartBuildOptions {
+  resume?: { phase: ReviewHoldPhase };
+}
+
 /**
  * The injected surface the build session drives against. Everything the
  * orchestrator touches is here so vitest never constructs a real
@@ -112,12 +144,16 @@ export interface BuildSessionDeps {
   /** Translated pipeline-stage sink (chat narration / console / test observer). */
   progress: ProgressSink;
   /**
-   * COMP-02 held-for-review routing hook (D-08). When the pre-write plan
-   * re-screen returns `held`, the build is NOT run; instead the plan is handed
-   * here for the streamer's existing console review flow. Optional — absent in
-   * unit tests that only assert the held path ends cleanly.
+   * COMP-02 held-for-review PARK hook (D-08, implemented quick-260717-2gr).
+   * When EITHER COMP-02 point (pre-build suggestion re-screen OR the in-flight
+   * output re-screen) returns `held`, the build PARKS: clean exit back to IDLE
+   * with the task removed from the queue, and this hook hands main.ts the
+   * flagged text + hold detail (phase/category/rationale/provenance) to insert
+   * the console review row, arm the 120s auto-decline timer, and own the
+   * preview-taint semantics. Invoked inside its own try/catch (the onBuildDone
+   * idiom). Optional — absent in unit tests that only assert the park exit.
    */
-  onHeldForReview?: (task: QueuedTask, planText: string) => void;
+  onHeldForReview?: (task: QueuedTask, heldText: string, hold: HeldForReviewInfo) => void;
   /**
    * Build-pipeline chat narration (BUILD-03 / D3-08 / D3-09). Optional — absent
    * when no chat pipeline is composed (createApp only builds a Narrator when a
@@ -181,8 +217,12 @@ export interface BuildSession {
    * the trigger site (vote | donation | channel_points | chaos) and stored on the
    * active session so finalize() persists it to build_history. Defaults to
    * 'vote' (the normal loop), matching overlay.js's `bs.source ?? "vote"`.
+   *
+   * `opts.resume` (quick-260717-2gr): a streamer-approved parked build resumes
+   * through the SAME single funnel — see StartBuildOptions for the exact
+   * screening semantics per phase.
    */
-  startBuild(task: QueuedTask, provenance?: BuildProvenance): Promise<void>;
+  startBuild(task: QueuedTask, provenance?: BuildProvenance, opts?: StartBuildOptions): Promise<void>;
   /**
    * BUILD-03 / D3-09: the streamer chose RETRY for a failed/refused build.
    * Re-runs the sandboxed build turn from the suggestion text (WITHOUT
@@ -392,7 +432,7 @@ export function extractApprovedContent(message: unknown): ApprovedContentItem[] 
 }
 
 /** Per-turn consumption outcome (turn-level, NOT the whole pipeline). */
-type TurnOutcome = "ok" | "refused" | "failed" | "compliance-rejected";
+type TurnOutcome = "ok" | "refused" | "failed" | "compliance-rejected" | "compliance-held";
 
 interface TurnResult {
   text: string;
@@ -403,6 +443,12 @@ interface TurnResult {
    * external abort — even though the watchdog also aborted the controller.
    */
   timedOut?: boolean;
+  /**
+   * quick-260717-2gr: present ONLY with outcome "compliance-held" — the
+   * flagged batch text + the classifier's category/rationale, carried to the
+   * caller's park path (the console review card renders them).
+   */
+  heldInfo?: { batchText: string; category: string; rationale: string };
 }
 
 /** Map a COMP-02 outcome disposition onto the gate decision vocabulary for audit. */
@@ -676,6 +722,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     const texts: string[] = [];
     let outcome: TurnOutcome = "ok";
     let timedOut = false;
+    let heldInfo: TurnResult["heldInfo"];
 
     // HI-03: a per-turn STALL/idle watchdog. The timer is RE-ARMED on every
     // yielded message (activity resets the clock), so a healthy, steadily-
@@ -730,7 +777,22 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
                 streamMode: streamMode(),
               });
               if (!screen.proceed) {
-                outcome = "compliance-rejected";
+                if (screen.disposition === "held") {
+                  // quick-260717-2gr (D-08): a HELD batch parks the build
+                  // instead of tossing it — carry the flagged text + the
+                  // classifier's reasoning to the caller's park path. Breaks
+                  // out BEFORE contentApproved below, so the held bytes never
+                  // reach the /builder broadcast feed (same control-flow gate
+                  // as the rejected branch, T-x7d-01).
+                  outcome = "compliance-held";
+                  heldInfo = {
+                    batchText: batch,
+                    category: screen.category,
+                    rationale: screen.rationale,
+                  };
+                } else {
+                  outcome = "compliance-rejected";
+                }
                 break;
               }
               // T-x7d-01 STRUCTURAL GATE (extended by T-nhv-01): this call sits
@@ -776,7 +838,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       );
       outcome = "failed";
     }
-    return { text: texts.join("\n").trim(), outcome, timedOut };
+    return { text: texts.join("\n").trim(), outcome, timedOut, ...(heldInfo ? { heldInfo } : {}) };
   }
 
   /** Run one agent turn via the injected runner. Never throws (fail-closed). */
@@ -812,6 +874,93 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       streamMode: streamMode(),
       rationale: "in-flight COMP-02 rejected an output batch — build aborted (D3-07)",
     });
+  }
+
+  /**
+   * quick-260717-2gr (D-08): PARK a held-for-review build instead of tossing
+   * it. Deliberately NOT a finalize: no pipeline_stage emit, NO build_history
+   * row (the build neither completed nor failed — it is awaiting the
+   * streamer), and NO fireTeardownHook (P4: main.ts's onHeldForReview handler
+   * owns the preview-taint semantics — an automatic resurrection here could
+   * put a tainted workspace back on the broadcast).
+   *
+   * Mid-build only: abort the turn + total sandbox teardown (the flagged Write
+   * may already be on disk — fail closed) + one sandbox_teardown audit row.
+   * A pre-build hold never spawned anything, so nothing is torn down and the
+   * (healthy) preview dev server keeps serving.
+   *
+   * Exit shape mirrors skipTask + the t1n ordering invariant: dequeue +
+   * unregister BEFORE the guarded IDLE transition (STATE_CHANGED handlers run
+   * synchronously inside transition() and must never find the parked task
+   * still queued — P2: a parked build never blocks the queue), then ONE
+   * BUILD_STAGE_CHANGED emit collapses the overlay panel (snapshot() null).
+   */
+  async function parkForReview(
+    task: QueuedTask,
+    heldText: string,
+    phase: ReviewHoldPhase,
+    info: { category: string; rationale: string },
+    ac?: AbortController,
+  ): Promise<void> {
+    if (phase === "mid-build" && ac) {
+      ac.abort();
+      try {
+        await deps.sandboxAdapter.terminate();
+      } catch (err) {
+        deps.logger?.error(
+          { err, taskId: task.id },
+          "sandbox teardown failed while parking a held build",
+        );
+      }
+      auditIfOpen(() =>
+        recordSandboxTeardown(deps.db, {
+          taskId: task.id,
+          streamMode: streamMode(),
+          rationale:
+            "in-flight COMP-02 held an output batch — build parked for streamer review (D-08)",
+        }),
+      );
+    }
+    auditIfOpen(() =>
+      recordBuildParked(deps.db, { taskId: task.id, phase, streamMode: streamMode() }),
+    );
+    // Never silent (WR-03): the held beat is distinct from the rejected denial.
+    deps.narrator?.buildHeld(task.text);
+    // Hand the flagged text + hold detail to the composition root (review row,
+    // 120s auto-decline timer, preview taint). Own try/catch — a throwing hook
+    // can NEVER disturb the clean exit below (the onBuildDone idiom).
+    try {
+      deps.onHeldForReview?.(task, heldText, {
+        phase,
+        category: info.category,
+        rationale: info.rationale,
+        provenance: currentProvenance,
+      });
+    } catch (err) {
+      deps.logger?.error(
+        { err, taskId: task.id },
+        "onHeldForReview hook threw — park exit continues untouched",
+      );
+    }
+    // skipTask-shaped clean exit (t1n ordering: dequeue BEFORE the transition).
+    current = null;
+    active = null;
+    pending = null;
+    deps.registry.unregister(task.id);
+    deps.taskQueue.remove(task.id);
+    try {
+      if (deps.machine.mode === "BUILD_IN_PROGRESS") {
+        deps.machine.transition("IDLE");
+      }
+      deps.machine.setActiveTask(null, null);
+    } catch (err) {
+      deps.logger?.error(
+        { err, taskId: task.id },
+        "failed to return machine to IDLE after parking a held build",
+      );
+    }
+    // snapshot() is now null → the overlay build panel collapses.
+    emitter.emit(BUILD_STAGE_CHANGED);
   }
 
   /** True while a halt/veto has aborted the current turn — the kill-switch path owns cleanup. */
@@ -858,6 +1007,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     taskText: string,
     ac: AbortController,
     allowAutoRetry: boolean,
+    approvedContinuation = false,
   ): Promise<void> {
     emitStage(task, "building");
     // BL-01: the distro workspace dir MUST exist before the build turn spawns.
@@ -895,7 +1045,14 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       ? await deps.sandboxAdapter.workspaceHasFiles(deps.workspace.dir()).catch(() => true)
       : false;
     const mode = deps.workspace.scaffolded() || hasFiles ? "continue" : "scaffold";
-    const build = buildBuildPrompt(taskText, mode);
+    // quick-260717-2gr: a mid-build-park resume carries the host-authored
+    // approved-continuation note (OUTSIDE the untrusted delimiters); the plain
+    // path is byte-identical to the historical two-arg call.
+    const build = buildBuildPrompt(
+      taskText,
+      mode,
+      approvedContinuation ? { approvedContinuation: true } : undefined,
+    );
     const buildTurn = await runTurn(
       {
         agent: "build",
@@ -950,6 +1107,18 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       return;
     }
 
+    // quick-260717-2gr (D-08): a HELD in-flight batch PARKS the build for the
+    // streamer's console review — never the rejected denial path, never a toss.
+    if (buildTurn.outcome === "compliance-held") {
+      await parkForReview(
+        task,
+        buildTurn.heldInfo?.batchText ?? taskText,
+        "mid-build",
+        buildTurn.heldInfo ?? { category: "gut-feeling", rationale: "" },
+        ac,
+      );
+      return;
+    }
     if (buildTurn.outcome === "compliance-rejected") {
       await abortForCompliance(task, ac);
       deps.narrator?.comp02Rejected(task.text);
@@ -975,7 +1144,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
           rationale: "auto-retry once on a transient build failure (D3-09)",
         });
         deps.narrator?.buildRetryingOnce(task.text);
-        await runBuildAttempt(task, taskText, ac, false);
+        await runBuildAttempt(task, taskText, ac, false, approvedContinuation);
         return;
       }
       deps.narrator?.buildDeciding(task.text);
@@ -1009,7 +1178,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
             "build turn succeeded with an EMPTY workspace — auto-retry once (EMPTY-01/D3-09)",
         });
         deps.narrator?.buildRetryingOnce(task.text);
-        await runBuildAttempt(task, taskText, ac, false);
+        await runBuildAttempt(task, taskText, ac, false, approvedContinuation);
         return;
       }
       deps.narrator?.buildDeciding(task.text);
@@ -1027,11 +1196,16 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   }
 
   /** The full per-task pipeline. Wrapped so it can never throw out of the p-queue. */
-  async function runPipeline(task: QueuedTask, provenance: BuildProvenance): Promise<void> {
+  async function runPipeline(
+    task: QueuedTask,
+    provenance: BuildProvenance,
+    opts?: StartBuildOptions,
+  ): Promise<void> {
     // HIST-01: pin the provenance for this build so finalize() records it. Set
     // here (inside the concurrency-1 pipeline) rather than in startBuild so a
     // second queued startBuild can never overwrite the running build's value.
     currentProvenance = provenance;
+    const resumePhase = opts?.resume?.phase ?? null;
     const ac = new AbortController();
     active = { task, ac };
     try {
@@ -1043,47 +1217,56 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       enterBuildMode(task);
       registerAbort(task.id, ac);
       deps.narrator?.buildPickedUp(task.text);
+      // quick-260717-2gr: a resumed park narrates the approval beat — chat
+      // hears WHY the flagged build is picking back up (never silent).
+      if (resumePhase !== null) {
+        deps.narrator?.buildResumedFromReview(task.text);
+      }
 
       // 1) COMP-02 pre-build re-screen (D3-06) — IMMEDIATELY, before ANY agent
       //    turn. The input is the winning SUGGESTION text: there is no plan
       //    anymore (quick-0iu straight-to-build). The compliance export keeps
       //    its `planText` parameter name — src/compliance/** and comp02.ts are
       //    untouched (requirement 2); only this call site adapted.
-      const screen = await screenBuildPlan(deps.comp02, { taskId: task.id, planText: task.text });
-      recordComp02Decision(deps.db, {
-        taskId: task.id,
-        decision: screen.proceed ? "approved" : comp02Decision(screen.disposition),
-        category: screen.proceed ? null : "category" in screen ? screen.category : null,
-        rationale: "COMP-02 pre-build suggestion re-screen (D3-06)",
-        streamMode: streamMode(),
-      });
-      if (!screen.proceed) {
-        // A compliance failure NEVER auto-retries (D3-09). rejected → narrate +
-        // drop; held → route to console review (D-08). Both end cleanly WITHOUT
-        // running the build query() and WITHOUT a retry/skip decision — the
-        // AgentRunner is NEVER invoked on either path.
-        if (screen.disposition === "held") {
-          // WR-03: never silent. Narrate the held outcome (distinct from a hard
-          // rejection) so chat hears why the build stopped, hand the suggestion
-          // to the review-routing hook, and audit it (comp02_decision:
-          // held-for-review + pipeline_stage: refused below). D-08 console
-          // review-queue *routing* is still deferred — the hook currently logs
-          // an audited warning rather than re-queuing; the drop is explicit +
-          // narrated, not a silent stub.
-          deps.narrator?.buildHeld(task.text);
-          deps.onHeldForReview?.(task, task.text);
+      //
+      //    quick-260717-2gr: a "pre-build" RESUME skips this screen ONLY — the
+      //    streamer's console approval IS the escalation resolution for that
+      //    exact text (the intake-approve() doctrine: approve never
+      //    re-classifies); re-screening would re-hold the same text in an
+      //    infinite park loop. A "mid-build" resume re-screens in full (locked
+      //    decision 3 — a fresh hold re-parks, and that is correct). In-flight
+      //    screening below is FULLY active on every path.
+      if (resumePhase !== "pre-build") {
+        const screen = await screenBuildPlan(deps.comp02, {
+          taskId: task.id,
+          planText: task.text,
+        });
+        recordComp02Decision(deps.db, {
+          taskId: task.id,
+          decision: screen.proceed ? "approved" : comp02Decision(screen.disposition),
+          category: screen.proceed ? null : "category" in screen ? screen.category : null,
+          rationale: "COMP-02 pre-build suggestion re-screen (D3-06)",
+          streamMode: streamMode(),
+        });
+        if (!screen.proceed) {
+          // A compliance failure NEVER auto-retries (D3-09). rejected → narrate
+          // + drop; held → PARK for the console review queue (D-08,
+          // quick-260717-2gr). Both end cleanly WITHOUT running the build
+          // query() and WITHOUT a retry/skip decision — the AgentRunner is
+          // NEVER invoked on either path.
+          if (screen.disposition === "held") {
+            return parkForReview(task, task.text, "pre-build", {
+              category: screen.category,
+              rationale: screen.rationale,
+            });
+          }
+          deps.narrator?.comp02Rejected(task.text);
           return finalize(
             task,
             "refused",
-            "COMP-02 held the suggestion for streamer review (D-08 routing deferred; held audited + narrated)",
+            "COMP-02 rejected the suggestion before any code was written (D3-06)",
           );
         }
-        deps.narrator?.comp02Rejected(task.text);
-        return finalize(
-          task,
-          "refused",
-          "COMP-02 rejected the suggestion before any code was written (D3-06)",
-        );
       }
 
       // A veto/halt landing DURING the screen await must never spawn a build
@@ -1092,9 +1275,10 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
 
       // 2) Build (Fable — explicitly pinned, SANDBOXED, persistent workspace) +
       //    in-flight COMP-02 (D3-07), auto-retrying a transient failure at most
-      //    once (D3-09).
+      //    once (D3-09). A mid-build-park resume carries the host-authored
+      //    approved-continuation prompt note (quick-260717-2gr).
       deps.narrator?.stageBuilding(task.text);
-      await runBuildAttempt(task, task.text, ac, true);
+      await runBuildAttempt(task, task.text, ac, true, resumePhase === "mid-build");
     } catch (err) {
       deps.logger?.error({ err, taskId: task.id }, "build pipeline error — failing closed to IDLE");
       finalize(task, "failed", "unexpected build-pipeline error (fail-closed)");
@@ -1116,7 +1300,11 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   }
 
   return {
-    startBuild(task: QueuedTask, provenance: BuildProvenance = "vote"): Promise<void> {
+    startBuild(
+      task: QueuedTask,
+      provenance: BuildProvenance = "vote",
+      opts?: StartBuildOptions,
+    ): Promise<void> {
       if (deps.machine.mode === "HALTED") {
         deps.logger?.warn(
           { taskId: task.id },
@@ -1124,7 +1312,7 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         );
         return Promise.resolve();
       }
-      return track(() => runPipeline(task, provenance));
+      return track(() => runPipeline(task, provenance, opts));
     },
 
     retryBuild(taskId: string): void {

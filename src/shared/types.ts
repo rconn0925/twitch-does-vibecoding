@@ -319,6 +319,12 @@ export interface BuildNarrator {
   comp02Rejected(title: string): void;
   /** COMP-02 HELD the plan for streamer review — distinct from rejected (WR-03/D-08). */
   buildHeld(title: string): void;
+  /**
+   * The streamer APPROVED a parked (held-for-review) build from the console —
+   * the continuation is picking it back up (quick-260717-2gr, D-08). Calm
+   * beat, never silent (locked rail 8).
+   */
+  buildResumedFromReview(title: string): void;
   /** A streamer veto aborted an in-flight build (D3-10). */
   buildVetoed(title: string): void;
 }

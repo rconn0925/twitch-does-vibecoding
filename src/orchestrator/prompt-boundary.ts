@@ -153,6 +153,18 @@ const TASK_OPEN = '<task_description source="chat">';
 const TASK_CLOSE = "</task_description>";
 
 /**
+ * quick-260717-2gr (D-08 approved-continuation resume): a FIXED, 100%
+ * host-authored paragraph appended to the user turn — strictly OUTSIDE the
+ * untrusted-text delimiters — when the streamer approved a build that was
+ * parked mid-flight for review. It tells the agent the workspace already holds
+ * reviewed-and-approved prior output and to continue from it. Zero
+ * interpolation of any task field (a plain string constant, no `${…}`), so the
+ * SAND-04 boundary discipline is untouched: chat text still travels ONLY
+ * inside the delimiter frame.
+ */
+export const APPROVED_CONTINUATION_NOTE = `HOST NOTE (orchestrator-authored, not viewer text): an earlier attempt at this task was paused for streamer review, and the streamer has reviewed and approved the output already written in your workspace. Continue from the current workspace state — keep the approved work and finish the task.`;
+
+/**
  * Wrap already-untrusted text in a fixed delimiter frame. The text is inserted
  * VERBATIM as data — no escaping that changes its meaning, and it never crosses
  * the system/user boundary. This is the ONLY string templating in the module.
@@ -170,10 +182,20 @@ function frame(open: string, text: string, close: string): string {
  * `<task_description source="chat">` delimiters of `userPrompt` — provenance is
  * chat now, not an orchestrator-generated plan. SAND-04 holds identically in
  * BOTH modes: chat text is DATA in the user turn, never in the system prompt.
+ *
+ * quick-260717-2gr: `opts.approvedContinuation` appends the fixed
+ * APPROVED_CONTINUATION_NOTE after the closing delimiter (mid-build park →
+ * streamer approve → resume). Absent/false opts → output byte-identical to the
+ * historical two-arg call (exact-equality test-pinned).
  */
-export function buildBuildPrompt(taskText: string, mode: BuildPromptMode): AgentPrompt {
+export function buildBuildPrompt(
+  taskText: string,
+  mode: BuildPromptMode,
+  opts?: { approvedContinuation?: boolean },
+): AgentPrompt {
+  const framed = frame(TASK_OPEN, taskText, TASK_CLOSE);
   return {
     systemPrompt: mode === "continue" ? BUILD_SYSTEM_PROMPT_CONTINUE : BUILD_SYSTEM_PROMPT_SCAFFOLD,
-    userPrompt: frame(TASK_OPEN, taskText, TASK_CLOSE),
+    userPrompt: opts?.approvedContinuation ? `${framed}\n\n${APPROVED_CONTINUATION_NOTE}` : framed,
   };
 }
