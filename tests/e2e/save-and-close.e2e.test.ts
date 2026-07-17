@@ -314,7 +314,8 @@ describe("save-and-close e2e: the SOLO-PICKED incident text never reaches the ag
     expect(closed[0]?.rationale).not.toContain(INCIDENT_TEXT);
   });
 
-  it("Test 1: chat received the calm projectClosed beat (exact copy)", () => {
+  it("Test 1: chat received the calm projectClosed beat (exact copy)", async () => {
+    await until(() => sent.includes(PROJECT_CLOSED_BEAT));
     expect(sent).toContain(PROJECT_CLOSED_BEAT);
   });
 
@@ -378,7 +379,7 @@ describe("save-and-close e2e: a wipe-intent FREE-REIGN instruction never builds;
     // Rotation happened (gen 1 was scaffolded), the queue is clean.
     expect(workspaceRow(app)).toEqual({ generation: 2, scaffolded: 0 });
     expect(app.taskQueue.list()).toHaveLength(0);
-    expect(sent).toContain(PROJECT_CLOSED_BEAT);
+    await until(() => sent.includes(PROJECT_CLOSED_BEAT));
 
     // driveWindowBuild's continuation is INTACT: the machine returned to
     // FREE_REIGN_WINDOW while the window is still live.
@@ -440,7 +441,7 @@ describe("save-and-close e2e: a wipe-intent CHAOS pick never builds; the chaos l
     expect(picks.some((r) => r.suggestion_text === INCIDENT_TEXT)).toBe(true);
     expect(runner.specs).toHaveLength(1); // seeder only
     expect(workspaceRow(app)).toEqual({ generation: 2, scaffolded: 0 });
-    expect(sent).toContain(PROJECT_CLOSED_BEAT);
+    await until(() => sent.includes(PROJECT_CLOSED_BEAT));
 
     // driveChaosBuild's continuation is INTACT: chaos is still on, so the
     // machine returned to CHAOS_MODE and re-picked (empty pool → no-op).
@@ -494,13 +495,13 @@ describe("save-and-close e2e: wipe intent on an UNSCAFFOLDED canvas — no rotat
     expect(app.taskQueue.list()).toHaveLength(0);
   });
 
-  it("the interception is STILL audited (closed === fresh generation) and narrated — never silent", () => {
+  it("the interception is STILL audited (closed === fresh generation) and narrated — never silent", async () => {
     const closed = projectClosedRows(app);
     expect(closed).toHaveLength(1);
     expect(closed[0]?.task_id).toBe(winnerId);
     expect(closed[0]?.rationale).toContain("generation 1");
     expect(closed[0]?.rationale).toContain("fresh generation 1");
-    expect(sent).toContain(PROJECT_CLOSED_BEAT);
+    await until(() => sent.includes(PROJECT_CLOSED_BEAT));
   });
 });
 
@@ -521,11 +522,7 @@ describe("save-and-close structural gates (quick-260716-rll)", () => {
 
   it("GATE B: zero repo-removal call patterns anywhere under src/ (repos are never torn down)", () => {
     const files = collectFiles(SRC_ROOT);
-    const patterns = [
-      /gh\s+repo\s+delete/i,
-      /-X\s*["']?DELETE/i,
-      /method\s*:\s*["']DELETE["']/i,
-    ];
+    const patterns = [/gh\s+repo\s+delete/i, /-X\s*["']?DELETE/i, /method\s*:\s*["']DELETE["']/i];
     for (const pattern of patterns) {
       const hits = allMatches(files, pattern);
       expect(
