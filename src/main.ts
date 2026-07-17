@@ -2059,6 +2059,26 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
     //    instruction left over from a dead window) is SKIPPED, not built:
     //    building it here would mislabel its build_history provenance as
     //    'vote' (checker residual note) — it stays queued for streamer veto.
+    //
+    // startedVoteHeads — the BELT layer of the quick-260716-t1n double-build
+    // fix (primary layer: build-session.ts dequeues BEFORE the IDLE
+    // transition). Live incident 2026-07-16: the fdl scheduler's synchronous
+    // STATE_CHANGED resume (soloPick → onWinnerQueued → this drain) ran INSIDE
+    // finalize's BUILD→IDLE emit and re-captured the finished-but-still-queued
+    // head. This positive per-task started mark defends ALL future synchronous
+    // routes into the drain (the chaosModePick "picked" arm is the same latent
+    // shape): a head this drain has ever COMMITTED to is never selected again,
+    // even if it somehow lingers in the queue. Bounded FIFO eviction — ids are
+    // unique per task, so the set only needs to outlive the finalize window
+    // (see .planning/debug/260716-double-build-execution.md).
+    const startedVoteHeads = new Set<string>();
+    const stampStartedHead = (id: string): void => {
+      startedVoteHeads.add(id);
+      if (startedVoteHeads.size > 128) {
+        const oldest = startedVoteHeads.values().next().value;
+        if (oldest !== undefined) startedVoteHeads.delete(oldest);
+      }
+    };
     const drainVoteQueue = (): boolean => {
       if (machine.mode === "BUILD_IN_PROGRESS") return false;
       const liveWindow = controlWindow.snapshot();
@@ -2069,7 +2089,7 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // picks DRAIN THROUGH here like any voted winner; the two systems
       // cannot interfere.
       if (chaos.enabled()) return false;
-      const head = taskQueue.list().find(isVoteOrigin);
+      const head = taskQueue.list().find((t) => isVoteOrigin(t) && !startedVoteHeads.has(t.id));
       if (!head) return false;
       // quick-260711-ly4: a CHAOS winner NEVER builds — handle it BEFORE the
       // BUILD_IN_PROGRESS prologue. It flips on the chaos window (activate) and
@@ -2078,6 +2098,9 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
       // going. Then drain the NEXT queued winner immediately when already IDLE.
       // Returns false: no build STARTED (callers ignore the return).
       if (head.kind === "chaos") {
+        // COMMIT point for the chaos arm (quick-260716-t1n belt layer): this
+        // head is consumed NOW — never re-selectable by a re-entrant drain.
+        stampStartedHead(head.id);
         runChaosWinner(head);
         if (machine.mode === "IDLE") drainVoteQueue();
         return false;
@@ -2098,6 +2121,10 @@ export async function createApp(opts: CreateAppOptions): Promise<AppHandle> {
         );
         return false;
       }
+      // COMMIT point for the build arms (quick-260716-t1n belt layer): stamp
+      // ONLY after the transition succeeded — a refused drain (mode/window/
+      // chaos guards or a transition failure above) must never mark the head.
+      stampStartedHead(head.id);
       void (async () => {
         // quick-q5n kind router: the winner's kind decides execution. The
         // synchronous prologue above already entered BUILD_IN_PROGRESS — the

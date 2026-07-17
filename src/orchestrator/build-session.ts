@@ -497,9 +497,12 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
   }
 
   /**
-   * Terminal exit: emit the terminal stage, drop the overlay snapshot, return to
-   * IDLE, unregister, and DEQUEUE the finished task. Legal BUILD_IN_PROGRESS→IDLE
-   * transition; never leaves the machine stuck (T-03-22).
+   * Terminal exit: emit the terminal stage, drop the overlay snapshot,
+   * unregister + DEQUEUE the finished task, THEN return to IDLE. Legal
+   * BUILD_IN_PROGRESS→IDLE transition; never leaves the machine stuck
+   * (T-03-22). Dequeue-before-transition is load-bearing (quick-260716-t1n):
+   * STATE_CHANGED subscribers run synchronously inside transition("IDLE"),
+   * and any drain they reach must never find the finished task still queued.
    */
   function finalize(
     task: QueuedTask,
@@ -545,6 +548,14 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     );
     current = null;
     active = null;
+    // ORDERING INVARIANT (quick-260716-t1n): a task is never discoverable in
+    // the queue once its terminal record is written / the machine leaves
+    // BUILD_IN_PROGRESS — dequeue MUST precede the IDLE transition because
+    // STATE_CHANGED handlers run synchronously inside transition() (live
+    // incident 2026-07-16: the fdl scheduler's in-emit resume chained into
+    // drainVoteQueue and re-executed the still-queued finished head).
+    deps.registry.unregister(task.id);
+    deps.taskQueue.remove(task.id);
     try {
       if (deps.machine.mode === "BUILD_IN_PROGRESS") {
         deps.machine.transition("IDLE");
@@ -553,8 +564,6 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     } catch (err) {
       deps.logger?.error({ err, taskId: task.id }, "failed to return machine to IDLE after build");
     }
-    deps.registry.unregister(task.id);
-    deps.taskQueue.remove(task.id);
   }
 
   /**
@@ -585,6 +594,12 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
     // emit so the overlay re-reads snapshot()=null (panel hides) — never stage=done.
     current = null;
     active = null;
+    // ORDERING INVARIANT (quick-260716-t1n): dequeue + unregister BEFORE ANY
+    // emit — the queue is clean before BUILD_STAGE_CHANGED and before the IDLE
+    // transition below, because STATE_CHANGED handlers run synchronously
+    // inside transition() and must never find the aborted task still queued.
+    deps.registry.unregister(task.id);
+    deps.taskQueue.remove(task.id);
     emitter.emit(BUILD_STAGE_CHANGED);
     try {
       // Leave HALTED alone — the kill switch owns it. Only return to IDLE for a
@@ -599,8 +614,6 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
         "failed to return machine to IDLE after aborted build",
       );
     }
-    deps.registry.unregister(task.id);
-    deps.taskQueue.remove(task.id);
   }
 
   /**
@@ -1110,6 +1123,12 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       // Collapse the overlay panel, return to IDLE, dequeue (T-03-22 clean exit).
       current = null;
       active = null;
+      // ORDERING INVARIANT (quick-260716-t1n): a skipped task is never
+      // discoverable in the queue once the machine leaves BUILD_IN_PROGRESS —
+      // dequeue MUST precede the IDLE transition because STATE_CHANGED
+      // handlers run synchronously inside it.
+      deps.registry.unregister(taskId);
+      deps.taskQueue.remove(taskId);
       try {
         if (deps.machine.mode === "BUILD_IN_PROGRESS") {
           deps.machine.transition("IDLE");
@@ -1118,8 +1137,6 @@ export function createBuildSession(deps: BuildSessionDeps): BuildSession {
       } catch (err) {
         deps.logger?.error({ err, taskId }, "failed to return machine to IDLE after skip");
       }
-      deps.registry.unregister(taskId);
-      deps.taskQueue.remove(taskId);
       // snapshot() is now null → the overlay build panel collapses.
       emitter.emit(BUILD_STAGE_CHANGED);
     },
