@@ -146,14 +146,132 @@ export function renderLine(line: unknown): string | null {
 }
 
 /**
+ * Backlogs at/above this many plain characters blit in ONE tick instead of
+ * typing out — a 16KB screened diff lands on screen in seconds, not minutes
+ * (quick-rtd; T-rtd-03 accepts the one-shot write as trivial for a real
+ * terminal, bounded by DIFF_MAX per line + the 300-line ring anyway).
+ */
+export const BURST_DRAIN_CHARS = 8_000;
+
+/**
  * Typewriter pacing rate: characters to emit per ~50ms tick given the current
- * plain-character backlog. Floor of 7 chars/tick (≈140 chars/s baseline),
- * accelerating with ceil(backlog/200) so catch-up is bounded — effective
- * typing debt stays ≈≤10s on top of the COMP-02 screening latency, and lag
- * can never grow without bound. Pure + exported for tests.
+ * plain-character backlog. Floor of 7 chars/tick (≈140 chars/s baseline);
+ * below BURST_DRAIN_CHARS catch-up accelerates with ceil(backlog/40) (≈2s
+ * decay constant), and at/above it the WHOLE backlog drains in one tick —
+ * worst-case typing debt is bounded ≤ ~10s for ANY backlog size. Pure +
+ * exported for tests.
  */
 export function paceCharsPerTick(backlogChars: number): number {
-  return Math.max(7, Math.ceil(backlogChars / 200));
+  if (backlogChars >= BURST_DRAIN_CHARS) return backlogChars;
+  return Math.max(7, Math.ceil(backlogChars / 40));
+}
+
+// --- Liveness heartbeat helpers (quick-rtd) ---------------------------------
+// Pure client-side composition ONLY: the thinking status line never enters
+// lastFeed, the backlog, or any wire-facing structure — it is written straight
+// to stdout by the CLI shell and repainted in place. Zero new wire bytes.
+
+/** Quiet-gap threshold before the thinking status line appears. */
+export const THINKING_QUIET_MS = 10_000;
+
+/**
+ * Human elapsed-time formatting for the thinking line: "40s" under a minute,
+ * "2m 40s" under an hour, "1h 5m" beyond. Negative/NaN clamp to "0s".
+ */
+export function formatElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "0s";
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}m ${totalSeconds % 60}s`;
+  return `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`;
+}
+
+/** The kinds whose presence as the LAST feed line means a build is running. */
+const IN_FLIGHT_KINDS = new Set([
+  "title",
+  "stage",
+  "activity",
+  "reasoning",
+  "tool-call",
+  "diff",
+]);
+
+/**
+ * The server's `done` stage caption (src/overlay/builder-feed.ts STAGE_LINES,
+ * which is module-private) — pinned by a caption-sync test that drives a REAL
+ * createBuilderFeed instance, so caption drift breaks CI instead of silently
+ * rotting this predicate (T-rtd-04).
+ */
+const DONE_CAPTION = "Live on screen now";
+
+/**
+ * Fail-closed in-progress predicate on the LAST feed line only:
+ *  - undefined (empty feed / idle) → false;
+ *  - stage-warn (Regrouping… / Skipping this one) → false — terminal states;
+ *  - the done caption → false;
+ *  - any other line of the closed 7-kind vocabulary → true;
+ *  - any unknown kind → false (fail closed).
+ */
+export function isBuildInFlight(lastLine: FeedLine | undefined): boolean {
+  if (lastLine === undefined) return false;
+  if (lastLine.kind === "stage-warn") return false;
+  if (lastLine.kind === "stage" && lastLine.text === DONE_CAPTION) return false;
+  return IN_FLIGHT_KINDS.has(lastLine.kind);
+}
+
+/**
+ * File-activity stats recomputed WHOLESALE from the current feed (≤300 lines,
+ * cheap; naturally correct across reset diffs and ring drops). Parses ONLY
+ * kind "activity" lines with the exact server-composed prefixes "Writing " /
+ * "Editing "; counts DISTINCT paths per verb; lastPath is the path of the
+ * last activity line (null when none). Malformed activity text and every
+ * non-activity kind contribute nothing.
+ */
+export function fileStatsFromFeed(feed: readonly FeedLine[]): {
+  written: number;
+  edited: number;
+  lastPath: string | null;
+} {
+  const written = new Set<string>();
+  const edited = new Set<string>();
+  let lastPath: string | null = null;
+  for (const line of feed) {
+    if (line.kind !== "activity") continue;
+    let path: string | null = null;
+    if (line.text.startsWith("Writing ")) {
+      path = line.text.slice("Writing ".length);
+      if (path.length > 0) written.add(path);
+    } else if (line.text.startsWith("Editing ")) {
+      path = line.text.slice("Editing ".length);
+      if (path.length > 0) edited.add(path);
+    }
+    if (path !== null && path.length > 0) lastPath = path;
+  }
+  return { written: written.size, edited: edited.size, lastPath };
+}
+
+/**
+ * Compose the ephemeral thinking status line, or null while the quiet gap is
+ * under THINKING_QUIET_MS. ONE dim line, no trailing newline, DIM open +
+ * RESET close ONLY — calm copy, never red, never error wording. lastPath
+ * re-passes sanitizeWireText before composition (T-rtd-01) and the total
+ * plain text is truncated to LINE_MAX so the line can never wrap.
+ */
+export function thinkingStatusLine(
+  quietMs: number,
+  stats: { written: number; edited: number; lastPath: string | null },
+): string | null {
+  if (!(quietMs >= THINKING_QUIET_MS)) return null; // NaN falls through to null
+  let plain = `· the AI is thinking — ${formatElapsed(quietMs)} in…`;
+  if (stats.written + stats.edited > 0) {
+    plain += ` · files: ${stats.written} written`;
+    if (stats.edited > 0) plain += `, ${stats.edited} edited`;
+  }
+  if (stats.lastPath !== null) {
+    plain += ` · last: ${sanitizeWireText(stats.lastPath)}`;
+  }
+  return `${DIM}${truncate(plain, LINE_MAX)}${RESET}`;
 }
 
 /**
