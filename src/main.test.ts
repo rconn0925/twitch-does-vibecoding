@@ -57,13 +57,13 @@ const resultSuccess = { type: "result", subtype: "success", is_error: false };
 const resultFailed = { type: "result", subtype: "error_max_turns", is_error: true };
 
 /**
- * Runner that emits the MID_HOLD_MARKER batch the FIRST time a spec's prompt
- * contains "flagme" (the incident build), then behaves normally — so the
- * approved continuation runs to done. "failme" builds fail (teardown driver).
+ * Runner that emits the MID_HOLD_MARKER batch for every "flagme" build EXCEPT
+ * an approved continuation (its prompt carries the host-authored note) — so
+ * the incident build parks and the streamer-approved resume runs to done.
+ * "failme" builds fail (the teardown driver for the taint-guard rows).
  */
 function markerRunner() {
   const specs: AgentRunSpec[] = [];
-  let flaggedOnce = false;
   const runner: AgentRunner = {
     run(spec) {
       specs.push(spec);
@@ -72,8 +72,7 @@ function markerRunner() {
           yield resultFailed as never;
           return;
         }
-        if (spec.userPrompt.includes("flagme") && !flaggedOnce) {
-          flaggedOnce = true;
+        if (spec.userPrompt.includes("flagme") && !spec.userPrompt.includes("reviewed and approved")) {
           yield writeBatch("styles.css", `body { /* ${MID_HOLD_MARKER} */ }`) as never;
           yield resultSuccess as never;
           return;
@@ -437,13 +436,15 @@ describe("main onHeldForReview: PRE-BUILD hold, reject path, HALTED conflict", (
   });
 
   it("approve while HALTED → 409, row STAYS pending, nothing dispatched; recover → approve works (P8)", async () => {
-    const specsBefore = runner.specs.length;
     say("!suggest flagme make it sparkle");
     say("!suggest filler c");
     await until(() => app.pool.list().length === 2);
     voteTextToVictory(app, "flagme make it sparkle");
     await until(() => listPending(app.db).length === 1 && app.machine.mode === "IDLE", 15_000);
     const reviewId = listPending(app.db)[0]?.id ?? 0;
+    // Captured AFTER the incident build consumed its spec — asserts the
+    // APPROVE attempt dispatches nothing while HALTED.
+    const specsBefore = runner.specs.length;
 
     const haltRes = await postJson(app.port, "/api/halt", {});
     expect(haltRes.status).toBe(200);

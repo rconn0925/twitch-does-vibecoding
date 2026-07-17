@@ -127,7 +127,35 @@ export interface ConsoleServerDeps {
    * Absent when no build engine is composed — the route then answers 503.
    */
   workspace?: WorkspaceView;
+  /**
+   * quick-260717-2gr (D-08) parked-build seam: a COMP-02 held verdict parks
+   * the build in the review queue; the approve/reject routes consult
+   * `expiresAtMs(id)` FIRST — non-null means PARKED and the resolution goes
+   * through `resolve()` (approve → dispatch the continuation in main.ts;
+   * reject → denial path) instead of the intake re-pool path. Late-bound in
+   * main.ts (the buildStatus idiom); absent = every row is an intake hold
+   * (pre-2gr behavior byte-identical).
+   */
+  heldBuilds?: ConsoleHeldBuildsSource;
   logger?: Logger;
+}
+
+/**
+ * quick-260717-2gr: the parked-build resolution seam main.ts injects.
+ * `resolve()` outcomes: "approved"/"rejected" = done; "conflict" = approve
+ * refused while HALTED (P8 — maps to a 409, row stays pending); "not-held" =
+ * the park raced away (expiry/resolution) — the route falls through to the
+ * EXISTING intake behavior. `onChange` fires on park/resolve/expiry beats,
+ * which happen WITHOUT a mode change (the h73 WINDOW_PENDING idiom).
+ */
+export interface ConsoleHeldBuildsSource {
+  resolve(
+    reviewId: number,
+    action: "approve" | "reject",
+    reasonTag?: ReasonTag | null,
+  ): "approved" | "rejected" | "conflict" | "not-held";
+  expiresAtMs(reviewId: number): number | null;
+  onChange(handler: () => void): void;
 }
 
 /**
@@ -212,7 +240,12 @@ export interface ConsoleState extends StateSnapshot {
   pool: ReturnType<CandidatePool["list"]>;
   queue: SuggestionCandidate[];
   pendingReviewCount: number;
-  review: ReviewItem[];
+  /**
+   * quick-260717-2gr: each review item carries `expiresAtMs` — a number for a
+   * PARKED build (the console renders the auto-decline countdown + amber
+   * "PARKED BUILD" pill), null for an intake hold (pre-2gr rendering).
+   */
+  review: Array<ReviewItem & { expiresAtMs: number | null }>;
   /** Current voting round, or null when none is open (plan 02-03). */
   round: RoundSnapshot | null;
   /** Twitch connection health for the console pill (plan 02-04). */
@@ -358,7 +391,12 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
 
   /** Compose the extended console state: machine snapshot + pool + queue + review + build. */
   function buildState(): ConsoleState {
-    const review = listPending(db);
+    // quick-260717-2gr: annotate each pending item with its parked-build
+    // auto-decline deadline (null for intake holds / when no seam is composed).
+    const review = listPending(db).map((item) => ({
+      ...item,
+      expiresAtMs: deps.heldBuilds?.expiresAtMs(item.id) ?? null,
+    }));
     const buildView = deps.buildStatus?.() ?? null;
     return {
       ...machine.snapshot(),
@@ -452,6 +490,13 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       pushState();
     });
   }
+  // quick-260717-2gr: park/resolve/expiry beats happen WITHOUT a mode change
+  // (the machine returned to IDLE at park time) — push so the review panel is
+  // live, never connect-time-stale. Low-frequency show beats, synchronous
+  // push like the window events above.
+  deps.heldBuilds?.onChange(() => {
+    pushState();
+  });
   const VOTE_PUSH_DEBOUNCE_MS = 250;
   let votePushTimer: NodeJS.Timeout | null = null;
   deps.round.on(VOTE_RECORDED, () => {
@@ -638,6 +683,24 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       res.status(400).json({ error: "invalid review approval request" });
       return;
     }
+    // quick-260717-2gr: a PARKED build (expiresAtMs non-null) resolves through
+    // the heldBuilds seam — approve dispatches the retained task's continuation
+    // in main.ts, NEVER the D-06 intake re-pool. Intake holds fall through to
+    // the existing path byte-identically.
+    if (deps.heldBuilds && deps.heldBuilds.expiresAtMs(params.data.id) !== null) {
+      const outcome = deps.heldBuilds.resolve(params.data.id, "approve", body.data.reasonTag ?? null);
+      if (outcome === "conflict") {
+        // P8: nothing resumes while HALTED — honest message, row stays pending.
+        res.status(409).json({ error: "stream is HALTED — recover before resuming a parked build" });
+        return;
+      }
+      if (outcome !== "not-held") {
+        pushState();
+        res.json({ ok: true });
+        return;
+      }
+      // "not-held": the park raced away — fall through to the intake path.
+    }
     try {
       // D-06: approval re-enters the ORIGINAL candidate into the pool.
       approve(db, { pool, streamMode: machine.mode }, params.data.id);
@@ -658,6 +721,17 @@ export function startConsoleServer(deps: ConsoleServerDeps): Promise<ConsoleServ
       return;
     }
     const reasonTag = body.data.reasonTag ?? null;
+    // quick-260717-2gr: a PARKED build rejects through the heldBuilds seam
+    // (denial narration + park kept in main.ts); intake holds fall through.
+    if (deps.heldBuilds && deps.heldBuilds.expiresAtMs(params.data.id) !== null) {
+      const outcome = deps.heldBuilds.resolve(params.data.id, "reject", reasonTag);
+      if (outcome !== "not-held") {
+        pushState();
+        res.json({ ok: true });
+        return;
+      }
+      // "not-held": the park raced away — fall through to the intake path.
+    }
     try {
       reject(db, params.data.id, machine.mode, reasonTag);
     } catch {
