@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createBuilderFeed } from "../../src/overlay/builder-feed.js";
 import {
-  backoffDelay,
   BURST_DRAIN_CHARS,
+  backoffDelay,
   DIFF_MAX,
   diffFeed,
   fileStatsFromFeed,
@@ -16,6 +15,7 @@ import {
   THINKING_QUIET_MS,
   thinkingStatusLine,
 } from "../../scripts/builder-terminal.js";
+import { createBuilderFeed } from "../../src/overlay/builder-feed.js";
 
 /**
  * Unit tests for the AI-scene terminal viewer's pure core (quick-260711-ly4,

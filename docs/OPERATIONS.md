@@ -339,8 +339,16 @@ page. The feed carries the build agent's screened reasoning prose, real tool
 calls ("Bash(npm install)"-style), and full-fidelity file diffs — every batch
 still passes the SAME COMP-02 single-funnel screen before it reaches the wire,
 and the viewer intentionally runs **~5–15s behind real time** (per-message
-COMP-02 screening latency + the typewriter pacing). That lag is normal, not a
+COMP-02 screening latency + the typewriter pacing; large bursts ≥8K chars now
+blit instantly, so typing debt is bounded ≤ ~10s). That lag is normal, not a
 stall — do not restart anything when the terminal trails the actual build.
+
+- During a build, ≥10s of feed quiet shows a dim in-place
+  "· the AI is thinking — Xm Ys in…" line (with a "files: N written, M
+  edited · last: <path>" ticker once files exist); it self-erases the moment
+  real output resumes. Long thinking passes (many minutes) are HEALTHY and
+  now visibly alive — the elapsed time ticking up is the proof of life, not
+  a stall indicator.
 
 Note: the /builder BROWSER page renders only the legacy kinds now (it fails
 closed on the new reasoning/tool-call/diff kinds, showing title/stage/activity
