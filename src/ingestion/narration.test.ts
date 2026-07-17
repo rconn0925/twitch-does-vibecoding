@@ -305,6 +305,9 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
         "revertFailed",
         "newProjectShipping",
         "newProjectShipFailed",
+        // quick-260716-rll: the wipe-intent save-and-close beat — a fixed
+        // server-composed line, zero interpolation; never a tally.
+        "projectClosed",
         // Tier-2 info replies (quick-t8k) — post-gate repo slugs/URLs at most;
         // never a tally.
         "infoProjects",
@@ -393,6 +396,31 @@ describe("createNarrator — UI-SPEC copy contract (CHAT-05/COMP-03/D2-06/D2-07)
       const ALARM = /error|alarm|crash|panic|fatal|broken|emergency|urgent/i;
       for (const message of sent) {
         expect(message, `alarm wording leaked: "${message}"`).not.toMatch(ALARM);
+      }
+    });
+  });
+
+  describe("wipe-intent save-and-close beat (quick-260716-rll — server-composed)", () => {
+    it("projectClosed renders the EXACT fixed line — one message, zero interpolation", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.projectClosed();
+      expect(sent).toEqual([
+        "Project saved to the gallery and closed — fresh canvas! Keep the ideas coming.",
+      ]);
+    });
+
+    it("projectClosed copy is amber-tier and copy-separation clean (no alarm/chance/money words)", () => {
+      const { sent, sender } = capturingSender();
+      const n = createNarrator({ sender });
+      n.projectClosed();
+      const ALARM = /error|alarm|crash|panic|fatal|broken|emergency|urgent/i;
+      const CHANCE = /chance|luck|odds|random|roll|lottery|gamble/i;
+      const MONEY = /money|tip|donation|points|pay/i;
+      for (const message of sent) {
+        expect(message, `alarm wording leaked: "${message}"`).not.toMatch(ALARM);
+        expect(message, `chance wording leaked: "${message}"`).not.toMatch(CHANCE);
+        expect(message, `money wording leaked: "${message}"`).not.toMatch(MONEY);
       }
     });
   });
